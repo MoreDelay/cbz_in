@@ -1,0 +1,4 @@
+
+[env]
+RUST_LOG = { value = "debug", force = true }
+
