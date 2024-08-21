@@ -30,6 +30,7 @@ impl Drop for WorkUnit {
     fn drop(&mut self) {
         debug!("Cleanup for {:?}", self.cbz_path);
         let extract_dir = extract_dir_from_cbz_path(&self.cbz_path);
+        debug!("Extract dir: {:?}", extract_dir);
         if extract_dir.exists() {
             fs::remove_dir_all(extract_dir.clone()).unwrap();
         }
@@ -84,14 +85,34 @@ fn already_converted(path: &PathBuf) -> bool {
     zip_path.exists()
 }
 
+fn has_root_within_archive(cbz_path: &PathBuf) -> bool {
+    let file = fs::File::open(cbz_path).unwrap();
+    let reader = BufReader::new(file);
+
+    let archive = zip::ZipArchive::new(reader).unwrap();
+    let root_dirs: Vec<_> = archive
+        .file_names()
+        .into_iter()
+        .filter(|s| s.ends_with("/"))
+        .filter(|s| s.find("/").unwrap() == s.len() - 1)
+        .collect();
+    root_dirs.len() == 1 && root_dirs[0].strip_suffix("/").unwrap() == cbz_path.file_stem().unwrap()
+}
+
 fn extract_cbz(work_unit: &WorkUnit) {
     let cbz_path = &work_unit.cbz_path;
     assert!(cbz_path.is_file());
 
+    let extract_dir = if has_root_within_archive(cbz_path) {
+        trace!("extract directly");
+        cbz_path.parent().unwrap().to_path_buf()
+    } else {
+        trace!("extract into new root directory");
+        extract_dir_from_cbz_path(cbz_path)
+    };
     let file = fs::File::open(cbz_path).unwrap();
     let reader = BufReader::new(file);
     let mut archive = zip::ZipArchive::new(reader).unwrap();
-    let extract_dir = extract_dir_from_cbz_path(cbz_path);
 
     debug!("Extracting {:?} to {:?}", cbz_path, extract_dir);
     fs::create_dir_all(extract_dir.clone()).unwrap();
@@ -171,8 +192,7 @@ fn convert_images(work_unit: &WorkUnit) {
     let cbz_path = &work_unit.cbz_path;
     debug!("Convert images for {:?}", cbz_path);
     let extract_dir = extract_dir_from_cbz_path(cbz_path);
-    let recursive_root = extract_dir.join(cbz_path.file_stem().unwrap());
-    WalkDir::new(recursive_root)
+    WalkDir::new(extract_dir)
         .into_iter()
         .filter_map(|e| e.ok())
         .collect::<Vec<_>>()
@@ -209,7 +229,7 @@ fn compress_cbz(work_unit: &WorkUnit) {
     {
         let entry = entry.path();
         debug!("Add file: {:?}", entry);
-        let file_name = entry.strip_prefix(&extract_dir).unwrap();
+        let file_name = entry.strip_prefix(&extract_dir.parent().unwrap()).unwrap();
         let path_string = file_name
             .to_str()
             .to_owned()
@@ -269,5 +289,38 @@ fn main() {
             convert_images(&work_unit);
             compress_cbz(&work_unit);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extraction_different_name() {
+        let cbz_path = Path::new("data/Test1.cbz");
+        let unit = WorkUnit::new(cbz_path);
+
+        extract_cbz(&unit);
+
+        let extract_root = Path::new("data/Test1");
+        assert!(extract_root.is_dir());
+        let extract_inner = Path::new("data/Test1/Test");
+        assert!(extract_inner.is_dir());
+        let not_inner = Path::new("data/Test1/Test1");
+        assert!(!not_inner.exists());
+    }
+
+    #[test]
+    fn test_extraction_same_name() {
+        let cbz_path = Path::new("data/Test.cbz");
+        let unit = WorkUnit::new(cbz_path);
+
+        extract_cbz(&unit);
+
+        let extract_root = Path::new("data/Test");
+        assert!(extract_root.is_dir());
+        let not_inner = Path::new("data/Test/Test");
+        assert!(!not_inner.exists());
     }
 }
