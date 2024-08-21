@@ -1,5 +1,4 @@
 
 [env]
-RUST_LOG = { value = "debug", force = true }
-RUST_BACKTRACE = { value = "1", force = true }
+RUST_LOG = { value = "debug" }
 

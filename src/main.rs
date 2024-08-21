@@ -4,12 +4,16 @@ use std::fs;
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::exit;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use anyhow::Result;
 use load_image::ImageData::{GRAY16, GRAY8, GRAYA16, GRAYA8, RGB16, RGB8, RGBA16, RGBA8};
 use log::{debug, error, info, trace};
 use rayon::prelude::*;
 use rgb::ComponentMap;
+use signal_hook::consts::SIGINT;
+use signal_hook::flag;
 use walkdir::WalkDir;
 use zip;
 use zip::write::SimpleFileOptions;
@@ -30,7 +34,6 @@ impl Drop for WorkUnit {
     fn drop(&mut self) {
         debug!("Cleanup for {:?}", self.cbz_path);
         let extract_dir = extract_dir_from_cbz_path(&self.cbz_path);
-        debug!("Extract dir: {:?}", extract_dir);
         if extract_dir.exists() {
             fs::remove_dir_all(extract_dir.clone()).unwrap();
         }
@@ -45,18 +48,15 @@ fn extract_dir_from_cbz_path(path: &Path) -> PathBuf {
 }
 
 fn cbz_contains_convertable_images(path: &Path) -> bool {
-    debug!("Called cbz_contains_convertable_images()");
-    debug!("path = {:?}", path);
+    trace!("Called cbz_contains_convertable_images()");
 
     if let None = path.extension() {
         debug!("No extension");
         return false;
     }
-    if let Some(ext) = path.extension() {
-        if ext != "cbz" {
-            debug!("Wrong extension");
-            return false;
-        }
+    if path.extension().map_or(false, |e| e != "cbz") {
+        debug!("Wrong extension");
+        return false;
     }
 
     let file = fs::File::open(path).unwrap();
@@ -65,10 +65,11 @@ fn cbz_contains_convertable_images(path: &Path) -> bool {
     let archive = zip::ZipArchive::new(reader).unwrap();
     for file_inside in archive.file_names() {
         let file_inside = Path::new(file_inside);
-        debug!("Inside: {:?}", file_inside);
+        trace!("Looking at file: {:?}", file_inside);
         if let Some(ext) = file_inside.extension() {
             match ext.to_str().unwrap() {
                 "jpg" => return true,
+                "jpeg" => return true,
                 "png" => return true,
                 _ => (),
             }
@@ -101,6 +102,7 @@ fn has_root_within_archive(cbz_path: &PathBuf) -> bool {
 
 fn extract_cbz(work_unit: &WorkUnit) {
     let cbz_path = &work_unit.cbz_path;
+    trace!("Called extract_cbz() with {:?}", cbz_path);
     assert!(cbz_path.is_file());
 
     let extract_dir = if has_root_within_archive(cbz_path) {
@@ -120,43 +122,44 @@ fn extract_cbz(work_unit: &WorkUnit) {
 }
 
 fn convert_image(image_path: &Path) -> Result<()> {
+    trace!("Called convert_image() with {:?}", image_path);
     let image = load_image::load_path(image_path)?;
 
     let image_data = match image.bitmap {
         RGB8(data) => {
-            trace!("RGB8");
+            trace!("image type: RGB8");
             data.into_iter().map(|p| p.with_alpha(255)).collect()
         }
         RGBA8(data) => {
-            trace!("RGBA8");
+            trace!("image type: RGBA8");
             data
         }
         RGB16(data) => {
-            trace!("RGB16");
+            trace!("image type: RGB16");
             data.into_iter()
                 .map(|p| p.map(|v| (v >> 8) as u8).with_alpha(255))
                 .collect()
         }
         RGBA16(data) => {
-            trace!("RGBA16");
+            trace!("image type: RGBA16");
             data.into_iter()
                 .map(|p| p.map(|v| (v >> 8) as u8))
                 .collect()
         }
         GRAY8(data) => {
-            trace!("GRAY8");
+            trace!("image type: GRAY8");
             data.into_iter()
                 .map(|p| rgb::RGBA::new(p.0, p.0, p.0, 255))
                 .collect()
         }
         GRAYA8(data) => {
-            trace!("GRAYA8");
+            trace!("image type: GRAYA8");
             data.into_iter()
                 .map(|p| rgb::RGBA::new(p.v, p.v, p.v, p.a))
                 .collect()
         }
         GRAY16(data) => {
-            trace!("GRAY16");
+            trace!("image type: GRAY16");
             data.into_iter()
                 .map(|p| {
                     let v = (p.0 >> 8) as u8;
@@ -165,7 +168,7 @@ fn convert_image(image_path: &Path) -> Result<()> {
                 .collect()
         }
         GRAYA16(data) => {
-            trace!("GRAYA16");
+            trace!("image type: GRAYA16");
             data.into_iter()
                 .map(|p| {
                     let v = (p.v >> 8) as u8;
@@ -188,9 +191,9 @@ fn convert_image(image_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn convert_images(work_unit: &WorkUnit) {
+fn convert_images(work_unit: &WorkUnit, terminate: &Arc<AtomicBool>) {
     let cbz_path = &work_unit.cbz_path;
-    debug!("Convert images for {:?}", cbz_path);
+    trace!("Called convert_images with {:?}", cbz_path);
     let extract_dir = extract_dir_from_cbz_path(cbz_path);
     WalkDir::new(extract_dir)
         .into_iter()
@@ -199,8 +202,10 @@ fn convert_images(work_unit: &WorkUnit) {
         .par_iter()
         .for_each(|entry| {
             let entry = entry.path();
-            debug!("Found file: {:?}", entry);
-            if entry.is_file() && entry.extension() == Some(OsStr::new("jpg")) {
+            if !terminate.load(Ordering::Relaxed)
+                && entry.is_file()
+                && entry.extension() == Some(OsStr::new("jpg"))
+            {
                 convert_image(entry).unwrap();
             }
         })
@@ -208,7 +213,7 @@ fn convert_images(work_unit: &WorkUnit) {
 
 fn compress_cbz(work_unit: &WorkUnit) {
     let cbz_path = &work_unit.cbz_path;
-    debug!("Compress cbz for {:?}", cbz_path);
+    trace!("Called compress_cbz() with {:?}", cbz_path);
 
     let dir = cbz_path.parent().unwrap();
     let name = cbz_path.file_stem().unwrap();
@@ -228,7 +233,7 @@ fn compress_cbz(work_unit: &WorkUnit) {
         .filter_map(|e| e.ok())
     {
         let entry = entry.path();
-        debug!("Add file: {:?}", entry);
+        debug!("Add to archive: {:?}", entry);
         let file_name = entry.strip_prefix(&extract_dir.parent().unwrap()).unwrap();
         let path_string = file_name
             .to_str()
@@ -251,8 +256,11 @@ fn compress_cbz(work_unit: &WorkUnit) {
     zipper.finish().unwrap();
 }
 
-fn main() {
+fn main() -> Result<()> {
     pretty_env_logger::init();
+    let terminate = Arc::new(AtomicBool::new(false));
+    flag::register(SIGINT, terminate.clone())?;
+
     let args: Vec<_> = env::args().collect();
 
     let parent_path = if args.len() > 1 {
@@ -272,8 +280,13 @@ fn main() {
     };
 
     for cbz_file in parent_path.read_dir().expect("read dir call failed!") {
+        if terminate.load(Ordering::Relaxed) {
+            break;
+        }
+        trace!("Terminate? {:?}", terminate.load(Ordering::Relaxed));
+
         if let Ok(cbz_file) = cbz_file {
-            debug!("Got: {:?}", cbz_file.path());
+            debug!("Next path: {:?}", cbz_file.path());
             if !cbz_contains_convertable_images(&cbz_file.path()) {
                 info!("Nothing to do for {:?}", cbz_file.path());
                 continue;
@@ -286,10 +299,13 @@ fn main() {
             info!("Converting {:?}", cbz_file.path());
             let work_unit = WorkUnit::new(&cbz_file.path());
             extract_cbz(&work_unit);
-            convert_images(&work_unit);
-            compress_cbz(&work_unit);
+            convert_images(&work_unit, &terminate);
+            if !terminate.load(Ordering::Relaxed) {
+                compress_cbz(&work_unit);
+            }
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
