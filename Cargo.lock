@@ -93,6 +93,7 @@ dependencies = [
  "log",
  "pretty_env_logger",
  "signal-hook",
+ "thiserror",
  "walkdir",
  "zip",
 ]

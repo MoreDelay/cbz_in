@@ -3,7 +3,7 @@ use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{exit, Child, Command, Stdio};
+use std::process::{exit, Child, Command, ExitStatus, Stdio};
 use std::thread;
 
 use anyhow::{anyhow, Result};
@@ -12,6 +12,7 @@ use signal_hook::{
     consts::{SIGCHLD, SIGINT},
     iterator::Signals,
 };
+use thiserror::Error;
 use walkdir::WalkDir;
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 
@@ -139,25 +140,37 @@ fn start_conversion_process(image_path: &Path) -> Child {
 
 struct ConversionTask(PathBuf, Child);
 
-fn find_completed_process(running_tasks: &mut Vec<ConversionTask>) -> Result<&mut ConversionTask> {
+#[derive(Error, Debug)]
+enum CbzError {
+    #[error("No task completed")]
+    NoTaskCompleted,
+    #[error("Conversion failed for {0} with status {1:?}")]
+    ConversionFailed(String, ExitStatus),
+    #[error("IO Error")]
+    IOError,
+}
+
+fn find_completed_process(
+    running_tasks: &mut Vec<ConversionTask>,
+) -> Result<&mut ConversionTask, CbzError> {
     for task in running_tasks.iter_mut() {
         let ConversionTask(task_image_path, child) = task;
-        match child.try_wait()? {
-            Some(status) => {
+        match child.try_wait() {
+            Ok(Some(status)) => {
                 if status.success() {
                     return Ok(task);
                 } else {
-                    return Err(anyhow!(
-                        "Conversion failed for {} with status {}!",
-                        task_image_path.to_str().unwrap(),
-                        status
+                    return Err(CbzError::ConversionFailed(
+                        task_image_path.to_str().unwrap().to_string(),
+                        status,
                     ));
                 }
             }
-            None => continue,
+            Ok(None) => continue,
+            Err(_) => return Err(CbzError::IOError),
         }
     }
-    Err(anyhow!("No task completed"))
+    Err(CbzError::NoTaskCompleted)
 }
 
 fn start_next_conversion_after_another_completes(
@@ -174,15 +187,22 @@ fn start_next_conversion_after_another_completes(
                 }
                 SIGCHLD => {
                     debug!("Got signal SIGCHLD");
-                    // search for the completed process and start a new one in its place
-                    let task = find_completed_process(running_tasks)?;
-                    let ConversionTask(task_image_path, ref mut child) = task;
+                    // search for all completed processes and start new ones in their place
+                    loop {
+                        match find_completed_process(running_tasks) {
+                            Ok(task) => {
+                                let ConversionTask(task_image_path, ref mut child) = task;
 
-                    child.wait().unwrap();
-                    fs::remove_file(task_image_path)?;
-                    let child = start_conversion_process(image_path);
-                    *task = ConversionTask(image_path.to_path_buf(), child);
-                    return Ok(());
+                                child.wait().unwrap();
+                                fs::remove_file(task_image_path)?;
+                                let child = start_conversion_process(image_path);
+                                *task = ConversionTask(image_path.to_path_buf(), child);
+                                return Ok(());
+                            }
+                            Err(CbzError::NoTaskCompleted) => break,
+                            Err(e) => return Err(e.into()),
+                        }
+                    }
                 }
                 _ => unreachable!(),
             }
