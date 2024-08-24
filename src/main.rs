@@ -18,12 +18,14 @@ use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 
 struct WorkUnit {
     cbz_path: PathBuf,
+    format: ImageFormats,
 }
 
 impl WorkUnit {
-    fn new(path: &Path) -> WorkUnit {
+    fn new(path: &Path, format: ImageFormats) -> WorkUnit {
         WorkUnit {
             cbz_path: path.to_path_buf(),
+            format,
         }
     }
 }
@@ -119,23 +121,42 @@ fn extract_cbz(work_unit: &WorkUnit) {
     archive.extract(extract_dir.clone()).unwrap();
 }
 
-fn start_conversion_process(image_path: &Path) -> Child {
+fn start_conversion_process(image_path: &Path, format: ImageFormats) -> Result<Child> {
     debug!("New process working on {:?}", image_path);
-    let avif_path = image_path.with_extension("avif");
-    let child = Command::new("cavif").args([
-        "-s",
-        "3",
-        "-j",
-        "1",
-        "--quality=88",
-        image_path.to_str().unwrap(),
-        "-o",
-        avif_path.to_str().unwrap(),
-    ])
+
+    let mut command = match format {
+        ImageFormats::Avif => {
+            let avif_path = image_path.with_extension("avif");
+            let mut command = Command::new("cavif");
+            command.args([
+                "--speed=3",
+                "--threads=1",
+                "--quality=88",
+                image_path.to_str().unwrap(),
+                "-o",
+                avif_path.to_str().unwrap(),
+            ]);
+            command
+        }
+        ImageFormats::Jxl => {
+            let jxl_path = image_path.with_extension("jxl");
+            let mut command = Command::new("cjxl");
+            command.args([
+                "--effort=9",
+                "--num_threads=1",
+                "--distance=0",
+                image_path.to_str().unwrap(),
+                jxl_path.to_str().unwrap(),
+            ]);
+            command
+        }
+    };
+
+    let child = command
         .stdout(Stdio::piped())
-        .spawn()
-        .expect("Failed to execute command 'cavif', make sure it is installed with 'cargo install cavif'.");
-    child
+        .stderr(Stdio::piped())
+        .spawn()?;
+    Ok(child)
 }
 
 struct ConversionTask(PathBuf, Child);
@@ -177,6 +198,7 @@ fn start_next_conversion_after_another_completes(
     running_tasks: &mut Vec<ConversionTask>,
     signals: &mut Signals,
     image_path: &Path,
+    format: ImageFormats,
 ) -> Result<()> {
     loop {
         for signal in signals.wait() {
@@ -195,7 +217,7 @@ fn start_next_conversion_after_another_completes(
 
                                 child.wait().unwrap();
                                 fs::remove_file(task_image_path)?;
-                                let child = start_conversion_process(image_path);
+                                let child = start_conversion_process(image_path, format)?;
                                 *task = ConversionTask(image_path.to_path_buf(), child);
                                 return Ok(());
                             }
@@ -247,6 +269,7 @@ fn kill_all_children(running_tasks: &mut Vec<ConversionTask>) {
 
 fn convert_images(work_unit: &WorkUnit, process_count: usize) -> Result<()> {
     let cbz_path = &work_unit.cbz_path;
+    let format = work_unit.format;
     trace!("Called convert_images with {:?}", cbz_path);
     debug!("Start converting images for {:?}", cbz_path);
     let extract_dir = extract_dir_from_cbz_path(cbz_path);
@@ -269,7 +292,7 @@ fn convert_images(work_unit: &WorkUnit, process_count: usize) -> Result<()> {
             let image_path = entry;
 
             if running_tasks.len() < process_count {
-                let child = start_conversion_process(image_path);
+                let child = start_conversion_process(image_path, format)?;
                 running_tasks.push(ConversionTask(image_path.to_path_buf(), child));
                 continue;
             }
@@ -278,6 +301,7 @@ fn convert_images(work_unit: &WorkUnit, process_count: usize) -> Result<()> {
                 &mut running_tasks,
                 &mut signals,
                 image_path,
+                format,
             );
             if result.is_err() {
                 break;
@@ -298,7 +322,10 @@ fn compress_cbz(work_unit: &WorkUnit) {
 
     let dir = cbz_path.parent().unwrap();
     let name = cbz_path.file_stem().unwrap();
-    let zip_path = dir.join(format!("{}.avif.cbz", name.to_str().unwrap()));
+    let zip_path = match work_unit.format {
+        ImageFormats::Avif => dir.join(format!("{}.avif.cbz", name.to_str().unwrap())),
+        ImageFormats::Jxl => dir.join(format!("{}.jxl.cbz", name.to_str().unwrap())),
+    };
     debug!("Create cbz at {:?}", zip_path);
     let file = File::create(zip_path).unwrap();
 
@@ -334,20 +361,11 @@ fn compress_cbz(work_unit: &WorkUnit) {
     zipper.finish().unwrap();
 }
 
-#[derive(Parser)]
-#[command(version, about, long_about=None)]
-struct Args {
-    #[arg(value_parser = ["avif", "jxl"], required = true, help = "All images within the archive(s) are converted to this format")]
-    format: String,
-    #[arg(
-        required = true,
-        default_value = ".",
-        help = "Path to a cbz file or a directory containing cbz files"
-    )]
-    path: PathBuf,
-}
-
-fn convert_single_cbz(cbz_file: PathBuf, use_processors: usize) -> Result<()> {
+fn convert_single_cbz(
+    cbz_file: PathBuf,
+    format: ImageFormats,
+    use_processors: usize,
+) -> Result<()> {
     trace!("Called convert_single_cbz() with {:?}", cbz_file);
     if !cbz_contains_convertable_images(&cbz_file) {
         info!("Nothing to do for {:?}", cbz_file);
@@ -361,7 +379,7 @@ fn convert_single_cbz(cbz_file: PathBuf, use_processors: usize) -> Result<()> {
     info!("Converting {:?}", cbz_file);
 
     // Using work unit struct to do cleanup on drop
-    let work_unit = WorkUnit::new(&cbz_file);
+    let work_unit = WorkUnit::new(&cbz_file, format);
     extract_cbz(&work_unit);
     //if there was any error, we interrupt the whole process without saving
     convert_images(&work_unit, use_processors)?;
@@ -369,10 +387,34 @@ fn convert_single_cbz(cbz_file: PathBuf, use_processors: usize) -> Result<()> {
     Ok(())
 }
 
+#[derive(clap::ValueEnum, Clone, Copy)]
+enum ImageFormats {
+    Avif,
+    Jxl,
+}
+
+#[derive(Parser)]
+#[command(version, about, long_about=None)]
+struct Args {
+    #[arg(
+        required = true,
+        help = "All images within the archive(s) are converted to this format"
+    )]
+    format: ImageFormats,
+
+    #[arg(
+        required = true,
+        default_value = ".",
+        help = "Path to a cbz file or a directory containing cbz files"
+    )]
+    path: PathBuf,
+}
+
 fn main() -> Result<()> {
     pretty_env_logger::init();
 
     let matches = Args::parse();
+    let format = matches.format;
     let path = matches.path;
     if !path.exists() {
         error!("Does not exists: {:?}", path);
@@ -389,14 +431,14 @@ fn main() -> Result<()> {
             if let Ok(cbz_file) = cbz_file {
                 let cbz_file = cbz_file.path();
                 debug!("Next path: {:?}", cbz_file);
-                if let Err(e) = convert_single_cbz(cbz_file, use_processors) {
+                if let Err(e) = convert_single_cbz(cbz_file, format, use_processors) {
                     info!("An error occurred: {e}");
                     break;
                 }
             }
         }
     } else {
-        if let Err(e) = convert_single_cbz(path, use_processors) {
+        if let Err(e) = convert_single_cbz(path, format, use_processors) {
             info!("An error occurred: {e}");
         }
     }
@@ -410,7 +452,7 @@ mod tests {
     #[test]
     fn test_extraction_different_name() {
         let cbz_path = Path::new("data/Test1.cbz");
-        let unit = WorkUnit::new(cbz_path);
+        let unit = WorkUnit::new(cbz_path, ImageFormats::Avif);
 
         extract_cbz(&unit);
 
@@ -425,7 +467,7 @@ mod tests {
     #[test]
     fn test_extraction_same_name() {
         let cbz_path = Path::new("data/Test.cbz");
-        let unit = WorkUnit::new(cbz_path);
+        let unit = WorkUnit::new(cbz_path, ImageFormats::Avif);
 
         extract_cbz(&unit);
 
