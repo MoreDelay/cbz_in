@@ -1,6 +1,6 @@
 use std::env;
 use std::ffi::OsStr;
-use std::fs;
+use std::fs::{self, File};
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{exit, Child, Command, Stdio};
@@ -56,7 +56,7 @@ fn cbz_contains_convertable_images(path: &Path) -> bool {
         return false;
     }
 
-    let file = fs::File::open(path).unwrap();
+    let file = File::open(path).unwrap();
     let reader = BufReader::new(file);
 
     let archive = ZipArchive::new(reader).unwrap();
@@ -84,7 +84,7 @@ fn already_converted(path: &PathBuf) -> bool {
 }
 
 fn has_root_within_archive(cbz_path: &PathBuf) -> bool {
-    let file = fs::File::open(cbz_path).unwrap();
+    let file = File::open(cbz_path).unwrap();
     let reader = BufReader::new(file);
 
     let archive = ZipArchive::new(reader).unwrap();
@@ -109,7 +109,7 @@ fn extract_cbz(work_unit: &WorkUnit) {
         trace!("extract into new root directory");
         extract_dir_from_cbz_path(cbz_path)
     };
-    let file = fs::File::open(cbz_path).unwrap();
+    let file = File::open(cbz_path).unwrap();
     let reader = BufReader::new(file);
     let mut archive = ZipArchive::new(reader).unwrap();
 
@@ -280,7 +280,7 @@ fn compress_cbz(work_unit: &WorkUnit) {
     let name = cbz_path.file_stem().unwrap();
     let zip_path = dir.join(format!("{}.avif.cbz", name.to_str().unwrap()));
     debug!("Create cbz at {:?}", zip_path);
-    let file = fs::File::create(zip_path).unwrap();
+    let file = File::create(zip_path).unwrap();
 
     let mut zipper = ZipWriter::new(file);
     let options = SimpleFileOptions::default()
@@ -303,10 +303,7 @@ fn compress_cbz(work_unit: &WorkUnit) {
 
         if entry.is_file() {
             zipper.start_file(path_string, options).unwrap();
-            fs::File::open(entry)
-                .unwrap()
-                .read_to_end(&mut buffer)
-                .unwrap();
+            File::open(entry).unwrap().read_to_end(&mut buffer).unwrap();
             zipper.write_all(&buffer).unwrap();
             buffer.clear();
         } else if !file_name.as_os_str().is_empty() {
