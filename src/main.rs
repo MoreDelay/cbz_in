@@ -124,7 +124,7 @@ fn extract_cbz(work_unit: &WorkUnit) {
 fn start_conversion_process(image_path: &Path, format: ImageFormats) -> Result<Child> {
     debug!("New process working on {:?}", image_path);
 
-    let mut command = match format {
+    match format {
         ImageFormats::Avif => {
             let avif_path = image_path.with_extension("avif");
             let mut command = Command::new("cavif");
@@ -136,7 +136,12 @@ fn start_conversion_process(image_path: &Path, format: ImageFormats) -> Result<C
                 "-o",
                 avif_path.to_str().unwrap(),
             ]);
-            command
+            let child = command
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|_| CbzError::ProcessSpawnError("cavif".to_string()))?;
+            Ok(child)
         }
         ImageFormats::Jxl => {
             let jxl_path = image_path.with_extension("jxl");
@@ -148,15 +153,14 @@ fn start_conversion_process(image_path: &Path, format: ImageFormats) -> Result<C
                 image_path.to_str().unwrap(),
                 jxl_path.to_str().unwrap(),
             ]);
-            command
+            let child = command
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|_| CbzError::ProcessSpawnError("cjxl".to_string()))?;
+            Ok(child)
         }
-    };
-
-    let child = command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    Ok(child)
+    }
 }
 
 struct ConversionTask(PathBuf, Child);
@@ -169,6 +173,8 @@ enum CbzError {
     ConversionFailed(String, ExitStatus),
     #[error("IO Error")]
     IOError,
+    #[error("Could not spawn process for conversion program: {0}")]
+    ProcessSpawnError(String),
 }
 
 fn find_completed_process(
@@ -432,14 +438,14 @@ fn main() -> Result<()> {
                 let cbz_file = cbz_file.path();
                 debug!("Next path: {:?}", cbz_file);
                 if let Err(e) = convert_single_cbz(cbz_file, format, use_processors) {
-                    info!("An error occurred: {e}");
+                    error!("{e}");
                     break;
                 }
             }
         }
     } else {
         if let Err(e) = convert_single_cbz(path, format, use_processors) {
-            info!("An error occurred: {e}");
+            error!("{e}");
         }
     }
     Ok(())
