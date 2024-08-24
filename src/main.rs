@@ -335,21 +335,47 @@ fn compress_cbz(work_unit: &WorkUnit) {
 }
 
 #[derive(Parser)]
-#[command(version, long_about=None)]
+#[command(version, about, long_about=None)]
 struct Args {
-    #[arg(value_parser = ["avif", "jxl"], required = true)]
+    #[arg(value_parser = ["avif", "jxl"], required = true, help = "All images within the archive(s) are converted to this format")]
     format: String,
-    #[arg(required = true, default_value = ".")]
+    #[arg(
+        required = true,
+        default_value = ".",
+        help = "Path to a cbz file or a directory containing cbz files"
+    )]
     path: PathBuf,
+}
+
+fn convert_single_cbz(cbz_file: PathBuf, use_processors: usize) -> Result<()> {
+    trace!("Called convert_single_cbz() with {:?}", cbz_file);
+    if !cbz_contains_convertable_images(&cbz_file) {
+        info!("Nothing to do for {:?}", cbz_file);
+        return Ok(());
+    }
+    if already_converted(&cbz_file) {
+        info!("Conversion already exists");
+        return Ok(());
+    }
+
+    info!("Converting {:?}", cbz_file);
+
+    // Using work unit struct to do cleanup on drop
+    let work_unit = WorkUnit::new(&cbz_file);
+    extract_cbz(&work_unit);
+    //if there was any error, we interrupt the whole process without saving
+    convert_images(&work_unit, use_processors)?;
+    compress_cbz(&work_unit);
+    Ok(())
 }
 
 fn main() -> Result<()> {
     pretty_env_logger::init();
 
     let matches = Args::parse();
-    let parent_path = matches.path;
-    if !parent_path.is_dir() {
-        error!("Path is not a directory: {:?}", parent_path);
+    let path = matches.path;
+    if !path.exists() {
+        error!("Does not exists: {:?}", path);
         exit(1);
     }
 
@@ -358,31 +384,20 @@ fn main() -> Result<()> {
         Err(_) => 1,
     };
 
-    for cbz_file in parent_path.read_dir().expect("read dir call failed!") {
-        if let Ok(cbz_file) = cbz_file {
-            debug!("Next path: {:?}", cbz_file.path());
-            if !cbz_contains_convertable_images(&cbz_file.path()) {
-                info!("Nothing to do for {:?}", cbz_file.path());
-                continue;
-            }
-            if already_converted(&cbz_file.path()) {
-                info!("Conversion already exists");
-                continue;
-            }
-
-            info!("Converting {:?}", cbz_file.path());
-
-            // Using work unit struct to do cleanup on drop
-            let work_unit = WorkUnit::new(&cbz_file.path());
-            extract_cbz(&work_unit);
-            //if there was any error, we interrupt the whole process without saving
-            match convert_images(&work_unit, use_processors) {
-                Ok(()) => compress_cbz(&work_unit),
-                Err(e) => {
-                    info!("{}", e);
+    if path.is_dir() {
+        for cbz_file in path.read_dir().expect("read dir call failed!") {
+            if let Ok(cbz_file) = cbz_file {
+                let cbz_file = cbz_file.path();
+                debug!("Next path: {:?}", cbz_file);
+                if let Err(e) = convert_single_cbz(cbz_file, use_processors) {
+                    info!("An error occurred: {e}");
                     break;
                 }
             }
+        }
+    } else {
+        if let Err(e) = convert_single_cbz(path, use_processors) {
+            info!("An error occurred: {e}");
         }
     }
     Ok(())
