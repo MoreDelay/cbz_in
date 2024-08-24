@@ -3,20 +3,17 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::exit;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::process::{exit, Child, Command, Stdio};
+use std::thread;
 
-use anyhow::Result;
-use load_image::ImageData::{GRAY16, GRAY8, GRAYA16, GRAYA8, RGB16, RGB8, RGBA16, RGBA8};
+use anyhow::{anyhow, Result};
 use log::{debug, error, info, trace};
-use rayon::prelude::*;
-use rgb::ComponentMap;
-use signal_hook::consts::SIGINT;
-use signal_hook::flag;
+use signal_hook::{
+    consts::{SIGCHLD, SIGINT},
+    iterator::Signals,
+};
 use walkdir::WalkDir;
-use zip;
-use zip::write::SimpleFileOptions;
+use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 
 struct WorkUnit {
     cbz_path: PathBuf,
@@ -62,7 +59,7 @@ fn cbz_contains_convertable_images(path: &Path) -> bool {
     let file = fs::File::open(path).unwrap();
     let reader = BufReader::new(file);
 
-    let archive = zip::ZipArchive::new(reader).unwrap();
+    let archive = ZipArchive::new(reader).unwrap();
     for file_inside in archive.file_names() {
         let file_inside = Path::new(file_inside);
         trace!("Looking at file: {:?}", file_inside);
@@ -90,7 +87,7 @@ fn has_root_within_archive(cbz_path: &PathBuf) -> bool {
     let file = fs::File::open(cbz_path).unwrap();
     let reader = BufReader::new(file);
 
-    let archive = zip::ZipArchive::new(reader).unwrap();
+    let archive = ZipArchive::new(reader).unwrap();
     let root_dirs: Vec<_> = archive
         .file_names()
         .into_iter()
@@ -114,101 +111,165 @@ fn extract_cbz(work_unit: &WorkUnit) {
     };
     let file = fs::File::open(cbz_path).unwrap();
     let reader = BufReader::new(file);
-    let mut archive = zip::ZipArchive::new(reader).unwrap();
+    let mut archive = ZipArchive::new(reader).unwrap();
 
     debug!("Extracting {:?} to {:?}", cbz_path, extract_dir);
     fs::create_dir_all(extract_dir.clone()).unwrap();
     archive.extract(extract_dir.clone()).unwrap();
 }
 
-fn convert_image(image_path: &Path) -> Result<()> {
-    trace!("Called convert_image() with {:?}", image_path);
-    let image = load_image::load_path(image_path)?;
-
-    let image_data = match image.bitmap {
-        RGB8(data) => {
-            trace!("image type: RGB8");
-            data.into_iter().map(|p| p.with_alpha(255)).collect()
-        }
-        RGBA8(data) => {
-            trace!("image type: RGBA8");
-            data
-        }
-        RGB16(data) => {
-            trace!("image type: RGB16");
-            data.into_iter()
-                .map(|p| p.map(|v| (v >> 8) as u8).with_alpha(255))
-                .collect()
-        }
-        RGBA16(data) => {
-            trace!("image type: RGBA16");
-            data.into_iter()
-                .map(|p| p.map(|v| (v >> 8) as u8))
-                .collect()
-        }
-        GRAY8(data) => {
-            trace!("image type: GRAY8");
-            data.into_iter()
-                .map(|p| rgb::RGBA::new(p.0, p.0, p.0, 255))
-                .collect()
-        }
-        GRAYA8(data) => {
-            trace!("image type: GRAYA8");
-            data.into_iter()
-                .map(|p| rgb::RGBA::new(p.v, p.v, p.v, p.a))
-                .collect()
-        }
-        GRAY16(data) => {
-            trace!("image type: GRAY16");
-            data.into_iter()
-                .map(|p| {
-                    let v = (p.0 >> 8) as u8;
-                    rgb::RGBA::new(v, v, v, 255)
-                })
-                .collect()
-        }
-        GRAYA16(data) => {
-            trace!("image type: GRAYA16");
-            data.into_iter()
-                .map(|p| {
-                    let v = (p.v >> 8) as u8;
-                    let a = (p.a >> 8) as u8;
-                    rgb::RGBA::new(v, v, v, a)
-                })
-                .collect()
-        }
-    };
-
+fn start_conversion_process(image_path: &Path) -> Child {
+    debug!("New process working on {:?}", image_path);
     let avif_path = image_path.with_extension("avif");
-    let encoder = ravif::Encoder::new()
-        .with_speed(3)
-        .with_num_threads(Some(1))
-        .with_quality(88.);
-
-    let result = encoder.encode_rgba(ravif::Img::new(&image_data, image.width, image.height))?;
-    fs::write(avif_path, result.avif_file)?;
-    fs::remove_file(image_path)?;
-    Ok(())
+    let child = Command::new("cavif").args([
+        "-s",
+        "3",
+        "-j",
+        "1",
+        "--quality=88",
+        image_path.to_str().unwrap(),
+        "-o",
+        avif_path.to_str().unwrap(),
+    ])
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("Failed to execute command 'cavif', make sure it is installed with 'cargo install cavif'.");
+    child
 }
 
-fn convert_images(work_unit: &WorkUnit, terminate: &Arc<AtomicBool>) {
+struct ConversionTask(PathBuf, Child);
+
+fn find_completed_process(running_tasks: &mut Vec<ConversionTask>) -> Result<&mut ConversionTask> {
+    for task in running_tasks.iter_mut() {
+        let ConversionTask(task_image_path, child) = task;
+        match child.try_wait()? {
+            Some(status) => {
+                if status.success() {
+                    return Ok(task);
+                } else {
+                    return Err(anyhow!(
+                        "Conversion failed for {} with status {}!",
+                        task_image_path.to_str().unwrap(),
+                        status
+                    ));
+                }
+            }
+            None => continue,
+        }
+    }
+    Err(anyhow!("No task completed"))
+}
+
+fn start_next_conversion_after_another_completes(
+    running_tasks: &mut Vec<ConversionTask>,
+    signals: &mut Signals,
+    image_path: &Path,
+) -> Result<()> {
+    loop {
+        for signal in signals.wait() {
+            match signal {
+                SIGINT => {
+                    debug!("Got signal SIGINT");
+                    return Err(anyhow!("Interrupted"));
+                }
+                SIGCHLD => {
+                    debug!("Got signal SIGCHLD");
+                    // search for the completed process and start a new one in its place
+                    let task = find_completed_process(running_tasks)?;
+                    let ConversionTask(task_image_path, ref mut child) = task;
+
+                    child.wait().unwrap();
+                    fs::remove_file(task_image_path)?;
+                    let child = start_conversion_process(image_path);
+                    *task = ConversionTask(image_path.to_path_buf(), child);
+                    return Ok(());
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+}
+
+fn wait_for_children(running_tasks: &mut Vec<ConversionTask>) -> Result<()> {
+    let mut result = Ok(());
+
+    for task in running_tasks.iter_mut() {
+        let ConversionTask(task_image_path, child) = task;
+        match child.wait() {
+            Ok(status) => {
+                if status.success() {
+                    fs::remove_file(task_image_path)?;
+                } else {
+                    result = Err(anyhow!(
+                        "Conversion failed for {} because: {}",
+                        task_image_path.to_str().unwrap(),
+                        status
+                    ));
+                    break;
+                }
+            }
+            Err(error) => {
+                result = Err(anyhow!("Some error occured: {}", error));
+                break;
+            }
+        }
+    }
+    kill_all_children(running_tasks);
+    result
+}
+
+fn kill_all_children(running_tasks: &mut Vec<ConversionTask>) {
+    for ConversionTask(_, ref mut child) in running_tasks {
+        let _ = child.kill();
+        child.wait().unwrap();
+    }
+}
+
+fn convert_images(work_unit: &WorkUnit, process_count: usize) -> Result<()> {
     let cbz_path = &work_unit.cbz_path;
     trace!("Called convert_images with {:?}", cbz_path);
+    debug!("Start converting images for {:?}", cbz_path);
     let extract_dir = extract_dir_from_cbz_path(cbz_path);
-    WalkDir::new(extract_dir)
+    let mut running_tasks = Vec::new();
+
+    // from here on out we catch these signals until this function leaves
+    let mut signals = Signals::new(&[SIGINT, SIGCHLD])?;
+
+    let mut result = Ok(());
+    for entry in WalkDir::new(&extract_dir)
         .into_iter()
         .filter_map(|e| e.ok())
-        .collect::<Vec<_>>()
-        .par_iter()
-        .for_each(|entry| {
-            let entry = entry.path();
-            if !terminate.load(Ordering::Relaxed)
-                && entry.is_file()
-                && entry.extension() == Some(OsStr::new("jpg"))
-            {
-                convert_image(entry).unwrap();
+    {
+        let entry = entry.path();
+        if entry.is_file()
+            && (entry.extension() == Some(OsStr::new("jpg"))
+                || entry.extension() == Some(OsStr::new("jpeg"))
+                || entry.extension() == Some(OsStr::new("png")))
+        {
+            let image_path = entry;
+
+            if running_tasks.len() < process_count {
+                let child = start_conversion_process(image_path);
+                running_tasks.push(ConversionTask(image_path.to_path_buf(), child));
+                continue;
             }
-        })
+
+            result = start_next_conversion_after_another_completes(
+                &mut running_tasks,
+                &mut signals,
+                image_path,
+            );
+            if result.is_err() {
+                break;
+            }
+        }
+    }
+    if result.is_ok() {
+        result = wait_for_children(&mut running_tasks);
+    } else {
+        kill_all_children(&mut running_tasks);
+    }
+    result
 }
 
 fn compress_cbz(work_unit: &WorkUnit) {
@@ -221,9 +282,9 @@ fn compress_cbz(work_unit: &WorkUnit) {
     debug!("Create cbz at {:?}", zip_path);
     let file = fs::File::create(zip_path).unwrap();
 
-    let mut zipper = zip::ZipWriter::new(file);
+    let mut zipper = ZipWriter::new(file);
     let options = SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Stored)
+        .compression_method(CompressionMethod::Stored)
         .unix_permissions(0o755);
 
     let extract_dir = extract_dir_from_cbz_path(cbz_path);
@@ -258,8 +319,6 @@ fn compress_cbz(work_unit: &WorkUnit) {
 
 fn main() -> Result<()> {
     pretty_env_logger::init();
-    let terminate = Arc::new(AtomicBool::new(false));
-    flag::register(SIGINT, terminate.clone())?;
 
     let args: Vec<_> = env::args().collect();
 
@@ -279,12 +338,12 @@ fn main() -> Result<()> {
         Path::new(".")
     };
 
-    for cbz_file in parent_path.read_dir().expect("read dir call failed!") {
-        if terminate.load(Ordering::Relaxed) {
-            break;
-        }
-        trace!("Terminate? {:?}", terminate.load(Ordering::Relaxed));
+    let use_processors = match thread::available_parallelism() {
+        Ok(value) => value.get(),
+        Err(_) => 1,
+    };
 
+    for cbz_file in parent_path.read_dir().expect("read dir call failed!") {
         if let Ok(cbz_file) = cbz_file {
             debug!("Next path: {:?}", cbz_file.path());
             if !cbz_contains_convertable_images(&cbz_file.path()) {
@@ -297,11 +356,17 @@ fn main() -> Result<()> {
             }
 
             info!("Converting {:?}", cbz_file.path());
+
+            // Using work unit struct to do cleanup on drop
             let work_unit = WorkUnit::new(&cbz_file.path());
             extract_cbz(&work_unit);
-            convert_images(&work_unit, &terminate);
-            if !terminate.load(Ordering::Relaxed) {
-                compress_cbz(&work_unit);
+            //if there was any error, we interrupt the whole process without saving
+            match convert_images(&work_unit, use_processors) {
+                Ok(()) => compress_cbz(&work_unit),
+                Err(e) => {
+                    info!("{}", e);
+                    break;
+                }
             }
         }
     }
