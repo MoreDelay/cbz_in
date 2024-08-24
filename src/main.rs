@@ -1,4 +1,3 @@
-use std::env;
 use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{BufReader, Read, Write};
@@ -7,6 +6,7 @@ use std::process::{exit, Child, Command, ExitStatus, Stdio};
 use std::thread;
 
 use anyhow::{anyhow, Result};
+use clap::Parser;
 use log::{debug, error, info, trace};
 use signal_hook::{
     consts::{SIGCHLD, SIGINT},
@@ -334,26 +334,24 @@ fn compress_cbz(work_unit: &WorkUnit) {
     zipper.finish().unwrap();
 }
 
+#[derive(Parser)]
+#[command(version, long_about=None)]
+struct Args {
+    #[arg(value_parser = ["avif", "jxl"], required = true)]
+    format: String,
+    #[arg(required = true, default_value = ".")]
+    path: PathBuf,
+}
+
 fn main() -> Result<()> {
     pretty_env_logger::init();
 
-    let args: Vec<_> = env::args().collect();
-
-    let parent_path = if args.len() > 1 {
-        let path_str = &args[1];
-        let path = Path::new(path_str);
-        if !path.exists() {
-            error!("Path does not exist: {:?}", path);
-            exit(1);
-        }
-        if !path.is_dir() {
-            error!("Path is not a directory: {:?}", path);
-            exit(1);
-        }
-        path
-    } else {
-        Path::new(".")
-    };
+    let matches = Args::parse();
+    let parent_path = matches.path;
+    if !parent_path.is_dir() {
+        error!("Path is not a directory: {:?}", parent_path);
+        exit(1);
+    }
 
     let use_processors = match thread::available_parallelism() {
         Ok(value) => value.get(),
