@@ -7,7 +7,7 @@ use std::thread;
 
 use anyhow::{anyhow, Result};
 use clap::Parser;
-use log::{debug, error, info, trace};
+use log::{debug, error, trace};
 use signal_hook::{
     consts::{SIGCHLD, SIGINT},
     iterator::Signals,
@@ -47,7 +47,7 @@ fn extract_dir_from_cbz_path(path: &Path) -> PathBuf {
     extract_dir
 }
 
-fn cbz_contains_convertable_images(path: &Path) -> bool {
+fn cbz_contains_convertable_images(path: &Path, _format: ImageFormats) -> bool {
     trace!("Called cbz_contains_convertable_images()");
 
     if let None = path.extension() {
@@ -79,11 +79,22 @@ fn cbz_contains_convertable_images(path: &Path) -> bool {
     false
 }
 
-fn already_converted(path: &PathBuf) -> bool {
+fn already_converted(path: &PathBuf, format: ImageFormats) -> bool {
+    let conversion_ending = match format {
+        ImageFormats::Avif => ".avif.cbz",
+        ImageFormats::Jxl => ".jxl.cbz",
+    };
+
     let dir = path.parent().unwrap();
     let name = path.file_stem().unwrap();
-    let zip_path = dir.join(format!("{}.avif.cbz", name.to_str().unwrap()));
-    zip_path.exists()
+    let zip_path = dir.join(format!("{}{conversion_ending}", name.to_str().unwrap()));
+
+    let is_converted_archive = path.to_str().unwrap().ends_with(conversion_ending);
+    let has_converted_archive = zip_path.exists();
+
+    trace!(" is converted archive? {is_converted_archive}");
+    trace!("has converted archive? {has_converted_archive}");
+    is_converted_archive || has_converted_archive
 }
 
 fn has_root_within_archive(cbz_path: &PathBuf) -> bool {
@@ -373,16 +384,16 @@ fn convert_single_cbz(
     use_processors: usize,
 ) -> Result<()> {
     trace!("Called convert_single_cbz() with {:?}", cbz_file);
-    if !cbz_contains_convertable_images(&cbz_file) {
-        info!("Nothing to do for {:?}", cbz_file);
+    if already_converted(&cbz_file, format) {
+        println!("Conversion already done for {:?}", cbz_file);
         return Ok(());
     }
-    if already_converted(&cbz_file) {
-        info!("Conversion already exists");
+    if !cbz_contains_convertable_images(&cbz_file, format) {
+        println!("Nothing to do for {:?}", cbz_file);
         return Ok(());
     }
 
-    info!("Converting {:?}", cbz_file);
+    println!("Converting {:?}", cbz_file);
 
     // Using work unit struct to do cleanup on drop
     let work_unit = WorkUnit::new(&cbz_file, format);
@@ -390,6 +401,7 @@ fn convert_single_cbz(
     //if there was any error, we interrupt the whole process without saving
     convert_images(&work_unit, use_processors)?;
     compress_cbz(&work_unit);
+    println!("Done");
     Ok(())
 }
 
@@ -409,7 +421,6 @@ struct Args {
     format: ImageFormats,
 
     #[arg(
-        required = true,
         default_value = ".",
         help = "Path to a cbz file or a directory containing cbz files"
     )]
