@@ -18,6 +18,8 @@ use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 
 #[derive(Error, Debug)]
 enum ConversionError {
+    #[error("not an archive")]
+    NotArchive,
     #[error("nothing to do for '{0}'")]
     NothingToDo(PathBuf),
     #[error("could not listen to signals")]
@@ -248,7 +250,7 @@ impl WorkUnit {
     }
 
     fn run(mut self) -> Result<(), ConversionError> {
-        debug!("Start tasks for {:?}", self.cbz_path);
+        debug!("Start conversion for {:?}", self.cbz_path);
         if self.job_queue.is_empty() {
             return Err(ConversionError::NothingToDo(self.cbz_path.clone()));
         }
@@ -278,7 +280,7 @@ impl WorkUnit {
         }
 
         // add new jobs as other jobs complete
-        while self.running() {
+        while self.jobs_pending() {
             for signal in signals.wait() {
                 match signal {
                     SIGINT => {
@@ -334,7 +336,7 @@ impl WorkUnit {
         Ok(())
     }
 
-    fn running(&self) -> bool {
+    fn jobs_pending(&self) -> bool {
         let all_done = self
             .jobs_in_process
             .iter()
@@ -350,6 +352,50 @@ impl WorkUnit {
                 }
             });
         !all_done
+    }
+}
+
+impl std::fmt::Debug for ConversionJob {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConversionJob::ToAvif(job) => f
+                .debug_struct("ToAvif")
+                .field("image_path", &job.image_path.to_string_lossy())
+                .field("status", &job.status)
+                .finish(),
+            ConversionJob::ToJxl(job) => f
+                .debug_struct("ToJxl")
+                .field("image_path", &job.image_path.to_string_lossy())
+                .field("status", &job.status)
+                .finish(),
+        }
+    }
+}
+
+impl Drop for ConversionJob {
+    fn drop(&mut self) {
+        trace!("Drop {self:?}");
+        let child = match self {
+            ConversionJob::ToAvif(job) => &mut job.child.take(),
+            ConversionJob::ToJxl(job) => &mut job.child.take(),
+        };
+        let child: &mut Child = match child {
+            Some(ref mut child) => child,
+            None => return,
+        };
+
+        let _ = child.kill();
+        let _ = child.wait(); // is this necessary?
+    }
+}
+
+impl Drop for WorkUnit {
+    fn drop(&mut self) {
+        debug!("Cleanup for {:?}", self.cbz_path);
+        let extract_dir = extract_dir_from_cbz_path(&self.cbz_path);
+        if extract_dir.exists() {
+            fs::remove_dir_all(extract_dir.clone()).unwrap();
+        }
     }
 }
 
@@ -381,50 +427,6 @@ fn images_in_archive(cbz_path: &Path) -> Result<Vec<(PathBuf, ImageFormat)>> {
         }
     }
     Ok(result)
-}
-
-impl std::fmt::Debug for ConversionJob {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ConversionJob::ToAvif(s) => f
-                .debug_struct("ToAvif")
-                .field("image_path", &s.image_path.to_string_lossy())
-                .field("status", &s.status)
-                .finish(),
-            ConversionJob::ToJxl(s) => f
-                .debug_struct("ToJxl")
-                .field("image_path", &s.image_path.to_string_lossy())
-                .field("status", &s.status)
-                .finish(),
-        }
-    }
-}
-
-impl Drop for ConversionJob {
-    fn drop(&mut self) {
-        trace!("Drop {self:?}");
-        let child = match self {
-            ConversionJob::ToAvif(job) => &mut job.child.take(),
-            ConversionJob::ToJxl(job) => &mut job.child.take(),
-        };
-        let child: &mut Child = match child {
-            Some(ref mut child) => child,
-            None => return,
-        };
-
-        let _ = child.kill();
-        let _ = child.wait(); // is this necessary?
-    }
-}
-
-impl Drop for WorkUnit {
-    fn drop(&mut self) {
-        debug!("Cleanup for {:?}", self.cbz_path);
-        let extract_dir = extract_dir_from_cbz_path(&self.cbz_path);
-        if extract_dir.exists() {
-            fs::remove_dir_all(extract_dir.clone()).unwrap();
-        }
-    }
 }
 
 fn extract_dir_from_cbz_path(path: &Path) -> PathBuf {
@@ -535,16 +537,26 @@ fn compress_cbz(cbz_path: &PathBuf, target_format: ImageFormat) {
     zipper.finish().unwrap();
 }
 
-fn convert_single_cbz(cbz_file: PathBuf, format: ImageFormat, use_processors: usize) -> Result<()> {
+fn convert_single_cbz(
+    cbz_file: &PathBuf,
+    format: ImageFormat,
+    workers: usize,
+) -> Result<(), ConversionError> {
     trace!("Called convert_single_cbz() with {:?}", cbz_file);
     if already_converted(&cbz_file, format) {
         println!("Conversion already done for {:?}", cbz_file);
         return Ok(());
     }
 
-    println!("Converting {:?}", cbz_file);
+    let work_unit = match WorkUnit::new(cbz_file.clone(), format, workers) {
+        Ok(work_unit) => work_unit,
+        Err(_) => {
+            return Err(ConversionError::NotArchive);
+        }
+    };
 
-    match WorkUnit::new(cbz_file, format, use_processors)?.run() {
+    println!("Converting {:?}", cbz_file);
+    match work_unit.run() {
         Ok(_) => println!("Done"),
         Err(ConversionError::NothingToDo(_)) => println!("Nothing to do"),
         Err(e) => return Err(e.into()),
@@ -599,15 +611,18 @@ fn main() -> Result<()> {
             if let Ok(cbz_file) = cbz_file {
                 let cbz_file = cbz_file.path();
                 debug!("Next path: {:?}", cbz_file);
-                if let Err(e) = convert_single_cbz(cbz_file, format, workers) {
-                    error!("{e}");
-                    break;
+                if let Err(e) = convert_single_cbz(&cbz_file, format, workers) {
+                    debug!("{e:?}");
                 }
             }
         }
     } else {
-        if let Err(e) = convert_single_cbz(path, format, workers) {
-            error!("{e}");
+        if let Err(e) = convert_single_cbz(&path, format, workers) {
+            match e {
+                ConversionError::NothingToDo(_) => println!("Nothing to do for {path:?}"),
+                ConversionError::NotArchive => println!("This is not a Zip archive"),
+                _ => error!("{e:?}"),
+            }
         }
     }
     Ok(())
