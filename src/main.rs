@@ -7,7 +7,7 @@ use std::thread;
 
 use anyhow::{bail, Result};
 use clap::Parser;
-use log::{debug, error, trace};
+use log::{debug, error, trace, warn};
 use signal_hook::{
     consts::{SIGCHLD, SIGINT},
     iterator::Signals,
@@ -18,8 +18,8 @@ use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 
 #[derive(Error, Debug)]
 enum ConversionError {
-    #[error("not an archive")]
-    NotArchive,
+    #[error("not an archive '{0}'")]
+    NonAnArchive(PathBuf),
     #[error("nothing to do for '{0}'")]
     NothingToDo(PathBuf),
     #[error("could not listen to signals")]
@@ -399,14 +399,17 @@ impl Drop for WorkUnit {
     }
 }
 
-fn images_in_archive(cbz_path: &Path) -> Result<Vec<(PathBuf, ImageFormat)>> {
+fn images_in_archive(cbz_path: &Path) -> Result<Vec<(PathBuf, ImageFormat)>, ConversionError> {
     trace!("Called cbz_contains_convertable_images()");
 
     if let None = cbz_path.extension() {
-        bail!("No extension");
+        return Err(ConversionError::NonAnArchive(cbz_path.to_path_buf()));
     }
-    if cbz_path.extension().map_or(false, |e| e != "cbz") {
-        bail!("Wrong extension");
+    if cbz_path
+        .extension()
+        .map_or(false, |e| e != "cbz" && e != "zip")
+    {
+        return Err(ConversionError::NonAnArchive(cbz_path.to_path_buf()));
     }
 
     let file = File::open(cbz_path).unwrap();
@@ -551,7 +554,7 @@ fn convert_single_cbz(
     let work_unit = match WorkUnit::new(cbz_file.clone(), format, workers) {
         Ok(work_unit) => work_unit,
         Err(_) => {
-            return Err(ConversionError::NotArchive);
+            return Err(ConversionError::NonAnArchive(cbz_file.clone()));
         }
     };
 
@@ -612,7 +615,7 @@ fn main() -> Result<()> {
                 let cbz_file = cbz_file.path();
                 debug!("Next path: {:?}", cbz_file);
                 if let Err(e) = convert_single_cbz(&cbz_file, format, workers) {
-                    debug!("{e:?}");
+                    warn!("{e}");
                 }
             }
         }
@@ -620,8 +623,8 @@ fn main() -> Result<()> {
         if let Err(e) = convert_single_cbz(&path, format, workers) {
             match e {
                 ConversionError::NothingToDo(_) => println!("Nothing to do for {path:?}"),
-                ConversionError::NotArchive => println!("This is not a Zip archive"),
-                _ => error!("{e:?}"),
+                ConversionError::NonAnArchive(_) => println!("This is not a Zip archive"),
+                _ => error!("{e}"),
             }
         }
     }
