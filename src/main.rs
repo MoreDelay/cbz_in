@@ -34,6 +34,8 @@ enum ConversionError {
     SpawnFailure(String),
     #[error("unspecified error for '{0}'")]
     Unspecific(String),
+    #[error("conversion not supported from {0:?} to {1:?}")]
+    NotSupported(ImageFormat, ImageFormat),
 }
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug, Default)]
@@ -70,23 +72,32 @@ struct WorkUnit {
 }
 
 impl ConversionJob {
-    fn new(image_path: PathBuf, from: ImageFormat, to: ImageFormat) -> Result<ConversionJob> {
-        match (from, to) {
-            (ImageFormat::Jpeg | ImageFormat::Png, ImageFormat::Avif) => (),
-            (ImageFormat::Jpeg | ImageFormat::Png, ImageFormat::Jxl) => (),
-            (ImageFormat::Jpeg, ImageFormat::Jpeg) => todo!(),
-            (ImageFormat::Jpeg, ImageFormat::Png) => todo!(),
-            (ImageFormat::Png, ImageFormat::Jpeg) => todo!(),
-            (ImageFormat::Png, ImageFormat::Png) => todo!(),
-            (ImageFormat::Avif, ImageFormat::Jpeg) => todo!(),
-            (ImageFormat::Avif, ImageFormat::Png) => todo!(),
-            (ImageFormat::Avif, ImageFormat::Avif) => todo!(),
-            (ImageFormat::Avif, ImageFormat::Jxl) => todo!(),
-            (ImageFormat::Jxl, ImageFormat::Jpeg) => todo!(),
-            (ImageFormat::Jxl, ImageFormat::Png) => todo!(),
-            (ImageFormat::Jxl, ImageFormat::Avif) => todo!(),
-            (ImageFormat::Jxl, ImageFormat::Jxl) => todo!(),
+    fn new(
+        image_path: PathBuf,
+        from: ImageFormat,
+        to: ImageFormat,
+    ) -> Result<ConversionJob, ConversionError> {
+        let result = match (from, to) {
+            (ImageFormat::Jpeg | ImageFormat::Png, ImageFormat::Avif) => Ok(()),
+            (ImageFormat::Jpeg | ImageFormat::Png, ImageFormat::Jxl) => Ok(()),
+            (ImageFormat::Jpeg, ImageFormat::Jpeg) => Err(ConversionError::NotSupported(from, to)),
+            (ImageFormat::Jpeg, ImageFormat::Png) => Err(ConversionError::NotSupported(from, to)),
+            (ImageFormat::Png, ImageFormat::Jpeg) => Err(ConversionError::NotSupported(from, to)),
+            (ImageFormat::Png, ImageFormat::Png) => Err(ConversionError::NotSupported(from, to)),
+            (ImageFormat::Avif, ImageFormat::Jpeg) => Err(ConversionError::NotSupported(from, to)),
+            (ImageFormat::Avif, ImageFormat::Png) => Err(ConversionError::NotSupported(from, to)),
+            (ImageFormat::Avif, ImageFormat::Avif) => Err(ConversionError::NotSupported(from, to)),
+            (ImageFormat::Avif, ImageFormat::Jxl) => Err(ConversionError::NotSupported(from, to)),
+            (ImageFormat::Jxl, ImageFormat::Jpeg) => Err(ConversionError::NotSupported(from, to)),
+            (ImageFormat::Jxl, ImageFormat::Png) => Err(ConversionError::NotSupported(from, to)),
+            (ImageFormat::Jxl, ImageFormat::Avif) => Err(ConversionError::NotSupported(from, to)),
+            (ImageFormat::Jxl, ImageFormat::Jxl) => Err(ConversionError::NotSupported(from, to)),
+        };
+        if let Err(e) = result {
+            warn!("{e}");
+            return Err(e);
         }
+
         Ok(ConversionJob {
             status: JobStatus::Init,
             image_path,
