@@ -9,8 +9,8 @@ description = "Convert images within comic archives to newer image formats"
 [dependencies]
 anyhow = "1.0.86"
 clap = { version = "4.5.16", features = ["derive"] }
+env_logger = "0.11.5"
 log = "0.4.22"
-pretty_env_logger = "0.5.0"
 signal-hook = "0.3.17"
 thiserror = "1.0.63"
 walkdir = "2.5.0"

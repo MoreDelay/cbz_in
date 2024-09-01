@@ -1,13 +1,13 @@
 use std::collections::VecDeque;
 use std::fs::{self, File};
 use std::io::{BufReader, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{exit, Child, Command, Stdio};
 use std::thread;
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use clap::Parser;
-use log::{debug, error, trace, warn};
+use log::{debug, error, info, trace, warn};
 use signal_hook::{
     consts::{SIGCHLD, SIGINT},
     iterator::Signals,
@@ -19,9 +19,11 @@ use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 #[derive(Error, Debug)]
 enum ConversionError {
     #[error("not an archive '{0}'")]
-    NonAnArchive(PathBuf),
+    NotAnArchive(PathBuf),
     #[error("nothing to do for '{0}'")]
     NothingToDo(PathBuf),
+    #[error("Conversion already done for '{0}'")]
+    AlreadyDone(PathBuf),
     #[error("could not listen to signals")]
     SignalsError,
     #[error("got interrupted")]
@@ -46,32 +48,17 @@ enum ImageFormat {
 #[derive(Default, Clone, Copy, Debug)]
 enum JobStatus {
     Init,
-    WaitOnProcess,
+    Converting,
     #[default]
     Done,
 }
 
-#[derive(Default)]
-struct ToAvif {
+struct ConversionJob {
     status: JobStatus,
     image_path: PathBuf,
-    #[allow(dead_code)]
-    format: ImageFormat,
+    current: ImageFormat,
+    target: ImageFormat,
     child: Option<Child>,
-}
-
-#[derive(Default)]
-struct ToJxl {
-    status: JobStatus,
-    image_path: PathBuf,
-    #[allow(dead_code)]
-    format: ImageFormat,
-    child: Option<Child>,
-}
-
-enum ConversionJob {
-    ToAvif(ToAvif),
-    ToJxl(ToJxl),
 }
 
 struct WorkUnit {
@@ -84,40 +71,41 @@ struct WorkUnit {
 
 impl ConversionJob {
     fn new(image_path: PathBuf, from: ImageFormat, to: ImageFormat) -> Result<ConversionJob> {
-        let job = match to {
-            ImageFormat::Avif => ConversionJob::ToAvif(ToAvif {
-                status: JobStatus::Init,
-                image_path,
-                format: from,
-                child: None,
-            }),
-            ImageFormat::Jxl => ConversionJob::ToJxl(ToJxl {
-                status: JobStatus::Init,
-                image_path,
-                format: from,
-                child: None,
-            }),
-            _ => bail!("conversion from {from:?} to {to:?} not supported"),
-        };
-        Ok(job)
+        match (from, to) {
+            (ImageFormat::Jpeg | ImageFormat::Png, ImageFormat::Avif) => (),
+            (ImageFormat::Jpeg | ImageFormat::Png, ImageFormat::Jxl) => (),
+            (ImageFormat::Jpeg, ImageFormat::Jpeg) => todo!(),
+            (ImageFormat::Jpeg, ImageFormat::Png) => todo!(),
+            (ImageFormat::Png, ImageFormat::Jpeg) => todo!(),
+            (ImageFormat::Png, ImageFormat::Png) => todo!(),
+            (ImageFormat::Avif, ImageFormat::Jpeg) => todo!(),
+            (ImageFormat::Avif, ImageFormat::Png) => todo!(),
+            (ImageFormat::Avif, ImageFormat::Avif) => todo!(),
+            (ImageFormat::Avif, ImageFormat::Jxl) => todo!(),
+            (ImageFormat::Jxl, ImageFormat::Jpeg) => todo!(),
+            (ImageFormat::Jxl, ImageFormat::Png) => todo!(),
+            (ImageFormat::Jxl, ImageFormat::Avif) => todo!(),
+            (ImageFormat::Jxl, ImageFormat::Jxl) => todo!(),
+        }
+        Ok(ConversionJob {
+            status: JobStatus::Init,
+            image_path,
+            current: from,
+            target: to,
+            child: None,
+        })
     }
 
-    fn start_conversion_process(
-        &mut self,
-        root_dir: &PathBuf,
-    ) -> Result<JobStatus, ConversionError> {
-        match self {
-            ConversionJob::ToAvif(job) => {
-                let image_path = root_dir.join(&job.image_path);
-                debug!("New process working on {:?}", image_path);
-
-                let output_path = image_path.with_extension("avif");
+    fn start_conversion_process(&mut self) -> Result<JobStatus, ConversionError> {
+        let next_status = match (self.current, self.target) {
+            (ImageFormat::Jpeg | ImageFormat::Png, ImageFormat::Avif) => {
+                let output_path = self.image_path.with_extension("avif");
                 let mut command = Command::new("cavif");
                 command.args([
                     "--speed=3",
                     "--threads=1",
                     "--quality=88",
-                    image_path.to_str().unwrap(),
+                    self.image_path.to_str().unwrap(),
                     "-o",
                     output_path.to_str().unwrap(),
                 ]);
@@ -126,21 +114,18 @@ impl ConversionJob {
                     .stderr(Stdio::piped())
                     .spawn()
                     .map_err(|_| ConversionError::SpawnFailure("cavif".to_string()))?;
-                job.child = Some(spawned);
-                job.status = JobStatus::WaitOnProcess;
-                Ok(job.status)
+                self.child = Some(spawned);
+                self.status = JobStatus::Converting;
+                self.status
             }
-            ConversionJob::ToJxl(job) => {
-                let image_path = root_dir.join(&job.image_path);
-                debug!("New process working on {:?}", image_path);
-
-                let output_path = image_path.with_extension("jxl");
+            (ImageFormat::Jpeg | ImageFormat::Png, ImageFormat::Jxl) => {
+                let output_path = self.image_path.with_extension("jxl");
                 let mut command = Command::new("cjxl");
                 command.args([
                     "--effort=9",
                     "--num_threads=1",
                     "--distance=0",
-                    image_path.to_str().unwrap(),
+                    self.image_path.to_str().unwrap(),
                     output_path.to_str().unwrap(),
                 ]);
                 let spawned = command
@@ -148,97 +133,114 @@ impl ConversionJob {
                     .stderr(Stdio::piped())
                     .spawn()
                     .map_err(|_| ConversionError::SpawnFailure("cjxl".to_string()))?;
-                job.child = Some(spawned);
-                job.status = JobStatus::WaitOnProcess;
-                Ok(job.status)
+                self.child = Some(spawned);
+                self.status = JobStatus::Converting;
+                self.status
             }
-        }
+            (ImageFormat::Jpeg, ImageFormat::Jpeg) => todo!(),
+            (ImageFormat::Jpeg, ImageFormat::Png) => todo!(),
+            (ImageFormat::Png, ImageFormat::Jpeg) => todo!(),
+            (ImageFormat::Png, ImageFormat::Png) => todo!(),
+            (ImageFormat::Avif, ImageFormat::Jpeg) => todo!(),
+            (ImageFormat::Avif, ImageFormat::Png) => todo!(),
+            (ImageFormat::Avif, ImageFormat::Avif) => todo!(),
+            (ImageFormat::Avif, ImageFormat::Jxl) => todo!(),
+            (ImageFormat::Jxl, ImageFormat::Jpeg) => todo!(),
+            (ImageFormat::Jxl, ImageFormat::Png) => todo!(),
+            (ImageFormat::Jxl, ImageFormat::Avif) => todo!(),
+            (ImageFormat::Jxl, ImageFormat::Jxl) => todo!(),
+        };
+        Ok(next_status)
     }
 
     // wait on child process and delete original image file
-    fn finish_up(&mut self, root_dir: &PathBuf) -> Result<JobStatus, ConversionError> {
-        let (status, image_path, child) = match self {
-            ConversionJob::ToAvif(job) => (
-                &mut job.status,
-                job.image_path.clone(),
-                &mut job.child.take().unwrap(),
-            ),
-            ConversionJob::ToJxl(job) => (
-                &mut job.status,
-                job.image_path.clone(),
-                &mut job.child.take().unwrap(),
-            ),
+    fn finish_up(&mut self) -> Result<JobStatus, ConversionError> {
+        let child: &mut Child = match &mut self.child {
+            Some(child) => child,
+            None => unreachable!(),
         };
-        debug!("finish up {image_path:?}");
-        let full_image_path = root_dir.join(&image_path);
-
         match child.wait() {
             Ok(status) if !status.success() => {
-                return Err(ConversionError::AbnormalExit(image_path))
+                return Err(ConversionError::AbnormalExit(self.image_path.clone()))
             }
             Ok(_) => (),
             Err(_) => return Err(ConversionError::Unspecific("error during wait".to_string())),
         }
-        *status = JobStatus::Done;
 
-        match fs::remove_file(full_image_path.clone()) {
-            Ok(_) => Ok(status.clone()),
+        self.status = JobStatus::Done;
+        match fs::remove_file(self.image_path.clone()) {
+            Ok(_) => Ok(self.status),
             Err(_) => Err(ConversionError::Unspecific(format!(
-                "Could not delete '{full_image_path:?}'"
+                "Could not delete '{:?}'",
+                self.image_path
             ))),
         }
     }
 
-    fn proceed(&mut self, root_dir: &PathBuf) -> Result<JobStatus, ConversionError> {
-        let status = match self {
-            ConversionJob::ToAvif(job) => job.status,
-            ConversionJob::ToJxl(job) => job.status,
-        };
-        match status {
-            JobStatus::Init => self.start_conversion_process(root_dir),
-            JobStatus::WaitOnProcess => self.finish_up(root_dir),
+    fn proceed(&mut self) -> Result<JobStatus, ConversionError> {
+        debug!("proceed with {self:?}");
+        let result = match self.status {
+            JobStatus::Init => self.start_conversion_process(),
+            JobStatus::Converting => self.finish_up(),
             JobStatus::Done => Ok(JobStatus::Done),
-        }
+        };
+        debug!("after proceed {self:?}");
+        result
     }
 
     fn can_proceed(&mut self) -> Result<bool, ConversionError> {
-        trace!("Called can_proceed() on {self:?}");
-        let (status, image_path, child) = match self {
-            ConversionJob::ToAvif(job) => (job.status, job.image_path.clone(), &mut job.child),
-            ConversionJob::ToJxl(job) => (job.status, job.image_path.clone(), &mut job.child),
-        };
-        let image_path = image_path.to_owned();
-
-        let child = match child {
-            Some(child) => child,
-            None => return Ok(false),
-        };
-        match status {
+        match self.status {
             JobStatus::Init => unreachable!(),
-            JobStatus::WaitOnProcess => (),
+            JobStatus::Converting => (),
             JobStatus::Done => return Ok(false),
         }
-
+        let child: &mut Child = match &mut self.child {
+            Some(child) => child,
+            None => unreachable!(),
+        };
         match child.try_wait() {
-            Ok(Some(status)) if status.success() => return Ok(true),
-            Ok(_) => return Ok(false),
+            Ok(Some(status)) if status.success() => {
+                trace!("ready");
+                return Ok(true);
+            }
+            Ok(_) => {
+                trace!("not ready");
+                return Ok(false);
+            }
             Err(_) => {
+                trace!("error");
                 return Err(ConversionError::Unspecific(
-                    image_path.to_string_lossy().to_string(),
-                ))
+                    self.image_path.to_string_lossy().to_string(),
+                ));
             }
         }
     }
 }
 
 impl WorkUnit {
-    fn new(cbz_path: PathBuf, target_format: ImageFormat, workers: usize) -> Result<WorkUnit> {
+    fn new(
+        cbz_path: PathBuf,
+        target_format: ImageFormat,
+        workers: usize,
+    ) -> Result<WorkUnit, ConversionError> {
+        trace!("called WorkUnit::new()");
+        let not_correct_extention = cbz_path
+            .extension()
+            .map_or(true, |e| e != "cbz" && e != "zip");
+        if not_correct_extention {
+            return Err(ConversionError::NotAnArchive(cbz_path.to_path_buf()));
+        }
+
+        let root_dir = get_extraction_root_dir(&cbz_path);
         let job_queue = images_in_archive(&cbz_path)?
             .iter()
             .filter_map(|(image_path, format)| {
-                ConversionJob::new(image_path.clone(), *format, target_format).ok()
+                ConversionJob::new(root_dir.join(image_path), *format, target_format).ok()
             })
-            .collect();
+            .collect::<VecDeque<_>>();
+        if job_queue.is_empty() {
+            return Err(ConversionError::NothingToDo(cbz_path));
+        }
 
         Ok(WorkUnit {
             cbz_path,
@@ -249,29 +251,90 @@ impl WorkUnit {
         })
     }
 
-    fn run(mut self) -> Result<(), ConversionError> {
-        debug!("Start conversion for {:?}", self.cbz_path);
-        if self.job_queue.is_empty() {
-            return Err(ConversionError::NothingToDo(self.cbz_path.clone()));
+    fn extract_cbz(&mut self) {
+        trace!("called extract_cbz() with {:?}", self.cbz_path);
+        assert!(self.cbz_path.is_file());
+
+        let extract_dir = get_extraction_root_dir(&self.cbz_path);
+
+        let file = File::open(&self.cbz_path).unwrap();
+        let reader = BufReader::new(file);
+        let mut archive = ZipArchive::new(reader).unwrap();
+
+        debug!("extracting {:?} to {:?}", self.cbz_path, extract_dir);
+        fs::create_dir_all(extract_dir.clone()).unwrap();
+        archive.extract(extract_dir.clone()).unwrap();
+    }
+
+    fn compress_cbz(&mut self) {
+        trace!("called compress_cbz() with {:?}", self.cbz_path);
+
+        let dir = self.cbz_path.parent().unwrap();
+        let name = self.cbz_path.file_stem().unwrap();
+        let zip_path = match self.target_format {
+            ImageFormat::Avif => dir.join(format!("{}.avif.cbz", name.to_str().unwrap())),
+            ImageFormat::Jxl => dir.join(format!("{}.jxl.cbz", name.to_str().unwrap())),
+            ImageFormat::Jpeg => todo!(),
+            ImageFormat::Png => todo!(),
+        };
+        debug!("create cbz at {:?}", zip_path);
+        let file = File::create(zip_path).unwrap();
+
+        let mut zipper = ZipWriter::new(file);
+        let options = SimpleFileOptions::default()
+            .compression_method(CompressionMethod::Stored)
+            .unix_permissions(0o755);
+
+        let extract_dir = get_conversion_root_dir(&self.cbz_path);
+        let mut buffer = Vec::new();
+        for entry in WalkDir::new(&extract_dir)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            let entry = entry.path();
+            debug!("add to archive: {:?}", entry);
+            let file_name = entry.strip_prefix(&extract_dir.parent().unwrap()).unwrap();
+            let path_string = file_name
+                .to_str()
+                .to_owned()
+                .expect("Path is not UTF-8 conformant");
+
+            if entry.is_file() {
+                zipper.start_file(path_string, options).unwrap();
+                File::open(entry).unwrap().read_to_end(&mut buffer).unwrap();
+                zipper.write_all(&buffer).unwrap();
+                buffer.clear();
+            } else if !file_name.as_os_str().is_empty() {
+                zipper.add_directory(path_string, options).unwrap();
+            }
         }
 
-        let extract_dir = extract_cbz(&self.cbz_path);
+        zipper.finish().unwrap();
+    }
 
+    fn run(mut self) -> Result<(), ConversionError> {
+        debug!("start conversion for {:?}", self.cbz_path);
+
+        assert!(!self.job_queue.is_empty());
+        self.extract_cbz();
+
+        // these signals will be catched from here on out until the end of this function
         let mut signals = match Signals::new(&[SIGINT, SIGCHLD]) {
             Ok(signals) => signals,
             Err(_) => return Err(ConversionError::SignalsError),
         };
 
         // start out as many jobs as allowed
+        trace!("start initial jobs");
         while self.jobs_in_process.len() < self.workers {
             let mut job = match self.job_queue.pop_front() {
                 Some(job) => job,
                 None => break,
             };
 
-            let status = job.proceed(&extract_dir)?;
+            let status = job.proceed()?;
             match status {
-                JobStatus::WaitOnProcess => {
+                JobStatus::Converting => {
                     self.jobs_in_process.push(job);
                 }
                 JobStatus::Done => (),
@@ -280,18 +343,19 @@ impl WorkUnit {
         }
 
         // add new jobs as other jobs complete
+        trace!("start new jobs as old ones complete");
         while self.jobs_pending() {
             for signal in signals.wait() {
                 match signal {
                     SIGINT => {
-                        debug!("Got signal SIGINT");
+                        debug!("got signal SIGINT");
                         return Err(ConversionError::Interrupt);
                     }
                     SIGCHLD => {
-                        debug!("Got signal SIGCHLD");
-                        self.proceed_jobs(&extract_dir)?;
+                        debug!("got signal SIGCHLD");
+                        self.proceed_jobs()?;
                         if !self.job_queue.is_empty() {
-                            self.start_next_jobs(&extract_dir)?;
+                            self.start_next_jobs()?;
                         }
                     }
                     _ => unreachable!(),
@@ -299,38 +363,33 @@ impl WorkUnit {
             }
         }
 
-        compress_cbz(&self.cbz_path, self.target_format);
+        self.compress_cbz();
         Ok(())
     }
 
-    fn proceed_jobs(&mut self, root_dir: &PathBuf) -> Result<(), ConversionError> {
+    fn proceed_jobs(&mut self) -> Result<(), ConversionError> {
         trace!("proceed all ready jobs");
         for job in self.jobs_in_process.iter_mut() {
             trace!("job in process: {job:?}");
             if job.can_proceed()? {
-                debug!("proceed with {job:?}");
-                match job.proceed(root_dir)? {
+                match job.proceed()? {
                     JobStatus::Done => (),
-                    JobStatus::Init | JobStatus::WaitOnProcess => unreachable!(),
+                    JobStatus::Init | JobStatus::Converting => unreachable!(),
                 }
             }
         }
         Ok(())
     }
 
-    fn start_next_jobs(&mut self, extract_dir: &PathBuf) -> Result<(), ConversionError> {
+    fn start_next_jobs(&mut self) -> Result<(), ConversionError> {
         trace!("start new jobs");
         for job in self.jobs_in_process.iter_mut() {
             trace!("job in process: {job:?}");
-            let status = match job {
-                ConversionJob::ToAvif(job) => job.status,
-                ConversionJob::ToJxl(job) => job.status,
-            };
-            if let JobStatus::Done = status {
+            if let JobStatus::Done = job.status {
                 let mut new_job = self.job_queue.pop_front().unwrap();
-                debug!("replace job {job:?} for {new_job:?}");
+                trace!("replace job {job:?} for {new_job:?}");
                 std::mem::swap(job, &mut new_job);
-                job.proceed(extract_dir)?;
+                job.proceed()?;
             }
         }
         Ok(())
@@ -340,10 +399,7 @@ impl WorkUnit {
         let all_done = self
             .jobs_in_process
             .iter()
-            .map(|job| match job {
-                ConversionJob::ToAvif(job) => job.status,
-                ConversionJob::ToJxl(job) => job.status,
-            })
+            .map(|job| job.status)
             .all(|status| {
                 if let JobStatus::Done = status {
                     true
@@ -357,33 +413,24 @@ impl WorkUnit {
 
 impl std::fmt::Debug for ConversionJob {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ConversionJob::ToAvif(job) => f
-                .debug_struct("ToAvif")
-                .field("image_path", &job.image_path.to_string_lossy())
-                .field("status", &job.status)
-                .finish(),
-            ConversionJob::ToJxl(job) => f
-                .debug_struct("ToJxl")
-                .field("image_path", &job.image_path.to_string_lossy())
-                .field("status", &job.status)
-                .finish(),
-        }
+        f.debug_struct("ConversionJob")
+            .field("status", &self.status)
+            .field("from", &self.current)
+            .field("to", &self.target)
+            .field("image_path", &self.image_path.to_string_lossy())
+            .finish()
     }
 }
 
 impl Drop for ConversionJob {
     fn drop(&mut self) {
-        trace!("Drop {self:?}");
-        let child = match self {
-            ConversionJob::ToAvif(job) => &mut job.child.take(),
-            ConversionJob::ToJxl(job) => &mut job.child.take(),
-        };
-        let child: &mut Child = match child {
-            Some(ref mut child) => child,
+        trace!("drop {self:?}");
+        let mut child = match self.child.take() {
+            Some(child) => child,
             None => return,
         };
 
+        // ignore errors
         let _ = child.kill();
         let _ = child.wait(); // is this necessary?
     }
@@ -391,35 +438,28 @@ impl Drop for ConversionJob {
 
 impl Drop for WorkUnit {
     fn drop(&mut self) {
-        debug!("Cleanup for {:?}", self.cbz_path);
-        let extract_dir = extract_dir_from_cbz_path(&self.cbz_path);
+        debug!("cleanup for {:?}", self.cbz_path);
+        let extract_dir = get_conversion_root_dir(&self.cbz_path);
         if extract_dir.exists() {
             fs::remove_dir_all(extract_dir.clone()).unwrap();
         }
     }
 }
 
-fn images_in_archive(cbz_path: &Path) -> Result<Vec<(PathBuf, ImageFormat)>, ConversionError> {
-    trace!("Called cbz_contains_convertable_images()");
-
-    if let None = cbz_path.extension() {
-        return Err(ConversionError::NonAnArchive(cbz_path.to_path_buf()));
-    }
-    if cbz_path
-        .extension()
-        .map_or(false, |e| e != "cbz" && e != "zip")
-    {
-        return Err(ConversionError::NonAnArchive(cbz_path.to_path_buf()));
-    }
+fn images_in_archive(cbz_path: &PathBuf) -> Result<Vec<(PathBuf, ImageFormat)>, ConversionError> {
+    trace!("called cbz_contains_convertable_images()");
 
     let file = File::open(cbz_path).unwrap();
     let reader = BufReader::new(file);
 
-    let archive = ZipArchive::new(reader).unwrap();
+    let archive = match ZipArchive::new(reader) {
+        Ok(archive) => archive,
+        Err(_) => return Err(ConversionError::NotAnArchive(cbz_path.clone())),
+    };
     let mut result = vec![];
     for file_inside in archive.file_names() {
         let file_inside = PathBuf::from(file_inside);
-        trace!("Looking at file: {:?}", file_inside);
+        trace!("found file {:?}", file_inside);
         if let Some(ext) = file_inside.extension() {
             match ext.to_str().unwrap() {
                 "jpg" => result.push((file_inside, ImageFormat::Jpeg)),
@@ -432,11 +472,40 @@ fn images_in_archive(cbz_path: &Path) -> Result<Vec<(PathBuf, ImageFormat)>, Con
     Ok(result)
 }
 
-fn extract_dir_from_cbz_path(path: &Path) -> PathBuf {
-    let dir = path.parent().unwrap();
-    let name = path.file_stem().unwrap();
-    let extract_dir = dir.join(name);
+fn get_extraction_root_dir(cbz_path: &PathBuf) -> PathBuf {
+    let file = File::open(&cbz_path).unwrap();
+    let reader = BufReader::new(file);
+    let archive = ZipArchive::new(reader).unwrap();
+
+    let archive_name = cbz_path.file_stem().unwrap();
+    let archive_root_dirs = archive
+        .file_names()
+        .into_iter()
+        .filter(|s| s.ends_with("/"))
+        .filter(|s| s.find("/").unwrap() == s.len() - 1)
+        .collect::<Vec<_>>();
+
+    let has_root_within = archive_root_dirs.len() == 1;
+    let extract_dir = if has_root_within {
+        trace!("extract directly");
+        let parent_dir = cbz_path.parent().unwrap().to_path_buf();
+        assert_eq!(
+            parent_dir.join(archive_name),
+            get_conversion_root_dir(&cbz_path)
+        );
+        parent_dir
+    } else {
+        trace!("extract into new root directory");
+        get_conversion_root_dir(&cbz_path)
+    };
     extract_dir
+}
+
+fn get_conversion_root_dir(cbz_path: &PathBuf) -> PathBuf {
+    let dir = cbz_path.parent().unwrap();
+    let name = cbz_path.file_stem().unwrap();
+    let root_dir = dir.join(name);
+    root_dir
 }
 
 fn already_converted(path: &PathBuf, format: ImageFormat) -> bool {
@@ -459,113 +528,18 @@ fn already_converted(path: &PathBuf, format: ImageFormat) -> bool {
     is_converted_archive || has_converted_archive
 }
 
-fn has_root_within_archive(cbz_path: &PathBuf) -> bool {
-    let file = File::open(cbz_path).unwrap();
-    let reader = BufReader::new(file);
-
-    let archive = ZipArchive::new(reader).unwrap();
-    let root_dirs: Vec<_> = archive
-        .file_names()
-        .into_iter()
-        .filter(|s| s.ends_with("/"))
-        .filter(|s| s.find("/").unwrap() == s.len() - 1)
-        .collect();
-    root_dirs.len() == 1 && root_dirs[0].strip_suffix("/").unwrap() == cbz_path.file_stem().unwrap()
-}
-
-fn extract_cbz(cbz_path: &PathBuf) -> PathBuf {
-    trace!("Called extract_cbz() with {:?}", cbz_path);
-    assert!(cbz_path.is_file());
-
-    let extract_dir = if has_root_within_archive(cbz_path) {
-        trace!("extract directly");
-        cbz_path.parent().unwrap().to_path_buf()
-    } else {
-        trace!("extract into new root directory");
-        extract_dir_from_cbz_path(cbz_path)
-    };
-    let file = File::open(cbz_path).unwrap();
-    let reader = BufReader::new(file);
-    let mut archive = ZipArchive::new(reader).unwrap();
-
-    debug!("Extracting {:?} to {:?}", cbz_path, extract_dir);
-    fs::create_dir_all(extract_dir.clone()).unwrap();
-    archive.extract(extract_dir.clone()).unwrap();
-    extract_dir
-}
-
-fn compress_cbz(cbz_path: &PathBuf, target_format: ImageFormat) {
-    trace!("Called compress_cbz() with {:?}", cbz_path);
-
-    let dir = cbz_path.parent().unwrap();
-    let name = cbz_path.file_stem().unwrap();
-    let zip_path = match target_format {
-        ImageFormat::Avif => dir.join(format!("{}.avif.cbz", name.to_str().unwrap())),
-        ImageFormat::Jxl => dir.join(format!("{}.jxl.cbz", name.to_str().unwrap())),
-        ImageFormat::Jpeg => panic!("not supported target {target_format:?}"),
-        ImageFormat::Png => panic!("not supported target {target_format:?}"),
-    };
-    debug!("Create cbz at {:?}", zip_path);
-    let file = File::create(zip_path).unwrap();
-
-    let mut zipper = ZipWriter::new(file);
-    let options = SimpleFileOptions::default()
-        .compression_method(CompressionMethod::Stored)
-        .unix_permissions(0o755);
-
-    let extract_dir = extract_dir_from_cbz_path(cbz_path);
-    let mut buffer = Vec::new();
-    for entry in WalkDir::new(&extract_dir)
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
-        let entry = entry.path();
-        debug!("Add to archive: {:?}", entry);
-        let file_name = entry.strip_prefix(&extract_dir.parent().unwrap()).unwrap();
-        let path_string = file_name
-            .to_str()
-            .to_owned()
-            .expect("Path is not UTF-8 conformant");
-
-        if entry.is_file() {
-            zipper.start_file(path_string, options).unwrap();
-            File::open(entry).unwrap().read_to_end(&mut buffer).unwrap();
-            zipper.write_all(&buffer).unwrap();
-            buffer.clear();
-        } else if !file_name.as_os_str().is_empty() {
-            zipper.add_directory(path_string, options).unwrap();
-        }
-    }
-
-    zipper.finish().unwrap();
-}
-
 fn convert_single_cbz(
     cbz_file: &PathBuf,
     format: ImageFormat,
     workers: usize,
 ) -> Result<(), ConversionError> {
-    trace!("Called convert_single_cbz() with {:?}", cbz_file);
+    trace!("called convert_single_cbz() with {:?}", cbz_file);
     if already_converted(&cbz_file, format) {
-        println!("Conversion already done for {:?}", cbz_file);
-        return Ok(());
+        return Err(ConversionError::AlreadyDone(cbz_file.to_path_buf()));
     }
 
-    let work_unit = match WorkUnit::new(cbz_file.clone(), format, workers) {
-        Ok(work_unit) => work_unit,
-        Err(_) => {
-            return Err(ConversionError::NonAnArchive(cbz_file.clone()));
-        }
-    };
-
-    println!("Converting {:?}", cbz_file);
-    match work_unit.run() {
-        Ok(_) => println!("Done"),
-        Err(ConversionError::NothingToDo(_)) => println!("Nothing to do"),
-        Err(e) => return Err(e.into()),
-    }
-
-    Ok(())
+    let work_unit = WorkUnit::new(cbz_file.clone(), format, workers)?;
+    work_unit.run()
 }
 
 #[derive(Parser)]
@@ -592,7 +566,11 @@ struct Args {
 }
 
 fn main() -> Result<()> {
-    pretty_env_logger::init();
+    env_logger::builder()
+        .filter_level(log::LevelFilter::Info)
+        .format_timestamp_secs()
+        .parse_env("RUST_LOG")
+        .init();
 
     let matches = Args::parse();
     let format = matches.format;
@@ -613,17 +591,19 @@ fn main() -> Result<()> {
         for cbz_file in path.read_dir().expect("read dir call failed!") {
             if let Ok(cbz_file) = cbz_file {
                 let cbz_file = cbz_file.path();
-                debug!("Next path: {:?}", cbz_file);
+                info!("Converting {:?}", cbz_file);
                 if let Err(e) = convert_single_cbz(&cbz_file, format, workers) {
                     warn!("{e}");
+                } else {
+                    info!("Done");
                 }
             }
         }
     } else {
         if let Err(e) = convert_single_cbz(&path, format, workers) {
             match e {
-                ConversionError::NothingToDo(_) => println!("Nothing to do for {path:?}"),
-                ConversionError::NonAnArchive(_) => println!("This is not a Zip archive"),
+                ConversionError::NothingToDo(_) => info!("Nothing to do for {path:?}"),
+                ConversionError::NotAnArchive(_) => info!("This is not a Zip archive"),
                 _ => error!("{e}"),
             }
         }
