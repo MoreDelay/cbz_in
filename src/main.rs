@@ -82,8 +82,8 @@ impl ConversionJob {
             (ImageFormat::Jpeg, ImageFormat::Png) => Err(ConversionError::NotSupported(from, to)),
             (ImageFormat::Png, ImageFormat::Jpeg) => Err(ConversionError::NotSupported(from, to)),
             (ImageFormat::Png, ImageFormat::Png) => Err(ConversionError::NotSupported(from, to)),
-            (ImageFormat::Avif, ImageFormat::Jpeg) => Err(ConversionError::NotSupported(from, to)),
-            (ImageFormat::Avif, ImageFormat::Png) => Err(ConversionError::NotSupported(from, to)),
+            (ImageFormat::Avif, ImageFormat::Jpeg) => Ok(()),
+            (ImageFormat::Avif, ImageFormat::Png) => Ok(()),
             (ImageFormat::Avif, ImageFormat::Avif) => Err(ConversionError::NotSupported(from, to)),
             (ImageFormat::Avif, ImageFormat::Jxl) => Err(ConversionError::NotSupported(from, to)),
             (ImageFormat::Jxl, ImageFormat::Jpeg) => Err(ConversionError::NotSupported(from, to)),
@@ -105,7 +105,7 @@ impl ConversionJob {
         })
     }
 
-    fn start_conversion_process(&mut self) -> Result<JobStatus, ConversionError> {
+    fn on_init(&mut self) -> Result<JobStatus, ConversionError> {
         let next_status = match (self.current, self.target) {
             (ImageFormat::Jpeg | ImageFormat::Png, ImageFormat::Avif) => {
                 let output_path = self.image_path.with_extension("avif");
@@ -148,8 +148,42 @@ impl ConversionJob {
             (ImageFormat::Jpeg, ImageFormat::Png) => todo!(),
             (ImageFormat::Png, ImageFormat::Jpeg) => todo!(),
             (ImageFormat::Png, ImageFormat::Png) => JobStatus::Done,
-            (ImageFormat::Avif, ImageFormat::Jpeg) => todo!(),
-            (ImageFormat::Avif, ImageFormat::Png) => todo!(),
+            (ImageFormat::Avif, ImageFormat::Jpeg) => {
+                let output_path = self.image_path.with_extension("jpeg");
+                let mut command = Command::new("avifdec");
+                command.args([
+                    "--jobs",
+                    "1",
+                    "--quality",
+                    "80",
+                    self.image_path.to_str().unwrap(),
+                    output_path.to_str().unwrap(),
+                ]);
+                let spawned = command
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .map_err(|_| ConversionError::SpawnFailure("avifdec".to_string()))?;
+                self.child = Some(spawned);
+                JobStatus::Converting
+            }
+            (ImageFormat::Avif, ImageFormat::Png) => {
+                let output_path = self.image_path.with_extension("png");
+                let mut command = Command::new("avifdec");
+                command.args([
+                    "--jobs",
+                    "1",
+                    self.image_path.to_str().unwrap(),
+                    output_path.to_str().unwrap(),
+                ]);
+                let spawned = command
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .map_err(|_| ConversionError::SpawnFailure("avifdec".to_string()))?;
+                self.child = Some(spawned);
+                JobStatus::Converting
+            }
             (ImageFormat::Avif, ImageFormat::Avif) => JobStatus::Done,
             (ImageFormat::Avif, ImageFormat::Jxl) => todo!(),
             (ImageFormat::Jxl, ImageFormat::Jpeg) => todo!(),
@@ -162,14 +196,21 @@ impl ConversionJob {
     }
 
     // wait on child process and delete original image file
-    fn finish_up(&mut self) -> Result<JobStatus, ConversionError> {
+    fn on_converting(&mut self) -> Result<JobStatus, ConversionError> {
         let child: &mut Child = match &mut self.child {
             Some(child) => child,
             None => unreachable!(),
         };
         match child.wait() {
             Ok(status) if !status.success() => {
-                return Err(ConversionError::AbnormalExit(self.image_path.clone()))
+                let mut stdout = child.stdout.take().unwrap();
+                let mut output = String::new();
+                stdout.read_to_string(&mut output).unwrap();
+                let mut stderr = child.stderr.take().unwrap();
+                let mut err_out = String::new();
+                stderr.read_to_string(&mut err_out).unwrap();
+                debug!("error on process:\nstdout:\n{output}\nstderr:\n{err_out}");
+                return Err(ConversionError::AbnormalExit(self.image_path.clone()));
             }
             Ok(_) => (),
             Err(_) => return Err(ConversionError::Unspecific("error during wait".to_string())),
@@ -188,8 +229,8 @@ impl ConversionJob {
     fn proceed(&mut self) -> Result<JobStatus, ConversionError> {
         debug!("proceed with {self:?}");
         let result = match self.status {
-            JobStatus::Init => self.start_conversion_process(),
-            JobStatus::Converting => self.finish_up(),
+            JobStatus::Init => self.on_init(),
+            JobStatus::Converting => self.on_converting(),
             JobStatus::Done => Ok(JobStatus::Done),
         };
         debug!("after proceed {self:?}");
@@ -207,11 +248,11 @@ impl ConversionJob {
             None => unreachable!(),
         };
         match child.try_wait() {
-            Ok(Some(status)) if status.success() => {
+            Ok(Some(_)) => {
                 trace!("ready");
                 return Ok(true);
             }
-            Ok(_) => {
+            Ok(None) => {
                 trace!("not ready");
                 return Ok(false);
             }
@@ -282,8 +323,8 @@ impl WorkUnit {
         let zip_path = match self.target_format {
             ImageFormat::Avif => dir.join(format!("{}.avif.cbz", name.to_str().unwrap())),
             ImageFormat::Jxl => dir.join(format!("{}.jxl.cbz", name.to_str().unwrap())),
-            ImageFormat::Jpeg => todo!(),
-            ImageFormat::Png => todo!(),
+            ImageFormat::Jpeg => dir.join(format!("{}.jpeg.cbz", name.to_str().unwrap())),
+            ImageFormat::Png => dir.join(format!("{}.png.cbz", name.to_str().unwrap())),
         };
         debug!("create cbz at {:?}", zip_path);
         let file = File::create(zip_path).unwrap();
@@ -477,6 +518,8 @@ fn images_in_archive(cbz_path: &PathBuf) -> Result<Vec<(PathBuf, ImageFormat)>, 
                 "jpg" => result.push((file_inside, ImageFormat::Jpeg)),
                 "jpeg" => result.push((file_inside, ImageFormat::Jpeg)),
                 "png" => result.push((file_inside, ImageFormat::Png)),
+                "avif" => result.push((file_inside, ImageFormat::Avif)),
+                "jxl" => result.push((file_inside, ImageFormat::Jxl)),
                 _ => (),
             }
         }
@@ -524,8 +567,8 @@ fn already_converted(path: &PathBuf, format: ImageFormat) -> bool {
     let conversion_ending = match format {
         ImageFormat::Avif => ".avif.cbz",
         ImageFormat::Jxl => ".jxl.cbz",
-        ImageFormat::Jpeg => todo!(),
-        ImageFormat::Png => todo!(),
+        ImageFormat::Jpeg => ".jpeg.cbz",
+        ImageFormat::Png => ".png.cbz",
     };
 
     let dir = path.parent().unwrap();
