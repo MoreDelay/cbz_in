@@ -22,20 +22,18 @@ enum ConversionError {
     NotAnArchive(PathBuf),
     #[error("nothing to do for '{0}'")]
     NothingToDo(PathBuf),
+    #[error("conversion not supported from {0:?} to {1:?}")]
+    NotSupported(ImageFormat, ImageFormat),
     #[error("Conversion already done for '{0}'")]
     AlreadyDone(PathBuf),
-    #[error("could not listen to signals")]
-    SignalsError,
     #[error("got interrupted")]
     Interrupt,
     #[error("child process finished abnormally for '{0}'")]
     AbnormalExit(PathBuf),
     #[error("could not start process with the program '{0}'")]
     SpawnFailure(String),
-    #[error("unspecified error for '{0}'")]
+    #[error("unspecific error '{0}'")]
     Unspecific(String),
-    #[error("conversion not supported from {0:?} to {1:?}")]
-    NotSupported(ImageFormat, ImageFormat),
 }
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug, Default)]
@@ -332,7 +330,11 @@ impl WorkUnit {
         // these signals will be catched from here on out until the end of this function
         let mut signals = match Signals::new(&[SIGINT, SIGCHLD]) {
             Ok(signals) => signals,
-            Err(_) => return Err(ConversionError::SignalsError),
+            Err(_) => {
+                return Err(ConversionError::Unspecific(
+                    "could not listen to signals".to_string(),
+                ))
+            }
         };
 
         // start out as many jobs as allowed
