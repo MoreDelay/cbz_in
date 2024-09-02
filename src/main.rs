@@ -87,7 +87,7 @@ impl ConversionJob {
             (ImageFormat::Avif, ImageFormat::Jpeg) => Ok(()),
             (ImageFormat::Avif, ImageFormat::Png) => Ok(()),
             (ImageFormat::Avif, ImageFormat::Avif) => Err(ConversionError::NotSupported(from, to)),
-            (ImageFormat::Avif, ImageFormat::Jxl) => Err(ConversionError::NotSupported(from, to)),
+            (ImageFormat::Avif, ImageFormat::Jxl) => Ok(()),
             (ImageFormat::Jxl, ImageFormat::Jpeg) => Ok(()),
             (ImageFormat::Jxl, ImageFormat::Png) => Ok(()),
             (ImageFormat::Jxl, ImageFormat::Avif) => Ok(()),
@@ -188,7 +188,23 @@ impl ConversionJob {
                 JobStatus::Encoding
             }
             (ImageFormat::Avif, ImageFormat::Avif) => JobStatus::Done,
-            (ImageFormat::Avif, ImageFormat::Jxl) => todo!(),
+            (ImageFormat::Avif, ImageFormat::Jxl) => {
+                let output_path = self.image_path.with_extension("png");
+                let mut command = Command::new("avifdec");
+                command.args([
+                    "--jobs",
+                    "1",
+                    self.image_path.to_str().unwrap(),
+                    output_path.to_str().unwrap(),
+                ]);
+                let spawned = command
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .map_err(|_| ConversionError::SpawnFailure("avifdec".to_string()))?;
+                self.child = Some(spawned);
+                JobStatus::Decoding
+            }
             (ImageFormat::Jxl, ImageFormat::Jpeg) => {
                 let output_path = self.image_path.with_extension("jpeg");
                 let mut command = Command::new("djxl");
@@ -301,7 +317,25 @@ impl ConversionJob {
             (ImageFormat::Jxl, ImageFormat::Jpeg) => unreachable!(),
             (ImageFormat::Jxl, ImageFormat::Png) => unreachable!(),
             (ImageFormat::Jxl, ImageFormat::Jxl) => unreachable!(),
-            (ImageFormat::Avif, ImageFormat::Jxl) => todo!(),
+            (ImageFormat::Avif, ImageFormat::Jxl) => {
+                let input_path = self.image_path.with_extension("png");
+                let output_path = self.image_path.with_extension("jxl");
+                let mut command = Command::new("cjxl");
+                command.args([
+                    "--effort=9",
+                    "--num_threads=1",
+                    "--distance=0",
+                    input_path.to_str().unwrap(),
+                    output_path.to_str().unwrap(),
+                ]);
+                let spawned = command
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .map_err(|_| ConversionError::SpawnFailure("cjxl".to_string()))?;
+                self.child = Some(spawned);
+                JobStatus::Encoding
+            }
             (ImageFormat::Jxl, ImageFormat::Avif) => {
                 let input_path = match self.intermediate {
                     Some(ImageFormat::Jpeg) => self.image_path.with_extension("jpeg"),
