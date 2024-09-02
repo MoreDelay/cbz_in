@@ -124,8 +124,7 @@ impl ConversionJob {
                     .spawn()
                     .map_err(|_| ConversionError::SpawnFailure("cavif".to_string()))?;
                 self.child = Some(spawned);
-                self.status = JobStatus::Converting;
-                self.status
+                JobStatus::Converting
             }
             (ImageFormat::Jpeg | ImageFormat::Png, ImageFormat::Jxl) => {
                 let output_path = self.image_path.with_extension("jxl");
@@ -143,22 +142,22 @@ impl ConversionJob {
                     .spawn()
                     .map_err(|_| ConversionError::SpawnFailure("cjxl".to_string()))?;
                 self.child = Some(spawned);
-                self.status = JobStatus::Converting;
-                self.status
+                JobStatus::Converting
             }
-            (ImageFormat::Jpeg, ImageFormat::Jpeg) => todo!(),
+            (ImageFormat::Jpeg, ImageFormat::Jpeg) => JobStatus::Done,
             (ImageFormat::Jpeg, ImageFormat::Png) => todo!(),
             (ImageFormat::Png, ImageFormat::Jpeg) => todo!(),
-            (ImageFormat::Png, ImageFormat::Png) => todo!(),
+            (ImageFormat::Png, ImageFormat::Png) => JobStatus::Done,
             (ImageFormat::Avif, ImageFormat::Jpeg) => todo!(),
             (ImageFormat::Avif, ImageFormat::Png) => todo!(),
-            (ImageFormat::Avif, ImageFormat::Avif) => todo!(),
+            (ImageFormat::Avif, ImageFormat::Avif) => JobStatus::Done,
             (ImageFormat::Avif, ImageFormat::Jxl) => todo!(),
             (ImageFormat::Jxl, ImageFormat::Jpeg) => todo!(),
             (ImageFormat::Jxl, ImageFormat::Png) => todo!(),
             (ImageFormat::Jxl, ImageFormat::Avif) => todo!(),
-            (ImageFormat::Jxl, ImageFormat::Jxl) => todo!(),
+            (ImageFormat::Jxl, ImageFormat::Jxl) => JobStatus::Done,
         };
+        self.status = next_status;
         Ok(next_status)
     }
 
