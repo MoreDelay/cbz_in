@@ -242,7 +242,16 @@ impl ConversionJob {
                 debug!("error on process:\nstdout:\n{output}\nstderr:\n{err_out}");
                 return Err(ConversionError::AbnormalExit(self.image_path.clone()));
             }
-            Ok(_) => (),
+            Ok(_) => {
+                let mut stdout = child.stdout.take().unwrap();
+                let mut output = String::new();
+                stdout.read_to_string(&mut output).unwrap();
+                let mut stderr = child.stderr.take().unwrap();
+                let mut err_out = String::new();
+                stderr.read_to_string(&mut err_out).unwrap();
+                trace!("process output:\nstdout:\n{output}\nstderr:\n{err_out}");
+                ()
+            }
             Err(_) => return Err(ConversionError::Unspecific("error during wait".to_string())),
         }
 
