@@ -86,8 +86,8 @@ impl ConversionJob {
             (ImageFormat::Avif, ImageFormat::Png) => Ok(()),
             (ImageFormat::Avif, ImageFormat::Avif) => Err(ConversionError::NotSupported(from, to)),
             (ImageFormat::Avif, ImageFormat::Jxl) => Err(ConversionError::NotSupported(from, to)),
-            (ImageFormat::Jxl, ImageFormat::Jpeg) => Err(ConversionError::NotSupported(from, to)),
-            (ImageFormat::Jxl, ImageFormat::Png) => Err(ConversionError::NotSupported(from, to)),
+            (ImageFormat::Jxl, ImageFormat::Jpeg) => Ok(()),
+            (ImageFormat::Jxl, ImageFormat::Png) => Ok(()),
             (ImageFormat::Jxl, ImageFormat::Avif) => Err(ConversionError::NotSupported(from, to)),
             (ImageFormat::Jxl, ImageFormat::Jxl) => Err(ConversionError::NotSupported(from, to)),
         };
@@ -186,8 +186,38 @@ impl ConversionJob {
             }
             (ImageFormat::Avif, ImageFormat::Avif) => JobStatus::Done,
             (ImageFormat::Avif, ImageFormat::Jxl) => todo!(),
-            (ImageFormat::Jxl, ImageFormat::Jpeg) => todo!(),
-            (ImageFormat::Jxl, ImageFormat::Png) => todo!(),
+            (ImageFormat::Jxl, ImageFormat::Jpeg) => {
+                let output_path = self.image_path.with_extension("jpeg");
+                let mut command = Command::new("djxl");
+                command.args([
+                    self.image_path.to_str().unwrap(),
+                    output_path.to_str().unwrap(),
+                    "--num_threads=1",
+                ]);
+                let spawned = command
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .map_err(|_| ConversionError::SpawnFailure("djxl".to_string()))?;
+                self.child = Some(spawned);
+                JobStatus::Converting
+            }
+            (ImageFormat::Jxl, ImageFormat::Png) => {
+                let output_path = self.image_path.with_extension("png");
+                let mut command = Command::new("djxl");
+                command.args([
+                    self.image_path.to_str().unwrap(),
+                    output_path.to_str().unwrap(),
+                    "--num_threads=1",
+                ]);
+                let spawned = command
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .map_err(|_| ConversionError::SpawnFailure("djxl".to_string()))?;
+                self.child = Some(spawned);
+                JobStatus::Converting
+            }
             (ImageFormat::Jxl, ImageFormat::Avif) => todo!(),
             (ImageFormat::Jxl, ImageFormat::Jxl) => JobStatus::Done,
         };
