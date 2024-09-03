@@ -78,12 +78,14 @@ impl ConversionJob {
         to: ImageFormat,
     ) -> Result<ConversionJob, ConversionError> {
         let result = match (from, to) {
-            (ImageFormat::Jpeg | ImageFormat::Png, ImageFormat::Avif) => Ok(()),
-            (ImageFormat::Jpeg | ImageFormat::Png, ImageFormat::Jxl) => Ok(()),
             (ImageFormat::Jpeg, ImageFormat::Jpeg) => Err(ConversionError::NotSupported(from, to)),
             (ImageFormat::Jpeg, ImageFormat::Png) => Ok(()),
+            (ImageFormat::Jpeg, ImageFormat::Avif) => Ok(()),
+            (ImageFormat::Jpeg, ImageFormat::Jxl) => Ok(()),
             (ImageFormat::Png, ImageFormat::Jpeg) => Ok(()),
             (ImageFormat::Png, ImageFormat::Png) => Err(ConversionError::NotSupported(from, to)),
+            (ImageFormat::Png, ImageFormat::Avif) => Ok(()),
+            (ImageFormat::Png, ImageFormat::Jxl) => Ok(()),
             (ImageFormat::Avif, ImageFormat::Jpeg) => Ok(()),
             (ImageFormat::Avif, ImageFormat::Png) => Ok(()),
             (ImageFormat::Avif, ImageFormat::Avif) => Err(ConversionError::NotSupported(from, to)),
