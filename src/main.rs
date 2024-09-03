@@ -81,8 +81,8 @@ impl ConversionJob {
             (ImageFormat::Jpeg | ImageFormat::Png, ImageFormat::Avif) => Ok(()),
             (ImageFormat::Jpeg | ImageFormat::Png, ImageFormat::Jxl) => Ok(()),
             (ImageFormat::Jpeg, ImageFormat::Jpeg) => Err(ConversionError::NotSupported(from, to)),
-            (ImageFormat::Jpeg, ImageFormat::Png) => Err(ConversionError::NotSupported(from, to)),
-            (ImageFormat::Png, ImageFormat::Jpeg) => Err(ConversionError::NotSupported(from, to)),
+            (ImageFormat::Jpeg, ImageFormat::Png) => Ok(()),
+            (ImageFormat::Png, ImageFormat::Jpeg) => Ok(()),
             (ImageFormat::Png, ImageFormat::Png) => Err(ConversionError::NotSupported(from, to)),
             (ImageFormat::Avif, ImageFormat::Jpeg) => Ok(()),
             (ImageFormat::Avif, ImageFormat::Png) => Ok(()),
@@ -148,8 +148,38 @@ impl ConversionJob {
                 JobStatus::Encoding
             }
             (ImageFormat::Jpeg, ImageFormat::Jpeg) => JobStatus::Done,
-            (ImageFormat::Jpeg, ImageFormat::Png) => todo!(),
-            (ImageFormat::Png, ImageFormat::Jpeg) => todo!(),
+            (ImageFormat::Jpeg, ImageFormat::Png) => {
+                let output_path = self.image_path.with_extension("png");
+                let mut command = Command::new("magick");
+                command.args([
+                    self.image_path.to_str().unwrap(),
+                    output_path.to_str().unwrap(),
+                ]);
+                let spawned = command
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .map_err(|_| ConversionError::SpawnFailure("magick".to_string()))?;
+                self.child = Some(spawned);
+                JobStatus::Encoding
+            }
+            (ImageFormat::Png, ImageFormat::Jpeg) => {
+                let output_path = self.image_path.with_extension("jpeg");
+                let mut command = Command::new("magick");
+                command.args([
+                    self.image_path.to_str().unwrap(),
+                    "-quality",
+                    "92",
+                    output_path.to_str().unwrap(),
+                ]);
+                let spawned = command
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .map_err(|_| ConversionError::SpawnFailure("magick".to_string()))?;
+                self.child = Some(spawned);
+                JobStatus::Encoding
+            }
             (ImageFormat::Png, ImageFormat::Png) => JobStatus::Done,
             (ImageFormat::Avif, ImageFormat::Jpeg) => {
                 let output_path = self.image_path.with_extension("jpeg");
@@ -538,6 +568,7 @@ impl WorkUnit {
             .unix_permissions(0o755);
 
         let extract_dir = get_conversion_root_dir(&self.cbz_path);
+        trace!("Compress directory {extract_dir:?}");
         let mut buffer = Vec::new();
         for entry in WalkDir::new(&extract_dir)
             .into_iter()
@@ -783,7 +814,7 @@ fn get_extraction_root_dir(cbz_path: &PathBuf) -> PathBuf {
         .filter(|s| s.find("/").unwrap() == s.len() - 1)
         .collect::<Vec<_>>();
 
-    let has_root_within = archive_root_dirs.len() == 1;
+    let has_root_within = archive_root_dirs.len() == 1 && archive_root_dirs[0] == archive_name;
     let extract_dir = if has_root_within {
         trace!("extract directly");
         let parent_dir = cbz_path.parent().unwrap().to_path_buf();
