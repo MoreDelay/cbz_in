@@ -36,7 +36,7 @@ enum ConversionError {
     Unspecific(String),
 }
 
-#[derive(clap::ValueEnum, Clone, Copy, Debug, Default)]
+#[derive(clap::ValueEnum, Clone, Copy, Debug, Default, PartialEq)]
 enum ImageFormat {
     #[default]
     Jpeg,
@@ -506,6 +506,7 @@ impl WorkUnit {
         cbz_path: PathBuf,
         target_format: ImageFormat,
         workers: usize,
+        force: bool,
     ) -> Result<WorkUnit, ConversionError> {
         trace!("called WorkUnit::new()");
         let not_correct_extention = cbz_path
@@ -521,6 +522,7 @@ impl WorkUnit {
             .filter_map(|(image_path, format)| {
                 ConversionJob::new(root_dir.join(image_path), *format, target_format).ok()
             })
+            .filter(|job| force || !only_if_forced(job.current, job.target))
             .collect::<VecDeque<_>>();
         if job_queue.is_empty() {
             return Err(ConversionError::NothingToDo(cbz_path));
@@ -863,18 +865,35 @@ fn convert_single_cbz(
     cbz_file: &PathBuf,
     format: ImageFormat,
     workers: usize,
+    force: bool,
 ) -> Result<(), ConversionError> {
     trace!("called convert_single_cbz() with {:?}", cbz_file);
     if already_converted(&cbz_file, format) {
         return Err(ConversionError::AlreadyDone(cbz_file.to_path_buf()));
     }
 
-    let work_unit = WorkUnit::new(cbz_file.clone(), format, workers)?;
+    let work_unit = WorkUnit::new(cbz_file.clone(), format, workers, force)?;
     work_unit.run()
 }
 
+fn only_if_forced(from: ImageFormat, to: ImageFormat) -> bool {
+    match (from, to) {
+        (ImageFormat::Jpeg, _) => false,
+        (ImageFormat::Png, _) => false,
+        (_, ImageFormat::Jpeg) => false,
+        (_, ImageFormat::Png) => false,
+        (a, b) if a == b => false,
+        (_, _) => true,
+    }
+}
+
 #[derive(Parser)]
-#[command(version, about, long_about=None)]
+#[command(version, verbatim_doc_comment)]
+/// Convert images within comic archives to newer image formats
+///
+/// Convert images within Zip Comic Book archives, although it also works with normal zip files.
+/// By default only converts Jpeg and Png to the target format or decode any formats to Png and
+/// Jpeg.
 struct Args {
     #[arg(
         required = true,
@@ -888,12 +907,15 @@ struct Args {
     )]
     path: PathBuf,
 
-    #[arg(
-        short = 'j',
-        long,
-        help = "Number of processes spawned to convert images in parallel"
-    )]
-    workers: Option<usize>,
+    /// Number of processes spawned
+    ///
+    /// Uses as many processes as you have cores by default.
+    /// When used as a flag only spawns a single process at a time.
+    #[arg(short = 'j', long, verbatim_doc_comment)]
+    workers: Option<Option<usize>>,
+
+    #[arg(short, long, help = "Convert all images of all formats")]
+    force: bool,
 }
 
 fn main() -> Result<()> {
@@ -911,19 +933,23 @@ fn main() -> Result<()> {
         exit(1);
     }
 
-    let workers = matches
-        .workers
-        .unwrap_or_else(|| match thread::available_parallelism() {
+    let workers = match matches.workers {
+        Some(Some(value)) => value,
+        Some(None) => 1,
+        None => match thread::available_parallelism() {
             Ok(value) => value.get(),
             Err(_) => 1,
-        });
+        },
+    };
+
+    let force = matches.force;
 
     if path.is_dir() {
         for cbz_file in path.read_dir().expect("read dir call failed!") {
             if let Ok(cbz_file) = cbz_file {
                 let cbz_file = cbz_file.path();
                 info!("Converting {:?}", cbz_file);
-                if let Err(e) = convert_single_cbz(&cbz_file, format, workers) {
+                if let Err(e) = convert_single_cbz(&cbz_file, format, workers, force) {
                     warn!("{e}");
                 } else {
                     info!("Done");
@@ -931,7 +957,7 @@ fn main() -> Result<()> {
             }
         }
     } else {
-        if let Err(e) = convert_single_cbz(&path, format, workers) {
+        if let Err(e) = convert_single_cbz(&path, format, workers, force) {
             match e {
                 ConversionError::NothingToDo(_) => info!("Nothing to do for {path:?}"),
                 ConversionError::NotAnArchive(_) => info!("This is not a Zip archive"),
