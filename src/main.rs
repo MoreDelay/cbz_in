@@ -46,7 +46,7 @@ enum ImageFormat {
     Png,
     Avif,
     Jxl,
-    WebP,
+    Webp,
 }
 use ImageFormat::*;
 
@@ -57,7 +57,7 @@ impl std::fmt::Display for ImageFormat {
             Png => write!(f, "png"),
             Avif => write!(f, "avif"),
             Jxl => write!(f, "jxl"),
-            WebP => write!(f, "webp"),
+            Webp => write!(f, "webp"),
         }
     }
 }
@@ -143,7 +143,7 @@ impl ConversionJob {
                 self.child = Some(child);
                 JobStatus::Encoding
             }
-            (Jpeg | Png, to @ WebP) => {
+            (Jpeg | Png, to @ Webp) => {
                 let input_path = &self.image_path;
                 let output_path = self.image_path.with_extension(to.to_string());
                 let child = spawn::encode_webp(input_path, &output_path)?;
@@ -178,14 +178,14 @@ impl ConversionJob {
                 self.child = Some(child);
                 JobStatus::Encoding
             }
-            (WebP, to @ Png) => {
+            (Webp, to @ Png) => {
                 let input_path = &self.image_path;
                 let output_path = self.image_path.with_extension(to.to_string());
                 let child = spawn::decode_webp(input_path, &output_path)?;
                 self.child = Some(child);
                 JobStatus::Encoding
             }
-            (Avif, Jxl | WebP) => {
+            (Avif, Jxl | Webp) => {
                 self.intermediate = Some(Png);
                 let input_path = &self.image_path;
                 let output_path = self.image_path.with_extension(Png.to_string());
@@ -193,7 +193,7 @@ impl ConversionJob {
                 self.child = Some(child);
                 JobStatus::Decoding
             }
-            (Jxl, Avif | WebP) => {
+            (Jxl, Avif | Webp) => {
                 let input_path = &self.image_path;
                 let child = if jxl_is_compressed_jpeg(&self.image_path)? {
                     self.intermediate = Some(Jpeg);
@@ -207,7 +207,7 @@ impl ConversionJob {
                 self.child = Some(child);
                 JobStatus::Decoding
             }
-            (WebP, Jpeg | Avif | Jxl) => {
+            (Webp, Jpeg | Avif | Jxl) => {
                 self.intermediate = Some(Png);
                 let input_path = &self.image_path;
                 let output_path = self.image_path.with_extension(Png.to_string());
@@ -219,7 +219,7 @@ impl ConversionJob {
             (Png, Png) => JobStatus::Done,
             (Avif, Avif) => JobStatus::Done,
             (Jxl, Jxl) => JobStatus::Done,
-            (WebP, WebP) => JobStatus::Done,
+            (Webp, Webp) => JobStatus::Done,
         };
         self.status = next_status;
         Ok(next_status)
@@ -276,14 +276,21 @@ impl ConversionJob {
                 self.child = Some(child);
                 JobStatus::Encoding
             }
-            (from @ Png, to @ WebP) => {
+            (from @ Png, to @ Jpeg) => {
+                let input_path = self.image_path.with_extension(from.to_string());
+                let output_path = self.image_path.with_extension(to.to_string());
+                let child = spawn::convert_png_to_jpeg(&input_path, &output_path)?;
+                self.child = Some(child);
+                JobStatus::Encoding
+            }
+            (from @ Png, to @ Webp) => {
                 let input_path = self.image_path.with_extension(from.to_string());
                 let output_path = self.image_path.with_extension(to.to_string());
                 let child = spawn::encode_webp(&input_path, &output_path)?;
                 self.child = Some(child);
                 JobStatus::Encoding
             }
-            (_, Jpeg | Png | Avif | Jxl | WebP) => unreachable!(),
+            (_, Jpeg | Png | Avif | Jxl | Webp) => unreachable!(),
         };
         self.status = next_status;
         Ok(next_status)
@@ -573,10 +580,15 @@ impl WorkUnit {
 
 impl std::fmt::Debug for ConversionJob {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ConversionJob")
+        let mut writer = f.debug_struct("ConversionJob");
+        writer
             .field("status", &self.status)
             .field("from", &self.current)
-            .field("to", &self.target)
+            .field("to", &self.target);
+        if let Some(inter) = self.intermediate {
+            writer.field("over", &inter);
+        }
+        writer
             .field("image_path", &self.image_path.to_string_lossy())
             .finish()
     }
@@ -666,7 +678,8 @@ fn images_in_archive(cbz_path: &PathBuf) -> Result<Vec<(PathBuf, ImageFormat)>, 
                 "png" => result.push((file_inside, Png)),
                 "avif" => result.push((file_inside, Avif)),
                 "jxl" => result.push((file_inside, Jxl)),
-                _ => (),
+                "webp" => result.push((file_inside, Webp)),
+                _ => trace!("not an image: {:?}", file_inside),
             }
         }
     }
@@ -684,6 +697,7 @@ fn get_extraction_root_dir(cbz_path: &PathBuf) -> PathBuf {
         .into_iter()
         .filter(|s| s.ends_with("/"))
         .filter(|s| s.find("/").unwrap() == s.len() - 1)
+        .map(|s| s.strip_suffix("/").unwrap())
         .collect::<Vec<_>>();
 
     let has_root_within = archive_root_dirs.len() == 1 && archive_root_dirs[0] == archive_name;
