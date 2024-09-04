@@ -1,3 +1,5 @@
+mod spawn;
+
 use std::collections::VecDeque;
 use std::fs::{self, File};
 use std::io::{BufReader, Read, Write};
@@ -35,6 +37,7 @@ enum ConversionError {
     #[error("unspecific error '{0}'")]
     Unspecific(String),
 }
+use ConversionError::*;
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug, Default, PartialEq)]
 enum ImageFormat {
@@ -43,6 +46,20 @@ enum ImageFormat {
     Png,
     Avif,
     Jxl,
+    WebP,
+}
+use ImageFormat::*;
+
+impl std::fmt::Display for ImageFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Jpeg => write!(f, "jpeg"),
+            Png => write!(f, "png"),
+            Avif => write!(f, "avif"),
+            Jxl => write!(f, "jxl"),
+            WebP => write!(f, "webp"),
+        }
+    }
 }
 
 #[derive(Default, Clone, Copy, Debug)]
@@ -78,22 +95,8 @@ impl ConversionJob {
         to: ImageFormat,
     ) -> Result<ConversionJob, ConversionError> {
         let result = match (from, to) {
-            (ImageFormat::Jpeg, ImageFormat::Jpeg) => Err(ConversionError::NotSupported(from, to)),
-            (ImageFormat::Jpeg, ImageFormat::Png) => Ok(()),
-            (ImageFormat::Jpeg, ImageFormat::Avif) => Ok(()),
-            (ImageFormat::Jpeg, ImageFormat::Jxl) => Ok(()),
-            (ImageFormat::Png, ImageFormat::Jpeg) => Ok(()),
-            (ImageFormat::Png, ImageFormat::Png) => Err(ConversionError::NotSupported(from, to)),
-            (ImageFormat::Png, ImageFormat::Avif) => Ok(()),
-            (ImageFormat::Png, ImageFormat::Jxl) => Ok(()),
-            (ImageFormat::Avif, ImageFormat::Jpeg) => Ok(()),
-            (ImageFormat::Avif, ImageFormat::Png) => Ok(()),
-            (ImageFormat::Avif, ImageFormat::Avif) => Err(ConversionError::NotSupported(from, to)),
-            (ImageFormat::Avif, ImageFormat::Jxl) => Ok(()),
-            (ImageFormat::Jxl, ImageFormat::Jpeg) => Ok(()),
-            (ImageFormat::Jxl, ImageFormat::Png) => Ok(()),
-            (ImageFormat::Jxl, ImageFormat::Avif) => Ok(()),
-            (ImageFormat::Jxl, ImageFormat::Jxl) => Err(ConversionError::NotSupported(from, to)),
+            (a, b) if a == b => Err(NotSupported(from, to)),
+            (_, _) => Ok(()),
         };
         if let Err(e) = result {
             warn!("{e}");
@@ -112,193 +115,117 @@ impl ConversionJob {
 
     fn on_init(&mut self) -> Result<JobStatus, ConversionError> {
         let next_status = match (self.current, self.target) {
-            (ImageFormat::Jpeg | ImageFormat::Png, ImageFormat::Avif) => {
-                let output_path = self.image_path.with_extension("avif");
-                let mut command = Command::new("cavif");
-                command.args([
-                    "--speed=3",
-                    "--threads=1",
-                    "--quality=88",
-                    self.image_path.to_str().unwrap(),
-                    "-o",
-                    output_path.to_str().unwrap(),
-                ]);
-                let spawned = command
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .spawn()
-                    .map_err(|_| ConversionError::SpawnFailure("cavif".to_string()))?;
-                self.child = Some(spawned);
+            (Jpeg, to @ Png) => {
+                let input_path = &self.image_path;
+                let output_path = self.image_path.with_extension(to.to_string());
+                let child = spawn::convert_jpeg_to_png(input_path, &output_path)?;
+                self.child = Some(child);
                 JobStatus::Encoding
             }
-            (ImageFormat::Jpeg | ImageFormat::Png, ImageFormat::Jxl) => {
-                let output_path = self.image_path.with_extension("jxl");
-                let mut command = Command::new("cjxl");
-                command.args([
-                    "--effort=9",
-                    "--num_threads=1",
-                    "--distance=0",
-                    self.image_path.to_str().unwrap(),
-                    output_path.to_str().unwrap(),
-                ]);
-                let spawned = command
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .spawn()
-                    .map_err(|_| ConversionError::SpawnFailure("cjxl".to_string()))?;
-                self.child = Some(spawned);
+            (Png, to @ Jpeg) => {
+                let input_path = &self.image_path;
+                let output_path = self.image_path.with_extension(to.to_string());
+                let child = spawn::convert_png_to_jpeg(input_path, &output_path)?;
+                self.child = Some(child);
                 JobStatus::Encoding
             }
-            (ImageFormat::Jpeg, ImageFormat::Jpeg) => JobStatus::Done,
-            (ImageFormat::Jpeg, ImageFormat::Png) => {
-                let output_path = self.image_path.with_extension("png");
-                let mut command = Command::new("magick");
-                command.args([
-                    self.image_path.to_str().unwrap(),
-                    output_path.to_str().unwrap(),
-                ]);
-                let spawned = command
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .spawn()
-                    .map_err(|_| ConversionError::SpawnFailure("magick".to_string()))?;
-                self.child = Some(spawned);
+            (Jpeg | Png, to @ Avif) => {
+                let input_path = &self.image_path;
+                let output_path = self.image_path.with_extension(to.to_string());
+                let child = spawn::encode_avif(input_path, &output_path)?;
+                self.child = Some(child);
                 JobStatus::Encoding
             }
-            (ImageFormat::Png, ImageFormat::Jpeg) => {
-                let output_path = self.image_path.with_extension("jpeg");
-                let mut command = Command::new("magick");
-                command.args([
-                    self.image_path.to_str().unwrap(),
-                    "-quality",
-                    "92",
-                    output_path.to_str().unwrap(),
-                ]);
-                let spawned = command
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .spawn()
-                    .map_err(|_| ConversionError::SpawnFailure("magick".to_string()))?;
-                self.child = Some(spawned);
+            (Jpeg | Png, to @ Jxl) => {
+                let input_path = &self.image_path;
+                let output_path = self.image_path.with_extension(to.to_string());
+                let child = spawn::encode_jxl(input_path, &output_path)?;
+                self.child = Some(child);
                 JobStatus::Encoding
             }
-            (ImageFormat::Png, ImageFormat::Png) => JobStatus::Done,
-            (ImageFormat::Avif, ImageFormat::Jpeg) => {
-                let output_path = self.image_path.with_extension("jpeg");
-                let mut command = Command::new("avifdec");
-                command.args([
-                    "--jobs",
-                    "1",
-                    "--quality",
-                    "80",
-                    self.image_path.to_str().unwrap(),
-                    output_path.to_str().unwrap(),
-                ]);
-                let spawned = command
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .spawn()
-                    .map_err(|_| ConversionError::SpawnFailure("avifdec".to_string()))?;
-                self.child = Some(spawned);
+            (Jpeg | Png, to @ WebP) => {
+                let input_path = &self.image_path;
+                let output_path = self.image_path.with_extension(to.to_string());
+                let child = spawn::encode_webp(input_path, &output_path)?;
+                self.child = Some(child);
                 JobStatus::Encoding
             }
-            (ImageFormat::Avif, ImageFormat::Png) => {
-                let output_path = self.image_path.with_extension("png");
-                let mut command = Command::new("avifdec");
-                command.args([
-                    "--jobs",
-                    "1",
-                    self.image_path.to_str().unwrap(),
-                    output_path.to_str().unwrap(),
-                ]);
-                let spawned = command
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .spawn()
-                    .map_err(|_| ConversionError::SpawnFailure("avifdec".to_string()))?;
-                self.child = Some(spawned);
+            (Avif, to @ Jpeg) => {
+                let input_path = &self.image_path;
+                let output_path = self.image_path.with_extension(to.to_string());
+                let child = spawn::decode_avif_to_jpeg(input_path, &output_path)?;
+                self.child = Some(child);
                 JobStatus::Encoding
             }
-            (ImageFormat::Avif, ImageFormat::Avif) => JobStatus::Done,
-            (ImageFormat::Avif, ImageFormat::Jxl) => {
-                let output_path = self.image_path.with_extension("png");
-                let mut command = Command::new("avifdec");
-                command.args([
-                    "--jobs",
-                    "1",
-                    self.image_path.to_str().unwrap(),
-                    output_path.to_str().unwrap(),
-                ]);
-                let spawned = command
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .spawn()
-                    .map_err(|_| ConversionError::SpawnFailure("avifdec".to_string()))?;
-                self.child = Some(spawned);
+            (Avif, to @ Png) => {
+                let input_path = &self.image_path;
+                let output_path = self.image_path.with_extension(to.to_string());
+                let child = spawn::decode_avif_to_png(input_path, &output_path)?;
+                self.child = Some(child);
+                JobStatus::Encoding
+            }
+            (Jxl, to @ Jpeg) => {
+                let input_path = &self.image_path;
+                let output_path = self.image_path.with_extension(to.to_string());
+                let child = spawn::decode_jxl_to_jpeg(input_path, &output_path)?;
+                self.child = Some(child);
+                JobStatus::Encoding
+            }
+            (Jxl, to @ Png) => {
+                let input_path = &self.image_path;
+                let output_path = self.image_path.with_extension(to.to_string());
+                let child = spawn::decode_jxl_to_png(input_path, &output_path)?;
+                self.child = Some(child);
+                JobStatus::Encoding
+            }
+            (WebP, to @ Png) => {
+                let input_path = &self.image_path;
+                let output_path = self.image_path.with_extension(to.to_string());
+                let child = spawn::decode_webp(input_path, &output_path)?;
+                self.child = Some(child);
+                JobStatus::Encoding
+            }
+            (Avif, Jxl | WebP) => {
+                self.intermediate = Some(Png);
+                let input_path = &self.image_path;
+                let output_path = self.image_path.with_extension(Png.to_string());
+                let child = spawn::decode_avif_to_png(input_path, &output_path)?;
+                self.child = Some(child);
                 JobStatus::Decoding
             }
-            (ImageFormat::Jxl, ImageFormat::Jpeg) => {
-                let output_path = self.image_path.with_extension("jpeg");
-                let mut command = Command::new("djxl");
-                command.args([
-                    self.image_path.to_str().unwrap(),
-                    output_path.to_str().unwrap(),
-                    "--num_threads=1",
-                ]);
-                let spawned = command
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .spawn()
-                    .map_err(|_| ConversionError::SpawnFailure("djxl".to_string()))?;
-                self.child = Some(spawned);
-                JobStatus::Encoding
-            }
-            (ImageFormat::Jxl, ImageFormat::Png) => {
-                let output_path = self.image_path.with_extension("png");
-                let mut command = Command::new("djxl");
-                command.args([
-                    self.image_path.to_str().unwrap(),
-                    output_path.to_str().unwrap(),
-                    "--num_threads=1",
-                ]);
-                let spawned = command
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .spawn()
-                    .map_err(|_| ConversionError::SpawnFailure("djxl".to_string()))?;
-                self.child = Some(spawned);
-                JobStatus::Encoding
-            }
-            (ImageFormat::Jxl, ImageFormat::Avif) => {
-                let output_path = if jxl_is_compressed_jpeg(self.image_path.clone())? {
-                    self.intermediate = Some(ImageFormat::Jpeg);
-                    self.image_path.with_extension("jpeg")
+            (Jxl, Avif | WebP) => {
+                let input_path = &self.image_path;
+                let child = if jxl_is_compressed_jpeg(&self.image_path)? {
+                    self.intermediate = Some(Jpeg);
+                    let output_path = self.image_path.with_extension(Jpeg.to_string());
+                    spawn::decode_jxl_to_jpeg(input_path, &output_path)?
                 } else {
-                    self.intermediate = Some(ImageFormat::Png);
-                    self.image_path.with_extension("png")
+                    self.intermediate = Some(Png);
+                    let output_path = self.image_path.with_extension(Png.to_string());
+                    spawn::decode_jxl_to_png(input_path, &output_path)?
                 };
-                let mut command = Command::new("djxl");
-                command.args([
-                    self.image_path.to_str().unwrap(),
-                    output_path.to_str().unwrap(),
-                    "--num_threads=1",
-                ]);
-                let spawned = command
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .spawn()
-                    .map_err(|_| ConversionError::SpawnFailure("djxl".to_string()))?;
-                self.child = Some(spawned);
-
+                self.child = Some(child);
                 JobStatus::Decoding
             }
-            (ImageFormat::Jxl, ImageFormat::Jxl) => JobStatus::Done,
+            (WebP, Jpeg | Avif | Jxl) => {
+                self.intermediate = Some(Png);
+                let input_path = &self.image_path;
+                let output_path = self.image_path.with_extension(Png.to_string());
+                let child = spawn::decode_webp(input_path, &output_path)?;
+                self.child = Some(child);
+                JobStatus::Decoding
+            }
+            (Jpeg, Jpeg) => JobStatus::Done,
+            (Png, Png) => JobStatus::Done,
+            (Avif, Avif) => JobStatus::Done,
+            (Jxl, Jxl) => JobStatus::Done,
+            (WebP, WebP) => JobStatus::Done,
         };
         self.status = next_status;
         Ok(next_status)
     }
 
-    fn on_decoding(&mut self) -> std::result::Result<JobStatus, ConversionError> {
+    fn on_decoding(&mut self) -> Result<JobStatus, ConversionError> {
         let child: &mut Child = match &mut self.child {
             Some(child) => child,
             None => unreachable!(),
@@ -312,7 +239,7 @@ impl ConversionJob {
                 let mut err_out = String::new();
                 stderr.read_to_string(&mut err_out).unwrap();
                 debug!("error on process:\nstdout:\n{output}\nstderr:\n{err_out}");
-                return Err(ConversionError::AbnormalExit(self.image_path.clone()));
+                return Err(AbnormalExit(self.image_path.clone()));
             }
             Ok(_) => {
                 let mut stdout = child.stdout.take().unwrap();
@@ -324,74 +251,39 @@ impl ConversionJob {
                 trace!("process output:\nstdout:\n{output}\nstderr:\n{err_out}");
                 ()
             }
-            Err(_) => return Err(ConversionError::Unspecific("error during wait".to_string())),
+            Err(_) => return Err(Unspecific("error during wait".to_string())),
         }
 
-        if let Err(_) = fs::remove_file(self.image_path.clone()) {
-            return Err(ConversionError::Unspecific(format!(
+        if let Err(_) = fs::remove_file(&self.image_path) {
+            return Err(Unspecific(format!(
                 "intermediate step: Could not delete '{:?}'",
                 self.image_path
             )));
         }
 
-        let next_status = match (self.current, self.target) {
-            (ImageFormat::Jpeg, ImageFormat::Jpeg) => unreachable!(),
-            (ImageFormat::Jpeg, ImageFormat::Png) => unreachable!(),
-            (ImageFormat::Jpeg, ImageFormat::Avif) => unreachable!(),
-            (ImageFormat::Jpeg, ImageFormat::Jxl) => unreachable!(),
-            (ImageFormat::Png, ImageFormat::Jpeg) => unreachable!(),
-            (ImageFormat::Png, ImageFormat::Png) => unreachable!(),
-            (ImageFormat::Png, ImageFormat::Avif) => unreachable!(),
-            (ImageFormat::Png, ImageFormat::Jxl) => unreachable!(),
-            (ImageFormat::Avif, ImageFormat::Jpeg) => unreachable!(),
-            (ImageFormat::Avif, ImageFormat::Png) => unreachable!(),
-            (ImageFormat::Avif, ImageFormat::Avif) => unreachable!(),
-            (ImageFormat::Jxl, ImageFormat::Jpeg) => unreachable!(),
-            (ImageFormat::Jxl, ImageFormat::Png) => unreachable!(),
-            (ImageFormat::Jxl, ImageFormat::Jxl) => unreachable!(),
-            (ImageFormat::Avif, ImageFormat::Jxl) => {
-                let input_path = self.image_path.with_extension("png");
-                let output_path = self.image_path.with_extension("jxl");
-                let mut command = Command::new("cjxl");
-                command.args([
-                    "--effort=9",
-                    "--num_threads=1",
-                    "--distance=0",
-                    input_path.to_str().unwrap(),
-                    output_path.to_str().unwrap(),
-                ]);
-                let spawned = command
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .spawn()
-                    .map_err(|_| ConversionError::SpawnFailure("cjxl".to_string()))?;
-                self.child = Some(spawned);
+        let next_status = match (self.intermediate.unwrap(), self.target) {
+            (from @ (Jpeg | Png), to @ Avif) => {
+                let input_path = self.image_path.with_extension(from.to_string());
+                let output_path = self.image_path.with_extension(to.to_string());
+                let child = spawn::encode_avif(&input_path, &output_path)?;
+                self.child = Some(child);
                 JobStatus::Encoding
             }
-            (ImageFormat::Jxl, ImageFormat::Avif) => {
-                let input_path = match self.intermediate {
-                    Some(ImageFormat::Jpeg) => self.image_path.with_extension("jpeg"),
-                    Some(ImageFormat::Png) => self.image_path.with_extension("png"),
-                    _ => unreachable!(),
-                };
-                let output_path = self.image_path.with_extension("avif");
-                let mut command = Command::new("cavif");
-                command.args([
-                    "--speed=3",
-                    "--threads=1",
-                    "--quality=88",
-                    input_path.to_str().unwrap(),
-                    "-o",
-                    output_path.to_str().unwrap(),
-                ]);
-                let spawned = command
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .spawn()
-                    .map_err(|_| ConversionError::SpawnFailure("cavif".to_string()))?;
-                self.child = Some(spawned);
+            (from @ (Jpeg | Png), to @ Jxl) => {
+                let input_path = self.image_path.with_extension(from.to_string());
+                let output_path = self.image_path.with_extension(to.to_string());
+                let child = spawn::encode_jxl(&input_path, &output_path)?;
+                self.child = Some(child);
                 JobStatus::Encoding
             }
+            (from @ Png, to @ WebP) => {
+                let input_path = self.image_path.with_extension(from.to_string());
+                let output_path = self.image_path.with_extension(to.to_string());
+                let child = spawn::encode_webp(&input_path, &output_path)?;
+                self.child = Some(child);
+                JobStatus::Encoding
+            }
+            (_, Jpeg | Png | Avif | Jxl | WebP) => unreachable!(),
         };
         self.status = next_status;
         Ok(next_status)
@@ -412,7 +304,7 @@ impl ConversionJob {
                 let mut err_out = String::new();
                 stderr.read_to_string(&mut err_out).unwrap();
                 debug!("error on process:\nstdout:\n{output}\nstderr:\n{err_out}");
-                return Err(ConversionError::AbnormalExit(self.image_path.clone()));
+                return Err(AbnormalExit(self.image_path.clone()));
             }
             Ok(_) => {
                 let mut stdout = child.stdout.take().unwrap();
@@ -424,35 +316,17 @@ impl ConversionJob {
                 trace!("process output:\nstdout:\n{output}\nstderr:\n{err_out}");
                 ()
             }
-            Err(_) => return Err(ConversionError::Unspecific("error during wait".to_string())),
+            Err(_) => return Err(Unspecific("error during wait".to_string())),
         }
-        let delete_path = match (self.current, self.target) {
-            (ImageFormat::Jpeg, ImageFormat::Jpeg) => unreachable!(),
-            (ImageFormat::Jpeg, ImageFormat::Png) => self.image_path.clone(),
-            (ImageFormat::Jpeg, ImageFormat::Avif) => self.image_path.clone(),
-            (ImageFormat::Jpeg, ImageFormat::Jxl) => self.image_path.clone(),
-            (ImageFormat::Png, ImageFormat::Jpeg) => self.image_path.clone(),
-            (ImageFormat::Png, ImageFormat::Png) => unreachable!(),
-            (ImageFormat::Png, ImageFormat::Avif) => self.image_path.clone(),
-            (ImageFormat::Png, ImageFormat::Jxl) => self.image_path.clone(),
-            (ImageFormat::Avif, ImageFormat::Jpeg) => self.image_path.clone(),
-            (ImageFormat::Avif, ImageFormat::Png) => self.image_path.clone(),
-            (ImageFormat::Avif, ImageFormat::Avif) => unreachable!(),
-            (ImageFormat::Avif, ImageFormat::Jxl) => self.image_path.with_extension("png"),
-            (ImageFormat::Jxl, ImageFormat::Jpeg) => self.image_path.clone(),
-            (ImageFormat::Jxl, ImageFormat::Png) => self.image_path.clone(),
-            (ImageFormat::Jxl, ImageFormat::Avif) => match self.intermediate {
-                Some(ImageFormat::Jpeg) => self.image_path.with_extension("jpeg"),
-                Some(ImageFormat::Png) => self.image_path.with_extension("png"),
-                _ => unreachable!(),
-            },
-            (ImageFormat::Jxl, ImageFormat::Jxl) => unreachable!(),
+        let delete_path = match self.intermediate {
+            Some(intermediate) => self.image_path.with_extension(intermediate.to_string()),
+            None => self.image_path.clone(),
         };
 
         self.status = JobStatus::Done;
-        match fs::remove_file(delete_path.clone()) {
+        match fs::remove_file(&delete_path) {
             Ok(_) => Ok(self.status),
-            Err(_) => Err(ConversionError::Unspecific(format!(
+            Err(_) => Err(Unspecific(format!(
                 "converting step: Could not delete '{:?}'",
                 delete_path
             ))),
@@ -493,9 +367,7 @@ impl ConversionJob {
             }
             Err(_) => {
                 trace!("error");
-                return Err(ConversionError::Unspecific(
-                    self.image_path.to_string_lossy().to_string(),
-                ));
+                return Err(Unspecific(self.image_path.to_string_lossy().to_string()));
             }
         }
     }
@@ -503,17 +375,18 @@ impl ConversionJob {
 
 impl WorkUnit {
     fn new(
-        cbz_path: PathBuf,
+        cbz_path: &PathBuf,
         target_format: ImageFormat,
         workers: usize,
         force: bool,
     ) -> Result<WorkUnit, ConversionError> {
+        let cbz_path = cbz_path.clone();
         trace!("called WorkUnit::new()");
         let not_correct_extention = cbz_path
             .extension()
             .map_or(true, |e| e != "cbz" && e != "zip");
         if not_correct_extention {
-            return Err(ConversionError::NotAnArchive(cbz_path.to_path_buf()));
+            return Err(NotAnArchive(cbz_path.to_path_buf()));
         }
 
         let root_dir = get_extraction_root_dir(&cbz_path);
@@ -525,7 +398,7 @@ impl WorkUnit {
             .filter(|job| force || !only_if_forced(job.current, job.target))
             .collect::<VecDeque<_>>();
         if job_queue.is_empty() {
-            return Err(ConversionError::NothingToDo(cbz_path));
+            return Err(NothingToDo(cbz_path));
         }
 
         Ok(WorkUnit {
@@ -548,8 +421,8 @@ impl WorkUnit {
         let mut archive = ZipArchive::new(reader).unwrap();
 
         debug!("extracting {:?} to {:?}", self.cbz_path, extract_dir);
-        fs::create_dir_all(extract_dir.clone()).unwrap();
-        archive.extract(extract_dir.clone()).unwrap();
+        fs::create_dir_all(&extract_dir).unwrap();
+        archive.extract(&extract_dir).unwrap();
     }
 
     fn compress_cbz(&mut self) {
@@ -557,12 +430,11 @@ impl WorkUnit {
 
         let dir = self.cbz_path.parent().unwrap();
         let name = self.cbz_path.file_stem().unwrap();
-        let zip_path = match self.target_format {
-            ImageFormat::Avif => dir.join(format!("{}.avif.cbz", name.to_str().unwrap())),
-            ImageFormat::Jxl => dir.join(format!("{}.jxl.cbz", name.to_str().unwrap())),
-            ImageFormat::Jpeg => dir.join(format!("{}.jpeg.cbz", name.to_str().unwrap())),
-            ImageFormat::Png => dir.join(format!("{}.png.cbz", name.to_str().unwrap())),
-        };
+        let zip_path = dir.join(format!(
+            "{}.{}.cbz",
+            name.to_str().unwrap(),
+            self.target_format.to_string()
+        ));
         debug!("create cbz at {:?}", zip_path);
         let file = File::create(zip_path).unwrap();
 
@@ -608,11 +480,7 @@ impl WorkUnit {
         // these signals will be catched from here on out until the end of this function
         let mut signals = match Signals::new(&[SIGINT, SIGCHLD]) {
             Ok(signals) => signals,
-            Err(_) => {
-                return Err(ConversionError::Unspecific(
-                    "could not listen to signals".to_string(),
-                ))
-            }
+            Err(_) => return Err(Unspecific("could not listen to signals".to_string())),
         };
 
         // start out as many jobs as allowed
@@ -639,7 +507,7 @@ impl WorkUnit {
                 match signal {
                     SIGINT => {
                         debug!("got signal SIGINT");
-                        return Err(ConversionError::Interrupt);
+                        return Err(Interrupt);
                     }
                     SIGCHLD => {
                         debug!("got signal SIGCHLD");
@@ -733,19 +601,19 @@ impl Drop for WorkUnit {
         debug!("cleanup for {:?}", self.cbz_path);
         let extract_dir = get_conversion_root_dir(&self.cbz_path);
         if extract_dir.exists() {
-            fs::remove_dir_all(extract_dir.clone()).unwrap();
+            fs::remove_dir_all(&extract_dir).unwrap();
         }
     }
 }
 
-fn jxl_is_compressed_jpeg(image_path: PathBuf) -> Result<bool, ConversionError> {
+fn jxl_is_compressed_jpeg(image_path: &PathBuf) -> Result<bool, ConversionError> {
     let mut command = Command::new("jxlinfo");
     command.args(["-v", image_path.to_str().unwrap()]);
     let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|_| ConversionError::SpawnFailure("jxlinfo".to_string()))?;
+        .map_err(|_| SpawnFailure("jxlinfo".to_string()))?;
 
     match child.wait() {
         Ok(status) if !status.success() => {
@@ -756,7 +624,7 @@ fn jxl_is_compressed_jpeg(image_path: PathBuf) -> Result<bool, ConversionError> 
             let mut err_string = String::new();
             stderr.read_to_string(&mut err_string).unwrap();
             debug!("error on process:\nstdout:\n{out_string}\nstderr:\n{err_string}");
-            return Err(ConversionError::AbnormalExit(image_path.clone()));
+            return Err(AbnormalExit(image_path.clone()));
         }
         Ok(_) => {
             let mut stdout = child.stdout.take().unwrap();
@@ -773,7 +641,7 @@ fn jxl_is_compressed_jpeg(image_path: PathBuf) -> Result<bool, ConversionError> 
                 .is_some();
             Ok(has_jbrd_box)
         }
-        Err(_) => return Err(ConversionError::Unspecific("error during wait".to_string())),
+        Err(_) => return Err(Unspecific("error during wait".to_string())),
     }
 }
 
@@ -785,7 +653,7 @@ fn images_in_archive(cbz_path: &PathBuf) -> Result<Vec<(PathBuf, ImageFormat)>, 
 
     let archive = match ZipArchive::new(reader) {
         Ok(archive) => archive,
-        Err(_) => return Err(ConversionError::NotAnArchive(cbz_path.clone())),
+        Err(_) => return Err(NotAnArchive(cbz_path.clone())),
     };
     let mut result = vec![];
     for file_inside in archive.file_names() {
@@ -793,11 +661,11 @@ fn images_in_archive(cbz_path: &PathBuf) -> Result<Vec<(PathBuf, ImageFormat)>, 
         trace!("found file {:?}", file_inside);
         if let Some(ext) = file_inside.extension() {
             match ext.to_str().unwrap() {
-                "jpg" => result.push((file_inside, ImageFormat::Jpeg)),
-                "jpeg" => result.push((file_inside, ImageFormat::Jpeg)),
-                "png" => result.push((file_inside, ImageFormat::Png)),
-                "avif" => result.push((file_inside, ImageFormat::Avif)),
-                "jxl" => result.push((file_inside, ImageFormat::Jxl)),
+                "jpg" => result.push((file_inside, Jpeg)),
+                "jpeg" => result.push((file_inside, Jpeg)),
+                "png" => result.push((file_inside, Png)),
+                "avif" => result.push((file_inside, Avif)),
+                "jxl" => result.push((file_inside, Jxl)),
                 _ => (),
             }
         }
@@ -842,18 +710,13 @@ fn get_conversion_root_dir(cbz_path: &PathBuf) -> PathBuf {
 }
 
 fn already_converted(path: &PathBuf, format: ImageFormat) -> bool {
-    let conversion_ending = match format {
-        ImageFormat::Avif => ".avif.cbz",
-        ImageFormat::Jxl => ".jxl.cbz",
-        ImageFormat::Jpeg => ".jpeg.cbz",
-        ImageFormat::Png => ".png.cbz",
-    };
+    let conversion_ending = format!(".{}.cbz", format.to_string());
 
     let dir = path.parent().unwrap();
     let name = path.file_stem().unwrap();
-    let zip_path = dir.join(format!("{}{conversion_ending}", name.to_str().unwrap()));
+    let zip_path = dir.join(format!("{}{}", name.to_str().unwrap(), conversion_ending));
 
-    let is_converted_archive = path.to_str().unwrap().ends_with(conversion_ending);
+    let is_converted_archive = path.to_str().unwrap().ends_with(&conversion_ending);
     let has_converted_archive = zip_path.exists();
 
     trace!(" is converted archive? {is_converted_archive}");
@@ -869,19 +732,19 @@ fn convert_single_cbz(
 ) -> Result<(), ConversionError> {
     trace!("called convert_single_cbz() with {:?}", cbz_file);
     if already_converted(&cbz_file, format) {
-        return Err(ConversionError::AlreadyDone(cbz_file.to_path_buf()));
+        return Err(AlreadyDone(cbz_file.to_path_buf()));
     }
 
-    let work_unit = WorkUnit::new(cbz_file.clone(), format, workers, force)?;
+    let work_unit = WorkUnit::new(&cbz_file, format, workers, force)?;
     work_unit.run()
 }
 
 fn only_if_forced(from: ImageFormat, to: ImageFormat) -> bool {
     match (from, to) {
-        (ImageFormat::Jpeg, _) => false,
-        (ImageFormat::Png, _) => false,
-        (_, ImageFormat::Jpeg) => false,
-        (_, ImageFormat::Png) => false,
+        (Jpeg, _) => false,
+        (Png, _) => false,
+        (_, Jpeg) => false,
+        (_, Png) => false,
         (a, b) if a == b => false,
         (_, _) => true,
     }
@@ -959,8 +822,8 @@ fn main() -> Result<()> {
     } else {
         if let Err(e) = convert_single_cbz(&path, format, workers, force) {
             match e {
-                ConversionError::NothingToDo(_) => info!("Nothing to do for {path:?}"),
-                ConversionError::NotAnArchive(_) => info!("This is not a Zip archive"),
+                NothingToDo(_) => info!("Nothing to do for {path:?}"),
+                NotAnArchive(_) => info!("This is not a Zip archive"),
                 _ => error!("{e}"),
             }
         }
@@ -976,7 +839,7 @@ mod tests {
     fn test_check_for_compressed_jxl() {
         let compressed_path = PathBuf::from("test_data/compressed.jxl");
         assert!(compressed_path.exists());
-        let out = jxl_is_compressed_jpeg(compressed_path).unwrap();
+        let out = jxl_is_compressed_jpeg(&compressed_path).unwrap();
         assert_eq!(out, true);
     }
 
@@ -984,7 +847,7 @@ mod tests {
     fn test_check_for_encoded_jxl() {
         let encoded_path = PathBuf::from("test_data/encoded.jxl");
         assert!(encoded_path.exists());
-        let out = jxl_is_compressed_jpeg(encoded_path).unwrap();
+        let out = jxl_is_compressed_jpeg(&encoded_path).unwrap();
         assert_eq!(out, false);
     }
 }
