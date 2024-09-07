@@ -553,7 +553,10 @@ impl WorkUnit {
         for job in self.jobs_in_process.iter_mut() {
             trace!("job in process: {job:?}");
             if let JobStatus::Done = job.status {
-                let mut new_job = self.job_queue.pop_front().unwrap();
+                let mut new_job = match self.job_queue.pop_front() {
+                    Some(job) => job,
+                    None => break,
+                };
                 trace!("replace job {job:?} for {new_job:?}");
                 std::mem::swap(job, &mut new_job);
                 job.proceed()?;
