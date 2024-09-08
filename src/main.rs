@@ -96,7 +96,7 @@ impl ConversionJob {
     ) -> Result<ConversionJob, ConversionError> {
         let result = match (from, to) {
             (a, b) if a == b => Err(NotSupported(from, to)),
-            (_, _) => Ok(()),
+            (_, Jpeg | Png | Avif | Jxl | Webp) => Ok(()),
         };
         if let Err(e) = result {
             warn!("{e}");
