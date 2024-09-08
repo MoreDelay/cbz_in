@@ -26,7 +26,7 @@ enum ConversionError {
     NothingToDo(PathBuf),
     #[error("conversion not supported from {0:?} to {1:?}")]
     NotSupported(ImageFormat, ImageFormat),
-    #[error("Conversion already done for '{0}'")]
+    #[error("conversion already done for '{0}'")]
     AlreadyDone(PathBuf),
     #[error("got interrupted")]
     Interrupt,
@@ -62,7 +62,7 @@ impl std::fmt::Display for ImageFormat {
     }
 }
 
-#[derive(Default, Clone, Copy, Debug)]
+#[derive(Default, Clone, Copy, Debug, PartialEq)]
 enum JobStatus {
     Init,
     Decoding,
@@ -402,7 +402,7 @@ impl WorkUnit {
             .filter_map(|(image_path, format)| {
                 ConversionJob::new(root_dir.join(image_path), *format, target_format).ok()
             })
-            .filter(|job| force || !only_if_forced(job.current, job.target))
+            .filter(|job| force || !convert_only_when_forced(job.current, job.target))
             .collect::<VecDeque<_>>();
         if job_queue.is_empty() {
             return Err(NothingToDo(cbz_path));
@@ -451,7 +451,7 @@ impl WorkUnit {
             .unix_permissions(0o755);
 
         let extract_dir = get_conversion_root_dir(&self.cbz_path);
-        trace!("Compress directory {extract_dir:?}");
+        trace!("compress directory {extract_dir:?}");
         let mut buffer = Vec::new();
         for entry in WalkDir::new(&extract_dir)
             .into_iter()
@@ -507,7 +507,6 @@ impl WorkUnit {
             }
         }
 
-        // add new jobs as other jobs complete
         trace!("start new jobs as old ones complete");
         while self.jobs_pending() {
             for signal in signals.wait() {
@@ -570,13 +569,7 @@ impl WorkUnit {
             .jobs_in_process
             .iter()
             .map(|job| job.status)
-            .all(|status| {
-                if let JobStatus::Done = status {
-                    true
-                } else {
-                    false
-                }
-            });
+            .all(|status| JobStatus::Done == status);
         !all_done
     }
 }
@@ -616,7 +609,8 @@ impl Drop for WorkUnit {
         debug!("cleanup for {:?}", self.cbz_path);
         let extract_dir = get_conversion_root_dir(&self.cbz_path);
         if extract_dir.exists() {
-            fs::remove_dir_all(&extract_dir).unwrap();
+            // ignore errors
+            let _ = fs::remove_dir_all(&extract_dir);
         }
     }
 }
@@ -661,7 +655,7 @@ fn jxl_is_compressed_jpeg(image_path: &PathBuf) -> Result<bool, ConversionError>
 }
 
 fn images_in_archive(cbz_path: &PathBuf) -> Result<Vec<(PathBuf, ImageFormat)>, ConversionError> {
-    trace!("called cbz_contains_convertable_images()");
+    trace!("called images_in_archive()");
 
     let file = File::open(cbz_path).unwrap();
     let reader = BufReader::new(file);
@@ -698,8 +692,7 @@ fn get_extraction_root_dir(cbz_path: &PathBuf) -> PathBuf {
     let archive_root_dirs = archive
         .file_names()
         .into_iter()
-        .filter(|s| s.ends_with("/"))
-        .filter(|s| s.find("/").unwrap() == s.len() - 1)
+        .filter(|s| s.ends_with("/") && s.find("/").unwrap() == s.len() - 1)
         .map(|s| s.strip_suffix("/").unwrap())
         .collect::<Vec<_>>();
 
@@ -756,13 +749,10 @@ fn convert_single_cbz(
     work_unit.run()
 }
 
-fn only_if_forced(from: ImageFormat, to: ImageFormat) -> bool {
+fn convert_only_when_forced(from: ImageFormat, to: ImageFormat) -> bool {
     match (from, to) {
-        (Jpeg, _) => false,
-        (Png, _) => false,
-        (_, Jpeg) => false,
-        (_, Png) => false,
-        (a, b) if a == b => false,
+        (Jpeg | Png, _) => false,
+        (_, Jpeg | Png) => false,
         (_, _) => true,
     }
 }
@@ -809,7 +799,7 @@ fn main() -> Result<()> {
     let format = matches.format;
     let path = matches.path;
     if !path.exists() {
-        error!("Does not exists: {:?}", path);
+        error!("does not exists: {:?}", path);
         exit(1);
     }
 
@@ -825,7 +815,7 @@ fn main() -> Result<()> {
     let force = matches.force;
 
     if path.is_dir() {
-        for cbz_file in path.read_dir().expect("read dir call failed!") {
+        for cbz_file in path.read_dir().expect("could not read dir") {
             if let Ok(cbz_file) = cbz_file {
                 let cbz_file = cbz_file.path();
                 info!("Converting {:?}", cbz_file);
