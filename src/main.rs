@@ -819,10 +819,15 @@ fn main() -> Result<()> {
             if let Ok(cbz_file) = cbz_file {
                 let cbz_file = cbz_file.path();
                 info!("Converting {:?}", cbz_file);
-                if let Err(e) = convert_single_cbz(&cbz_file, format, workers, force) {
-                    warn!("{e}");
-                } else {
-                    info!("Done");
+                match convert_single_cbz(&cbz_file, format, workers, force) {
+                    Ok(()) => info!("Done"),
+                    Err(NothingToDo(path)) => info!("Nothing to do for {path:?}"),
+                    Err(AlreadyDone(path)) => info!("Already converted {path:?}"),
+                    Err(NotAnArchive(_)) => info!("This is not a Zip archive"),
+                    Err(e) => {
+                        error!("{e}");
+                        break;
+                    }
                 }
             }
         }
