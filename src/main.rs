@@ -9,7 +9,7 @@ use std::thread;
 
 use anyhow::Result;
 use clap::Parser;
-use log::{debug, error, info, trace, warn};
+use log::{debug, error, info, trace};
 use signal_hook::{
     consts::{SIGCHLD, SIGINT},
     iterator::Signals,
@@ -99,7 +99,6 @@ impl ConversionJob {
             (_, Jpeg | Png | Avif | Jxl | Webp) => Ok(()),
         };
         if let Err(e) = result {
-            warn!("{e}");
             return Err(e);
         }
 
@@ -232,23 +231,13 @@ impl ConversionJob {
         };
         match child.wait() {
             Ok(status) if !status.success() => {
-                let mut stdout = child.stdout.take().unwrap();
-                let mut output = String::new();
-                stdout.read_to_string(&mut output).unwrap();
-                let mut stderr = child.stderr.take().unwrap();
-                let mut err_out = String::new();
-                stderr.read_to_string(&mut err_out).unwrap();
-                debug!("error on process:\nstdout:\n{output}\nstderr:\n{err_out}");
+                let output = extract_console_output(child);
+                debug!("error on process:\n{output}");
                 return Err(AbnormalExit(self.image_path.clone()));
             }
             Ok(_) => {
-                let mut stdout = child.stdout.take().unwrap();
-                let mut output = String::new();
-                stdout.read_to_string(&mut output).unwrap();
-                let mut stderr = child.stderr.take().unwrap();
-                let mut err_out = String::new();
-                stderr.read_to_string(&mut err_out).unwrap();
-                trace!("process output:\nstdout:\n{output}\nstderr:\n{err_out}");
+                let output = extract_console_output(child);
+                trace!("process output:\n{output}");
                 ()
             }
             Err(_) => return Err(Unspecific("error during wait".to_string())),
@@ -304,23 +293,13 @@ impl ConversionJob {
         };
         match child.wait() {
             Ok(status) if !status.success() => {
-                let mut stdout = child.stdout.take().unwrap();
-                let mut output = String::new();
-                stdout.read_to_string(&mut output).unwrap();
-                let mut stderr = child.stderr.take().unwrap();
-                let mut err_out = String::new();
-                stderr.read_to_string(&mut err_out).unwrap();
-                debug!("error on process:\nstdout:\n{output}\nstderr:\n{err_out}");
+                let output = extract_console_output(child);
+                debug!("error on process:\n{output}");
                 return Err(AbnormalExit(self.image_path.clone()));
             }
             Ok(_) => {
-                let mut stdout = child.stdout.take().unwrap();
-                let mut output = String::new();
-                stdout.read_to_string(&mut output).unwrap();
-                let mut stderr = child.stderr.take().unwrap();
-                let mut err_out = String::new();
-                stderr.read_to_string(&mut err_out).unwrap();
-                trace!("process output:\nstdout:\n{output}\nstderr:\n{err_out}");
+                let output = extract_console_output(child);
+                trace!("process output:\n{output}");
                 ()
             }
             Err(_) => return Err(Unspecific("error during wait".to_string())),
@@ -615,6 +594,16 @@ impl Drop for WorkUnit {
     }
 }
 
+fn extract_console_output(child: &mut Child) -> String {
+    let stdout = child.stdout.as_mut().unwrap();
+    let mut output = String::new();
+    stdout.read_to_string(&mut output).unwrap();
+    let stderr = child.stderr.as_mut().unwrap();
+    let mut err_out = String::new();
+    stderr.read_to_string(&mut err_out).unwrap();
+    format!("stdout:\n{output}\nstderr:\n{err_out}")
+}
+
 fn jxl_is_compressed_jpeg(image_path: &PathBuf) -> Result<bool, ConversionError> {
     let mut command = Command::new("jxlinfo");
     command.args(["-v", image_path.to_str().unwrap()]);
@@ -626,25 +615,15 @@ fn jxl_is_compressed_jpeg(image_path: &PathBuf) -> Result<bool, ConversionError>
 
     match child.wait() {
         Ok(status) if !status.success() => {
-            let mut stdout = child.stdout.take().unwrap();
-            let mut out_string = String::new();
-            stdout.read_to_string(&mut out_string).unwrap();
-            let mut stderr = child.stderr.take().unwrap();
-            let mut err_string = String::new();
-            stderr.read_to_string(&mut err_string).unwrap();
-            debug!("error on process:\nstdout:\n{out_string}\nstderr:\n{err_string}");
+            let output = extract_console_output(&mut child);
+            debug!("error on process:\n{output}");
             return Err(AbnormalExit(image_path.clone()));
         }
         Ok(_) => {
-            let mut stdout = child.stdout.take().unwrap();
-            let mut out_string = String::new();
-            stdout.read_to_string(&mut out_string).unwrap();
-            let mut stderr = child.stderr.take().unwrap();
-            let mut err_string = String::new();
-            stderr.read_to_string(&mut err_string).unwrap();
-            trace!("process output:\nstdout:\n{out_string}\nstderr:\n{err_string}");
+            let output = extract_console_output(&mut child);
+            trace!("process output:\n{output}");
 
-            let has_jbrd_box = out_string
+            let has_jbrd_box = output
                 .lines()
                 .find(|line| line.starts_with("box: type: \"jbrd\""))
                 .is_some();
