@@ -634,7 +634,7 @@ fn jxl_is_compressed_jpeg(image_path: &PathBuf) -> Result<bool, ConversionError>
 }
 
 fn images_in_archive(cbz_path: &PathBuf) -> Result<Vec<(PathBuf, ImageFormat)>, ConversionError> {
-    trace!("called images_in_archive_7z()");
+    trace!("called images_in_archive()");
 
     let mut command = Command::new("7z");
     command.args([
@@ -677,19 +677,34 @@ fn images_in_archive(cbz_path: &PathBuf) -> Result<Vec<(PathBuf, ImageFormat)>, 
 }
 
 fn get_extraction_root_dir(cbz_path: &PathBuf) -> PathBuf {
-    let file = File::open(&cbz_path).unwrap();
-    let reader = BufReader::new(file);
-    let archive = ZipArchive::new(reader).unwrap();
+    let mut command = Command::new("7z");
+    command.args([
+        "l",
+        "-ba",  // undocumented switch to remove header lines
+        "-slt", // use format that is easier to parse
+        cbz_path.to_str().unwrap(),
+    ]);
+    let child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|_| SpawnFailure("7z".to_string()))
+        .unwrap();
 
     let archive_name = cbz_path.file_stem().unwrap();
-    let archive_root_dirs = archive
-        .file_names()
-        .into_iter()
-        .filter(|s| s.ends_with("/") && s.find("/").unwrap() == s.len() - 1)
-        .map(|s| s.strip_suffix("/").unwrap())
-        .collect::<Vec<_>>();
+    let archive_root_dirs = match child.wait_with_output() {
+        Ok(output) => output
+            .stdout
+            .lines()
+            .into_iter()
+            .filter(|v| v.as_ref().is_ok_and(|line| line.starts_with("Path = ")))
+            .map(|v| v.unwrap().strip_prefix("Path = ").unwrap().to_string())
+            .filter(|file| !file.contains("/"))
+            .collect::<Vec<_>>(),
+        Err(e) => Err(ConversionError::Unspecific(format!("{}", e.to_string()))).unwrap(),
+    };
 
-    let has_root_within = archive_root_dirs.len() == 1 && archive_root_dirs[0] == archive_name;
+    let has_root_within = archive_root_dirs.len() == 1 && *archive_root_dirs[0] == *archive_name;
     let extract_dir = if has_root_within {
         trace!("extract directly");
         let parent_dir = cbz_path.parent().unwrap().to_path_buf();
