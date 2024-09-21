@@ -2,7 +2,7 @@ mod spawn;
 
 use std::collections::VecDeque;
 use std::fs::{self, File};
-use std::io::{BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::{exit, Child, Command, Stdio};
 use std::thread;
@@ -634,32 +634,46 @@ fn jxl_is_compressed_jpeg(image_path: &PathBuf) -> Result<bool, ConversionError>
 }
 
 fn images_in_archive(cbz_path: &PathBuf) -> Result<Vec<(PathBuf, ImageFormat)>, ConversionError> {
-    trace!("called images_in_archive()");
+    trace!("called images_in_archive_7z()");
 
-    let file = File::open(cbz_path).unwrap();
-    let reader = BufReader::new(file);
-
-    let archive = match ZipArchive::new(reader) {
-        Ok(archive) => archive,
-        Err(_) => return Err(NotAnArchive(cbz_path.clone())),
-    };
-    let mut result = vec![];
-    for file_inside in archive.file_names() {
-        let file_inside = PathBuf::from(file_inside);
-        trace!("found file {:?}", file_inside);
-        if let Some(ext) = file_inside.extension() {
-            match ext.to_str().unwrap() {
-                "jpg" => result.push((file_inside, Jpeg)),
-                "jpeg" => result.push((file_inside, Jpeg)),
-                "png" => result.push((file_inside, Png)),
-                "avif" => result.push((file_inside, Avif)),
-                "jxl" => result.push((file_inside, Jxl)),
-                "webp" => result.push((file_inside, Webp)),
-                _ => trace!("not an image: {:?}", file_inside),
-            }
+    let mut command = Command::new("7z");
+    command.args([
+        "l",
+        "-ba",  // undocumented switch to remove header lines
+        "-slt", // use format that is easier to parse
+        cbz_path.to_str().unwrap(),
+    ]);
+    let child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|_| SpawnFailure("7z".to_string()))?;
+    match child.wait_with_output() {
+        Ok(output) => {
+            let files = output
+                .stdout
+                .lines()
+                .into_iter()
+                .filter(|v| v.as_ref().is_ok_and(|line| line.starts_with("Path = ")))
+                .map(|v| v.unwrap().strip_prefix("Path = ").unwrap().to_string())
+                .map(|file_str| PathBuf::from(file_str))
+                .filter_map(|file| {
+                    trace!("found file {file:?}");
+                    match file.extension()?.to_str().unwrap() {
+                        "jpg" => Some((file, Jpeg)),
+                        "jpeg" => Some((file, Jpeg)),
+                        "png" => Some((file, Png)),
+                        "avif" => Some((file, Avif)),
+                        "jxl" => Some((file, Jxl)),
+                        "webp" => Some((file, Webp)),
+                        _ => None,
+                    }
+                })
+                .collect::<Vec<_>>();
+            Ok(files)
         }
+        Err(e) => Err(ConversionError::Unspecific(format!("{}", e.to_string()))),
     }
-    Ok(result)
 }
 
 fn get_extraction_root_dir(cbz_path: &PathBuf) -> PathBuf {
