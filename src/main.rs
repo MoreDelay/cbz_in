@@ -528,16 +528,21 @@ impl WorkUnit {
 
     fn start_next_jobs(&mut self) -> Result<(), ConversionError> {
         trace!("start new jobs");
-        for job in self.jobs_in_process.iter_mut() {
+        'replace: for job in self.jobs_in_process.iter_mut() {
             trace!("job in process: {job:?}");
             if let JobStatus::Done = job.status {
-                let mut new_job = match self.job_queue.pop_front() {
-                    Some(job) => job,
-                    None => break,
+                let mut new_job = 'search: loop {
+                    let mut new_job = match self.job_queue.pop_front() {
+                        Some(new_job) => new_job,
+                        None => break 'replace,
+                    };
+                    match new_job.proceed()? {
+                        JobStatus::Done => continue,
+                        _ => break 'search new_job,
+                    }
                 };
                 trace!("replace job {job:?} for {new_job:?}");
                 std::mem::swap(job, &mut new_job);
-                job.proceed()?;
             }
         }
         Ok(())
