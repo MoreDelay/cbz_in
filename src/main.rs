@@ -2,7 +2,7 @@ mod spawn;
 
 use std::collections::VecDeque;
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, Read, Write};
 use std::path::PathBuf;
 use std::process::{exit, Child, Command, Stdio};
 use std::thread;
@@ -16,7 +16,7 @@ use signal_hook::{
 };
 use thiserror::Error;
 use walkdir::WalkDir;
-use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
+use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
 
 #[derive(Error, Debug)]
 enum ConversionError {
@@ -400,15 +400,33 @@ impl WorkUnit {
         trace!("called extract_cbz() with {:?}", self.cbz_path);
         assert!(self.cbz_path.is_file());
 
-        let extract_dir = get_extraction_root_dir(&self.cbz_path);
-
-        let file = File::open(&self.cbz_path).unwrap();
-        let reader = BufReader::new(file);
-        let mut archive = ZipArchive::new(reader).unwrap();
+        let extract_dir = get_conversion_root_dir(&self.cbz_path);
 
         debug!("extracting {:?} to {:?}", self.cbz_path, extract_dir);
         fs::create_dir_all(&extract_dir).unwrap();
-        archive.extract(&extract_dir).unwrap();
+
+        let mut command = Command::new("7z");
+        command.args([
+            "x",
+            "-tzip", // undocumented switch to remove header lines
+            self.cbz_path.to_str().unwrap(),
+            "-spe",
+            format!("-o{}", extract_dir.to_str().unwrap()).as_str(),
+        ]);
+        let child = command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|_| SpawnFailure("7z".to_string()))
+            .unwrap();
+
+        let success = match child.wait_with_output() {
+            Ok(output) => output.status.code().is_some_and(|code| code == 0),
+            Err(e) => Err(ConversionError::Unspecific(format!("{}", e.to_string()))).unwrap(),
+        };
+        if !success {
+            panic!("Extraction with 7z unsuccessful")
+        }
     }
 
     fn compress_cbz(&mut self) {
