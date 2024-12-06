@@ -30,6 +30,8 @@ enum ConversionError {
     AlreadyDone(PathBuf),
     #[error("got interrupted")]
     Interrupt,
+    #[error("Error during extraction: {0}")]
+    ExtractionError(String),
     #[error("child process finished abnormally for '{0}'")]
     AbnormalExit(PathBuf),
     #[error("could not start process with the program '{0}'")]
@@ -396,13 +398,18 @@ impl WorkUnit {
         })
     }
 
-    fn extract_cbz(&mut self) {
+    fn extract_cbz(&mut self) -> Result<(), ConversionError> {
         trace!("called extract_cbz() with {:?}", self.cbz_path);
         assert!(self.cbz_path.is_file());
 
         let extract_dir = get_conversion_root_dir(&self.cbz_path);
 
         debug!("extracting {:?} to {:?}", self.cbz_path, extract_dir);
+        if extract_dir.exists() {
+            return Err(ConversionError::ExtractionError(
+                "Extract directory already exists, delete it and try again".to_string(),
+            ));
+        }
         fs::create_dir_all(&extract_dir).unwrap();
 
         let mut command = Command::new("7z");
@@ -420,12 +427,15 @@ impl WorkUnit {
             .map_err(|_| SpawnFailure("7z".to_string()))
             .unwrap();
 
-        let success = match child.wait_with_output() {
-            Ok(output) => output.status.code().is_some_and(|code| code == 0),
-            Err(e) => Err(ConversionError::Unspecific(format!("{}", e.to_string()))).unwrap(),
-        };
-        if !success {
-            panic!("Extraction with 7z unsuccessful")
+        match child.wait_with_output() {
+            Ok(output) if output.status.code().is_some_and(|code| code == 0) => Ok(()),
+            Ok(_) => Err(ConversionError::ExtractionError(
+                "Extraction with 7z unsuccessful".to_string(),
+            )),
+            Err(e) => Err(ConversionError::ExtractionError(format!(
+                "{}",
+                e.to_string()
+            ))),
         }
     }
 
@@ -479,7 +489,7 @@ impl WorkUnit {
         debug!("start conversion for {:?}", self.cbz_path);
 
         assert!(!self.job_queue.is_empty());
-        self.extract_cbz();
+        self.extract_cbz()?;
 
         // these signals will be catched from here on out until the end of this function
         let mut signals = match Signals::new(&[SIGINT, SIGCHLD]) {
