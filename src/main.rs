@@ -3,7 +3,7 @@ mod spawn;
 use std::collections::VecDeque;
 use std::fs::{self, File};
 use std::io::{BufRead, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{exit, Child, Command, Stdio};
 use std::thread;
 
@@ -96,12 +96,9 @@ impl ConversionJob {
         from: ImageFormat,
         to: ImageFormat,
     ) -> Result<ConversionJob, ConversionError> {
-        let result = match (from, to) {
-            (a, b) if a == b => Err(NotSupported(from, to)),
-            (_, Jpeg | Png | Avif | Jxl | Webp) => Ok(()),
-        };
-        if let Err(e) = result {
-            return Err(e);
+        match (from, to) {
+            (a, b) if a == b => return Err(NotSupported(from, to)),
+            (_, Jpeg | Png | Avif | Jxl | Webp) => (),
         }
 
         Ok(ConversionJob {
@@ -240,12 +237,11 @@ impl ConversionJob {
             Ok(_) => {
                 let output = extract_console_output(child);
                 trace!("process output:\n{output}");
-                ()
             }
             Err(_) => return Err(Unspecific("error during wait".to_string())),
         }
 
-        if let Err(_) = fs::remove_file(&self.image_path) {
+        if fs::remove_file(&self.image_path).is_err() {
             return Err(Unspecific(format!(
                 "intermediate step: Could not delete '{:?}'",
                 self.image_path
@@ -302,7 +298,6 @@ impl ConversionJob {
             Ok(_) => {
                 let output = extract_console_output(child);
                 trace!("process output:\n{output}");
-                ()
             }
             Err(_) => return Err(Unspecific("error during wait".to_string())),
         }
@@ -347,15 +342,15 @@ impl ConversionJob {
         match child.try_wait() {
             Ok(Some(_)) => {
                 trace!("ready");
-                return Ok(true);
+                Ok(true)
             }
             Ok(None) => {
                 trace!("not ready");
-                return Ok(false);
+                Ok(false)
             }
             Err(_) => {
                 trace!("error");
-                return Err(Unspecific(self.image_path.to_string_lossy().to_string()));
+                Err(Unspecific(self.image_path.to_string_lossy().to_string()))
             }
         }
     }
@@ -363,12 +358,12 @@ impl ConversionJob {
 
 impl WorkUnit {
     fn new(
-        cbz_path: &PathBuf,
+        cbz_path: &Path,
         target_format: ImageFormat,
         workers: usize,
         force: bool,
     ) -> Result<WorkUnit, ConversionError> {
-        let cbz_path = cbz_path.clone();
+        let cbz_path = cbz_path.to_path_buf();
         trace!("called WorkUnit::new()");
         let not_correct_extention = cbz_path
             .extension()
@@ -432,10 +427,7 @@ impl WorkUnit {
             Ok(_) => Err(ConversionError::ExtractionError(
                 "Extraction with 7z unsuccessful".to_string(),
             )),
-            Err(e) => Err(ConversionError::ExtractionError(format!(
-                "{}",
-                e.to_string()
-            ))),
+            Err(e) => Err(ConversionError::ExtractionError(e.to_string())),
         }
     }
 
@@ -447,7 +439,7 @@ impl WorkUnit {
         let zip_path = dir.join(format!(
             "{}.{}.cbz",
             name.to_str().unwrap(),
-            self.target_format.to_string()
+            self.target_format
         ));
         debug!("create cbz at {:?}", zip_path);
         let file = File::create(zip_path).unwrap();
@@ -466,7 +458,7 @@ impl WorkUnit {
         {
             let entry = entry.path();
             debug!("add to archive: {:?}", entry);
-            let file_name = entry.strip_prefix(&extract_dir.parent().unwrap()).unwrap();
+            let file_name = entry.strip_prefix(extract_dir.parent().unwrap()).unwrap();
             let path_string = file_name
                 .to_str()
                 .to_owned()
@@ -492,7 +484,7 @@ impl WorkUnit {
         self.extract_cbz()?;
 
         // these signals will be catched from here on out until the end of this function
-        let mut signals = match Signals::new(&[SIGINT, SIGCHLD]) {
+        let mut signals = match Signals::new([SIGINT, SIGCHLD]) {
             Ok(signals) => signals,
             Err(_) => return Err(Unspecific("could not listen to signals".to_string())),
         };
@@ -637,7 +629,7 @@ fn extract_console_output(child: &mut Child) -> String {
     format!("stdout:\n{output}\nstderr:\n{err_out}")
 }
 
-fn jxl_is_compressed_jpeg(image_path: &PathBuf) -> Result<bool, ConversionError> {
+fn jxl_is_compressed_jpeg(image_path: &Path) -> Result<bool, ConversionError> {
     let mut command = Command::new("jxlinfo");
     command.args(["-v", image_path.to_str().unwrap()]);
     let mut child = command
@@ -650,7 +642,7 @@ fn jxl_is_compressed_jpeg(image_path: &PathBuf) -> Result<bool, ConversionError>
         Ok(status) if !status.success() => {
             let output = extract_console_output(&mut child);
             debug!("error on process:\n{output}");
-            return Err(AbnormalExit(image_path.clone()));
+            Err(AbnormalExit(image_path.to_path_buf()))
         }
         Ok(_) => {
             let output = extract_console_output(&mut child);
@@ -658,15 +650,14 @@ fn jxl_is_compressed_jpeg(image_path: &PathBuf) -> Result<bool, ConversionError>
 
             let has_jbrd_box = output
                 .lines()
-                .find(|line| line.starts_with("box: type: \"jbrd\""))
-                .is_some();
+                .any(|line| line.starts_with("box: type: \"jbrd\""));
             Ok(has_jbrd_box)
         }
-        Err(_) => return Err(Unspecific("error during wait".to_string())),
+        Err(_) => Err(Unspecific("error during wait".to_string())),
     }
 }
 
-fn images_in_archive(cbz_path: &PathBuf) -> Result<Vec<(PathBuf, ImageFormat)>, ConversionError> {
+fn images_in_archive(cbz_path: &Path) -> Result<Vec<(PathBuf, ImageFormat)>, ConversionError> {
     trace!("called images_in_archive()");
 
     let mut command = Command::new("7z");
@@ -686,10 +677,9 @@ fn images_in_archive(cbz_path: &PathBuf) -> Result<Vec<(PathBuf, ImageFormat)>, 
             let files = output
                 .stdout
                 .lines()
-                .into_iter()
                 .filter(|v| v.as_ref().is_ok_and(|line| line.starts_with("Path = ")))
                 .map(|v| v.unwrap().strip_prefix("Path = ").unwrap().to_string())
-                .map(|file_str| PathBuf::from(file_str))
+                .map(PathBuf::from)
                 .filter_map(|file| {
                     trace!("found file {file:?}");
                     match file.extension()?.to_str().unwrap() {
@@ -705,11 +695,11 @@ fn images_in_archive(cbz_path: &PathBuf) -> Result<Vec<(PathBuf, ImageFormat)>, 
                 .collect::<Vec<_>>();
             Ok(files)
         }
-        Err(e) => Err(ConversionError::Unspecific(format!("{}", e.to_string()))),
+        Err(e) => Err(ConversionError::Unspecific(e.to_string())),
     }
 }
 
-fn get_extraction_root_dir(cbz_path: &PathBuf) -> PathBuf {
+fn get_extraction_root_dir(cbz_path: &Path) -> PathBuf {
     let mut command = Command::new("7z");
     command.args([
         "l",
@@ -729,12 +719,11 @@ fn get_extraction_root_dir(cbz_path: &PathBuf) -> PathBuf {
         Ok(output) => output
             .stdout
             .lines()
-            .into_iter()
             .filter(|v| v.as_ref().is_ok_and(|line| line.starts_with("Path = ")))
             .map(|v| v.unwrap().strip_prefix("Path = ").unwrap().to_string())
             .filter(|file| !file.contains("/"))
             .collect::<Vec<_>>(),
-        Err(e) => Err(ConversionError::Unspecific(format!("{}", e.to_string()))).unwrap(),
+        Err(e) => panic!("{:?}", ConversionError::Unspecific(e.to_string())),
     };
 
     let has_root_within = archive_root_dirs.len() == 1 && *archive_root_dirs[0] == *archive_name;
@@ -743,25 +732,24 @@ fn get_extraction_root_dir(cbz_path: &PathBuf) -> PathBuf {
         let parent_dir = cbz_path.parent().unwrap().to_path_buf();
         assert_eq!(
             parent_dir.join(archive_name),
-            get_conversion_root_dir(&cbz_path)
+            get_conversion_root_dir(cbz_path)
         );
         parent_dir
     } else {
         trace!("extract into new root directory");
-        get_conversion_root_dir(&cbz_path)
+        get_conversion_root_dir(cbz_path)
     };
     extract_dir
 }
 
-fn get_conversion_root_dir(cbz_path: &PathBuf) -> PathBuf {
+fn get_conversion_root_dir(cbz_path: &Path) -> PathBuf {
     let dir = cbz_path.parent().unwrap();
     let name = cbz_path.file_stem().unwrap();
-    let root_dir = dir.join(name);
-    root_dir
+    dir.join(name)
 }
 
-fn already_converted(path: &PathBuf, format: ImageFormat) -> bool {
-    let conversion_ending = format!(".{}.cbz", format.to_string());
+fn already_converted(path: &Path, format: ImageFormat) -> bool {
+    let conversion_ending = format!(".{}.cbz", format);
 
     let dir = path.parent().unwrap();
     let name = path.file_stem().unwrap();
@@ -776,17 +764,17 @@ fn already_converted(path: &PathBuf, format: ImageFormat) -> bool {
 }
 
 fn convert_single_cbz(
-    cbz_file: &PathBuf,
+    cbz_file: &Path,
     format: ImageFormat,
     workers: usize,
     force: bool,
 ) -> Result<(), ConversionError> {
     trace!("called convert_single_cbz() with {:?}", cbz_file);
-    if already_converted(&cbz_file, format) {
+    if already_converted(cbz_file, format) {
         return Err(AlreadyDone(cbz_file.to_path_buf()));
     }
 
-    let work_unit = WorkUnit::new(&cbz_file, format, workers, force)?;
+    let work_unit = WorkUnit::new(cbz_file, format, workers, force)?;
     work_unit.run()
 }
 
@@ -856,29 +844,25 @@ fn main() -> Result<()> {
     let force = matches.force;
 
     if path.is_dir() {
-        for cbz_file in path.read_dir().expect("could not read dir") {
-            if let Ok(cbz_file) = cbz_file {
-                let cbz_file = cbz_file.path();
-                info!("Converting {:?}", cbz_file);
-                match convert_single_cbz(&cbz_file, format, workers, force) {
-                    Ok(()) => info!("Done"),
-                    Err(NothingToDo(path)) => info!("Nothing to do for {path:?}"),
-                    Err(AlreadyDone(path)) => info!("Already converted {path:?}"),
-                    Err(NotAnArchive(_)) => info!("This is not a Zip archive"),
-                    Err(e) => {
-                        error!("{e}");
-                        break;
-                    }
+        for cbz_file in path.read_dir().expect("could not read dir").flatten() {
+            let cbz_file = cbz_file.path();
+            info!("Converting {:?}", cbz_file);
+            match convert_single_cbz(&cbz_file, format, workers, force) {
+                Ok(()) => info!("Done"),
+                Err(NothingToDo(path)) => info!("Nothing to do for {path:?}"),
+                Err(AlreadyDone(path)) => info!("Already converted {path:?}"),
+                Err(NotAnArchive(_)) => info!("This is not a Zip archive"),
+                Err(e) => {
+                    error!("{e}");
+                    break;
                 }
             }
         }
-    } else {
-        if let Err(e) = convert_single_cbz(&path, format, workers, force) {
-            match e {
-                NothingToDo(_) => info!("Nothing to do for {path:?}"),
-                NotAnArchive(_) => info!("This is not a Zip archive"),
-                _ => error!("{e}"),
-            }
+    } else if let Err(e) = convert_single_cbz(&path, format, workers, force) {
+        match e {
+            NothingToDo(_) => info!("Nothing to do for {path:?}"),
+            NotAnArchive(_) => info!("This is not a Zip archive"),
+            _ => error!("{e}"),
         }
     }
     Ok(())
@@ -893,7 +877,7 @@ mod tests {
         let compressed_path = PathBuf::from("test_data/compressed.jxl");
         assert!(compressed_path.exists());
         let out = jxl_is_compressed_jpeg(&compressed_path).unwrap();
-        assert_eq!(out, true);
+        assert!(out);
     }
 
     #[test]
@@ -901,6 +885,6 @@ mod tests {
         let encoded_path = PathBuf::from("test_data/encoded.jxl");
         assert!(encoded_path.exists());
         let out = jxl_is_compressed_jpeg(&encoded_path).unwrap();
-        assert_eq!(out, false);
+        assert!(!out);
     }
 }

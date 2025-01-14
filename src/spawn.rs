@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 
 use anyhow::Result;
@@ -6,8 +6,8 @@ use anyhow::Result;
 use crate::ConversionError::{self, *};
 
 pub fn convert_jpeg_to_png(
-    input_path: &PathBuf,
-    output_path: &PathBuf,
+    input_path: &Path,
+    output_path: &Path,
 ) -> Result<Child, ConversionError> {
     let mut command = Command::new("magick");
     command.args([input_path.to_str().unwrap(), output_path.to_str().unwrap()]);
@@ -20,8 +20,8 @@ pub fn convert_jpeg_to_png(
 }
 
 pub fn convert_png_to_jpeg(
-    input_path: &PathBuf,
-    output_path: &PathBuf,
+    input_path: &Path,
+    output_path: &Path,
 ) -> Result<Child, ConversionError> {
     let mut command = Command::new("magick");
     command.args([
@@ -38,7 +38,7 @@ pub fn convert_png_to_jpeg(
     Ok(child)
 }
 
-pub fn encode_avif(input_path: &PathBuf, output_path: &PathBuf) -> Result<Child, ConversionError> {
+pub fn encode_avif(input_path: &Path, output_path: &Path) -> Result<Child, ConversionError> {
     let mut command = Command::new("cavif");
     command.args([
         "--speed=3",
@@ -56,7 +56,7 @@ pub fn encode_avif(input_path: &PathBuf, output_path: &PathBuf) -> Result<Child,
     Ok(child)
 }
 
-pub fn encode_jxl(input_path: &PathBuf, output_path: &PathBuf) -> Result<Child, ConversionError> {
+pub fn encode_jxl(input_path: &Path, output_path: &Path) -> Result<Child, ConversionError> {
     let mut command = Command::new("cjxl");
     command.args([
         "--effort=9",
@@ -73,7 +73,7 @@ pub fn encode_jxl(input_path: &PathBuf, output_path: &PathBuf) -> Result<Child, 
     Ok(child)
 }
 
-pub fn encode_webp(input_path: &PathBuf, output_path: &PathBuf) -> Result<Child, ConversionError> {
+pub fn encode_webp(input_path: &Path, output_path: &Path) -> Result<Child, ConversionError> {
     let mut command = Command::new("cwebp");
     command.args([
         "-q",
@@ -90,7 +90,7 @@ pub fn encode_webp(input_path: &PathBuf, output_path: &PathBuf) -> Result<Child,
     Ok(child)
 }
 
-pub fn decode_webp(input_path: &PathBuf, output_path: &PathBuf) -> Result<Child, ConversionError> {
+pub fn decode_webp(input_path: &Path, output_path: &Path) -> Result<Child, ConversionError> {
     let mut command = Command::new("dwebp");
     command.args([
         input_path.to_str().unwrap(),
@@ -105,10 +105,7 @@ pub fn decode_webp(input_path: &PathBuf, output_path: &PathBuf) -> Result<Child,
     Ok(child)
 }
 
-pub fn decode_jxl_to_png(
-    input_path: &PathBuf,
-    output_path: &PathBuf,
-) -> Result<Child, ConversionError> {
+pub fn decode_jxl_to_png(input_path: &Path, output_path: &Path) -> Result<Child, ConversionError> {
     let mut command = Command::new("djxl");
     command.args([
         input_path.to_str().unwrap(),
@@ -123,10 +120,7 @@ pub fn decode_jxl_to_png(
     Ok(child)
 }
 
-pub fn decode_jxl_to_jpeg(
-    input_path: &PathBuf,
-    output_path: &PathBuf,
-) -> Result<Child, ConversionError> {
+pub fn decode_jxl_to_jpeg(input_path: &Path, output_path: &Path) -> Result<Child, ConversionError> {
     let mut command = Command::new("djxl");
     command.args([
         input_path.to_str().unwrap(),
@@ -141,10 +135,7 @@ pub fn decode_jxl_to_jpeg(
     Ok(child)
 }
 
-pub fn decode_avif_to_png(
-    input_path: &PathBuf,
-    output_path: &PathBuf,
-) -> Result<Child, ConversionError> {
+pub fn decode_avif_to_png(input_path: &Path, output_path: &Path) -> Result<Child, ConversionError> {
     let mut command = Command::new("avifdec");
     command.args([
         "--jobs",
@@ -161,8 +152,8 @@ pub fn decode_avif_to_png(
 }
 
 pub fn decode_avif_to_jpeg(
-    input_path: &PathBuf,
-    output_path: &PathBuf,
+    input_path: &Path,
+    output_path: &Path,
 ) -> Result<Child, ConversionError> {
     let mut command = Command::new("avifdec");
     command.args([
