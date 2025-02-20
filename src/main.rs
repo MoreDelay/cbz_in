@@ -367,7 +367,7 @@ impl WorkUnit {
         trace!("called WorkUnit::new()");
         let not_correct_extention = cbz_path
             .extension()
-            .map_or(true, |e| e != "cbz" && e != "zip");
+            .is_none_or(|e| e != "cbz" && e != "zip");
         if not_correct_extention {
             return Err(NotAnArchive(cbz_path.to_path_buf()));
         }
