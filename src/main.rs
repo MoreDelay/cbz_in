@@ -363,8 +363,15 @@ impl WorkUnit {
         workers: usize,
         force: bool,
     ) -> Result<WorkUnit, ConversionError> {
-        let cbz_path = cbz_path.to_path_buf();
         trace!("called WorkUnit::new()");
+        let cbz_path = cbz_path.to_path_buf();
+
+        let extract_dir = get_conversion_root_dir(&cbz_path);
+        if extract_dir.exists() {
+            return Err(ConversionError::ExtractionError(
+                "Extract directory already exists, delete it and try again".to_string(),
+            ));
+        }
         let not_correct_extention = cbz_path
             .extension()
             .is_none_or(|e| e != "cbz" && e != "zip");
@@ -398,13 +405,9 @@ impl WorkUnit {
         assert!(self.cbz_path.is_file());
 
         let extract_dir = get_conversion_root_dir(&self.cbz_path);
+        assert!(!extract_dir.exists());
 
         debug!("extracting {:?} to {:?}", self.cbz_path, extract_dir);
-        if extract_dir.exists() {
-            return Err(ConversionError::ExtractionError(
-                "Extract directory already exists, delete it and try again".to_string(),
-            ));
-        }
         fs::create_dir_all(&extract_dir).unwrap();
 
         let mut command = Command::new("7z");
