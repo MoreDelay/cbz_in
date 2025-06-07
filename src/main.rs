@@ -773,6 +773,12 @@ fn convert_single_cbz(
     force: bool,
 ) -> Result<(), ConversionError> {
     trace!("called convert_single_cbz() with {:?}", cbz_file);
+    let correct_extension = cbz_file
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("zip") || ext.eq_ignore_ascii_case("cbz"));
+    if !correct_extension {
+        return Err(NothingToDo(cbz_file.to_path_buf()));
+    }
     if already_converted(cbz_file, format) {
         return Err(AlreadyDone(cbz_file.to_path_buf()));
     }
