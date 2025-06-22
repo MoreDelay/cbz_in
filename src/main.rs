@@ -685,7 +685,8 @@ fn images_in_archive(cbz_path: &Path) -> Result<Vec<(PathBuf, ImageFormat)>, Con
                 .map(PathBuf::from)
                 .filter_map(|file| {
                     trace!("found file {file:?}");
-                    match file.extension()?.to_str().unwrap() {
+                    let extension = file.extension()?.to_string_lossy().to_lowercase();
+                    match extension.as_str() {
                         "jpg" => Some((file, Jpeg)),
                         "jpeg" => Some((file, Jpeg)),
                         "png" => Some((file, Png)),
