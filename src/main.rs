@@ -73,7 +73,11 @@ enum JobStatus {
     Done,
 }
 
-struct ConversionJob {
+struct ValidArchive {
+    archive_path: PathBuf,
+}
+
+struct ImageJob {
     status: JobStatus,
     image_path: PathBuf,
     current: ImageFormat,
@@ -82,26 +86,42 @@ struct ConversionJob {
     child: Option<Child>,
 }
 
-struct WorkUnit {
-    cbz_path: PathBuf,
-    job_queue: VecDeque<ConversionJob>,
-    jobs_in_process: Vec<ConversionJob>,
+struct ArchiveJob {
+    archive_path: PathBuf,
+    job_queue: VecDeque<ImageJob>,
+    jobs_in_process: Vec<ImageJob>,
     target_format: ImageFormat,
-    workers: usize,
+    n_workers: usize,
 }
 
-impl ConversionJob {
+impl ValidArchive {
+    fn try_new(archive_path: PathBuf) -> Result<Self, ConversionError> {
+        const EXPECTED_EXTENSION: [&str; 2] = ["zip", "cbz"];
+
+        let correct_extension = archive_path.extension().is_some_and(|ext| {
+            EXPECTED_EXTENSION
+                .iter()
+                .any(|valid_ext| ext.eq_ignore_ascii_case(valid_ext))
+        });
+        if !correct_extension {
+            return Err(NotAnArchive(archive_path));
+        }
+        Ok(ValidArchive { archive_path })
+    }
+}
+
+impl ImageJob {
     fn new(
         image_path: PathBuf,
         from: ImageFormat,
         to: ImageFormat,
-    ) -> Result<ConversionJob, ConversionError> {
+    ) -> Result<ImageJob, ConversionError> {
         match (from, to) {
             (a, b) if a == b => return Err(NotSupported(from, to)),
             (_, Jpeg | Png | Avif | Jxl | Webp) => (),
         }
 
-        Ok(ConversionJob {
+        Ok(ImageJob {
             status: JobStatus::Init,
             image_path,
             current: from,
@@ -356,65 +376,63 @@ impl ConversionJob {
     }
 }
 
-impl WorkUnit {
+impl ArchiveJob {
     fn new(
-        cbz_path: &Path,
+        conversion_file: ValidArchive,
         target_format: ImageFormat,
-        workers: usize,
+        n_workers: usize,
         force: bool,
-    ) -> Result<WorkUnit, ConversionError> {
+    ) -> Result<ArchiveJob, ConversionError> {
         trace!("called WorkUnit::new()");
-        let cbz_path = cbz_path.to_path_buf();
+        let ValidArchive { archive_path } = conversion_file;
 
-        let extract_dir = get_conversion_root_dir(&cbz_path);
+        if already_converted(&archive_path, target_format) {
+            return Err(AlreadyDone(archive_path.to_path_buf()));
+        }
+
+        let extract_dir = get_conversion_root_dir(&archive_path);
         if extract_dir.exists() {
             return Err(ConversionError::ExtractionError(
                 "Extract directory already exists, delete it and try again".to_string(),
             ));
         }
-        let not_correct_extention = cbz_path
-            .extension()
-            .is_none_or(|e| e != "cbz" && e != "zip");
-        if not_correct_extention {
-            return Err(NotAnArchive(cbz_path.to_path_buf()));
-        }
 
-        let root_dir = get_extraction_root_dir(&cbz_path);
-        let job_queue = images_in_archive(&cbz_path)?
+        let root_dir = get_extraction_root_dir(&archive_path);
+        let job_queue = images_in_archive(&archive_path)?
             .iter()
             .filter_map(|(image_path, format)| {
-                ConversionJob::new(root_dir.join(image_path), *format, target_format).ok()
+                ImageJob::new(root_dir.join(image_path), *format, target_format).ok()
             })
-            .filter(|job| force || !convert_only_when_forced(job.current, job.target))
+            .filter(|job| force || convert_always(job.current, job.target))
             .collect::<VecDeque<_>>();
         if job_queue.is_empty() {
-            return Err(NothingToDo(cbz_path));
+            return Err(NothingToDo(archive_path));
         }
 
-        Ok(WorkUnit {
-            cbz_path,
+        Ok(ArchiveJob {
+            archive_path,
             job_queue,
-            jobs_in_process: vec![],
+            jobs_in_process: Vec::new(),
             target_format,
-            workers,
+            n_workers,
         })
     }
 
     fn extract_cbz(&mut self) -> Result<(), ConversionError> {
-        trace!("called extract_cbz() with {:?}", self.cbz_path);
-        assert!(self.cbz_path.is_file());
+        trace!("called extract_cbz() with {:?}", self.archive_path);
+        assert!(self.archive_path.is_file());
 
-        let extract_dir = get_conversion_root_dir(&self.cbz_path);
+        let extract_dir = get_conversion_root_dir(&self.archive_path);
         assert!(!extract_dir.exists());
 
-        debug!("extracting {:?} to {:?}", self.cbz_path, extract_dir);
+        debug!("extracting {:?} to {:?}", self.archive_path, extract_dir);
         fs::create_dir_all(&extract_dir).unwrap();
 
         let mut command = Command::new("7z");
         command.args([
             "x",
             "-tzip", // undocumented switch to remove header lines
-            self.cbz_path.to_str().unwrap(),
+            self.archive_path.to_str().unwrap(),
             "-spe",
             format!("-o{}", extract_dir.to_str().unwrap()).as_str(),
         ]);
@@ -435,10 +453,10 @@ impl WorkUnit {
     }
 
     fn compress_cbz(&mut self) {
-        trace!("called compress_cbz() with {:?}", self.cbz_path);
+        trace!("called compress_cbz() with {:?}", self.archive_path);
 
-        let dir = self.cbz_path.parent().unwrap();
-        let name = self.cbz_path.file_stem().unwrap();
+        let dir = self.archive_path.parent().unwrap();
+        let name = self.archive_path.file_stem().unwrap();
         let zip_path = dir.join(format!(
             "{}.{}.cbz",
             name.to_str().unwrap(),
@@ -452,7 +470,7 @@ impl WorkUnit {
             .compression_method(CompressionMethod::Stored)
             .unix_permissions(0o755);
 
-        let extract_dir = get_conversion_root_dir(&self.cbz_path);
+        let extract_dir = get_conversion_root_dir(&self.archive_path);
         trace!("compress directory {extract_dir:?}");
         let mut buffer = Vec::new();
         for entry in WalkDir::new(&extract_dir)
@@ -481,7 +499,7 @@ impl WorkUnit {
     }
 
     fn run(mut self) -> Result<(), ConversionError> {
-        debug!("start conversion for {:?}", self.cbz_path);
+        debug!("start conversion for {:?}", self.archive_path);
 
         assert!(!self.job_queue.is_empty());
         self.extract_cbz()?;
@@ -494,7 +512,7 @@ impl WorkUnit {
 
         // start out as many jobs as allowed
         trace!("start initial jobs");
-        while self.jobs_in_process.len() < self.workers {
+        while self.jobs_in_process.len() < self.n_workers {
             let mut job = match self.job_queue.pop_front() {
                 Some(job) => job,
                 None => break,
@@ -581,7 +599,7 @@ impl WorkUnit {
     }
 }
 
-impl std::fmt::Debug for ConversionJob {
+impl std::fmt::Debug for ImageJob {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut writer = f.debug_struct("ConversionJob");
         writer
@@ -597,7 +615,7 @@ impl std::fmt::Debug for ConversionJob {
     }
 }
 
-impl Drop for ConversionJob {
+impl Drop for ImageJob {
     fn drop(&mut self) {
         trace!("drop {self:?}");
         let mut child = match self.child.take() {
@@ -611,11 +629,12 @@ impl Drop for ConversionJob {
     }
 }
 
-impl Drop for WorkUnit {
+impl Drop for ArchiveJob {
     fn drop(&mut self) {
-        debug!("cleanup for {:?}", self.cbz_path);
-        let extract_dir = get_conversion_root_dir(&self.cbz_path);
+        debug!("cleanup for {:?}", self.archive_path);
+        let extract_dir = get_conversion_root_dir(&self.archive_path);
         if extract_dir.exists() {
+            debug!("delete directory {extract_dir:?}");
             // ignore errors
             let _ = fs::remove_dir_all(&extract_dir);
         }
@@ -767,32 +786,11 @@ fn already_converted(path: &Path, format: ImageFormat) -> bool {
     is_converted_archive || has_converted_archive
 }
 
-fn convert_single_cbz(
-    cbz_file: &Path,
-    format: ImageFormat,
-    workers: usize,
-    force: bool,
-) -> Result<(), ConversionError> {
-    trace!("called convert_single_cbz() with {:?}", cbz_file);
-    let correct_extension = cbz_file
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("zip") || ext.eq_ignore_ascii_case("cbz"));
-    if !correct_extension {
-        return Err(NothingToDo(cbz_file.to_path_buf()));
-    }
-    if already_converted(cbz_file, format) {
-        return Err(AlreadyDone(cbz_file.to_path_buf()));
-    }
-
-    let work_unit = WorkUnit::new(cbz_file, format, workers, force)?;
-    work_unit.run()
-}
-
-fn convert_only_when_forced(from: ImageFormat, to: ImageFormat) -> bool {
+fn convert_always(from: ImageFormat, to: ImageFormat) -> bool {
     match (from, to) {
-        (Jpeg | Png, _) => false,
-        (_, Jpeg | Png) => false,
-        (_, _) => true,
+        (Jpeg | Png, _) => true,
+        (_, Jpeg | Png) => true,
+        (_, _) => false,
     }
 }
 
@@ -842,7 +840,7 @@ fn main() -> Result<()> {
         exit(1);
     }
 
-    let workers = match matches.workers {
+    let n_workers = match matches.workers {
         Some(Some(value)) => value,
         Some(None) => 1,
         None => match thread::available_parallelism() {
@@ -856,25 +854,51 @@ fn main() -> Result<()> {
     if path.is_dir() {
         for cbz_file in path.read_dir().expect("could not read dir").flatten() {
             let cbz_file = cbz_file.path();
-            info!("Converting {:?}", cbz_file);
-            match convert_single_cbz(&cbz_file, format, workers, force) {
-                Ok(()) => info!("Done"),
-                Err(NothingToDo(path)) => info!("Nothing to do for {path:?}"),
-                Err(AlreadyDone(path)) => info!("Already converted {path:?}"),
-                Err(NotAnArchive(_)) => info!("This is not a Zip archive"),
+            let Ok(conversion_file) = ValidArchive::try_new(cbz_file) else {
+                continue;
+            };
+
+            info!("Converting {:?}", conversion_file.archive_path);
+
+            let job = match ArchiveJob::new(conversion_file, format, n_workers, force) {
+                Ok(job) => job,
                 Err(e) => {
-                    error!("{e}");
-                    break;
+                    match e {
+                        NothingToDo(path_buf) => info!("Nothing to do for {path_buf:?}"),
+                        AlreadyDone(path_buf) => info!("Already converted {path_buf:?}"),
+                        something_else => {
+                            error!("{something_else}");
+                            exit(1);
+                        }
+                    }
+                    continue;
                 }
+            };
+            if let Err(e) = job.run() {
+                error!("{e}");
+                exit(1);
+            };
+            info!("Done");
+        }
+    } else {
+        let Ok(conversion_file) = ValidArchive::try_new(path) else {
+            error!("This is not a Zip archive");
+            exit(1);
+        };
+
+        info!("Converting {:?}", conversion_file.archive_path);
+
+        let job = ArchiveJob::new(conversion_file, format, n_workers, force)?;
+        match job.run() {
+            Ok(()) => info!("Done"),
+            Err(NothingToDo(path)) => info!("Nothing to do for {path:?}"),
+            Err(AlreadyDone(path)) => info!("Already converted {path:?}"),
+            Err(e) => {
+                error!("{e}");
             }
         }
-    } else if let Err(e) = convert_single_cbz(&path, format, workers, force) {
-        match e {
-            NothingToDo(_) => info!("Nothing to do for {path:?}"),
-            NotAnArchive(_) => info!("This is not a Zip archive"),
-            _ => error!("{e}"),
-        }
     }
+
     Ok(())
 }
 
