@@ -4,10 +4,9 @@ use std::collections::VecDeque;
 use std::fs::{self, File};
 use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{exit, Child, Command, Stdio};
+use std::process::{Child, Command, Stdio, exit};
 use std::thread;
 
-use anyhow::Result;
 use clap::Parser;
 use log::{debug, error, info, trace};
 use signal_hook::{
@@ -16,7 +15,7 @@ use signal_hook::{
 };
 use thiserror::Error;
 use walkdir::WalkDir;
-use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
+use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
 #[derive(Error, Debug)]
 enum ConversionError {
@@ -436,12 +435,38 @@ impl ArchiveJob {
             "-spe",
             format!("-o{}", extract_dir.to_str().unwrap()).as_str(),
         ]);
-        let child = command
+
+        let mut signals = match Signals::new([SIGINT, SIGCHLD]) {
+            Ok(signals) => signals,
+            Err(_) => return Err(Unspecific("could not listen to signals".to_string())),
+        };
+
+        let mut child = command
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|_| SpawnFailure("7z".to_string()))
             .unwrap();
+
+        'outer: loop {
+            for signal in signals.wait() {
+                match signal {
+                    SIGINT => {
+                        debug!("interrupted while extracting");
+                        let success = child.kill().is_ok();
+                        if !success {
+                            error!("could not kill extraction process");
+                        };
+                        return Err(Interrupt);
+                    }
+                    SIGCHLD => {
+                        break 'outer;
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        }
+        debug!("extraction done");
 
         match child.wait_with_output() {
             Ok(output) if output.status.code().is_some_and(|code| code == 0) => Ok(()),
@@ -462,7 +487,9 @@ impl ArchiveJob {
             name.to_str().unwrap(),
             self.target_format
         ));
-        debug!("create cbz at {:?}", zip_path);
+
+        let extract_dir = get_conversion_root_dir(&self.archive_path);
+        debug!("compress dir {extract_dir:?} to archive {zip_path:?}");
         let file = File::create(zip_path).unwrap();
 
         let mut zipper = ZipWriter::new(file);
@@ -470,15 +497,13 @@ impl ArchiveJob {
             .compression_method(CompressionMethod::Stored)
             .unix_permissions(0o755);
 
-        let extract_dir = get_conversion_root_dir(&self.archive_path);
-        trace!("compress directory {extract_dir:?}");
         let mut buffer = Vec::new();
         for entry in WalkDir::new(&extract_dir)
             .into_iter()
             .filter_map(|e| e.ok())
         {
             let entry = entry.path();
-            debug!("add to archive: {:?}", entry);
+            trace!("add to archive: {:?}", entry);
             let file_name = entry.strip_prefix(extract_dir.parent().unwrap()).unwrap();
             let path_string = file_name
                 .to_str()
@@ -496,6 +521,7 @@ impl ArchiveJob {
         }
 
         zipper.finish().unwrap();
+        debug!("compression done");
     }
 
     fn run(mut self) -> Result<(), ConversionError> {
@@ -504,7 +530,7 @@ impl ArchiveJob {
         assert!(!self.job_queue.is_empty());
         self.extract_cbz()?;
 
-        // these signals will be catched from here on out until the end of this function
+        // these signals will be catched from here on out until dropped
         let mut signals = match Signals::new([SIGINT, SIGCHLD]) {
             Ok(signals) => signals,
             Err(_) => return Err(Unspecific("could not listen to signals".to_string())),
@@ -532,11 +558,11 @@ impl ArchiveJob {
             for signal in signals.wait() {
                 match signal {
                     SIGINT => {
-                        debug!("got signal SIGINT");
+                        debug!("got signal SIGINT while converting");
                         return Err(Interrupt);
                     }
                     SIGCHLD => {
-                        debug!("got signal SIGCHLD");
+                        debug!("got signal SIGCHLD for conversion");
                         self.proceed_jobs()?;
                         if !self.job_queue.is_empty() {
                             self.start_next_jobs()?;
@@ -546,6 +572,8 @@ impl ArchiveJob {
                 }
             }
         }
+        drop(signals);
+        debug!("done converting");
 
         self.compress_cbz();
         Ok(())
@@ -825,7 +853,7 @@ struct Args {
     force: bool,
 }
 
-fn main() -> Result<()> {
+fn main() -> Result<(), ConversionError> {
     env_logger::builder()
         .filter_level(log::LevelFilter::Info)
         .format_timestamp_secs()

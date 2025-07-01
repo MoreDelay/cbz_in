@@ -1,8 +1,6 @@
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 
-use anyhow::Result;
-
 use crate::ConversionError::{self, *};
 
 pub fn convert_jpeg_to_png(
