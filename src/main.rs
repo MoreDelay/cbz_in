@@ -1,10 +1,11 @@
 mod spawn;
 
 use std::collections::VecDeque;
+use std::fmt::Display;
 use std::fs::{self, File};
 use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio, exit};
+use std::process::{Child, Command, Stdio};
 use std::thread;
 
 use clap::Parser;
@@ -19,24 +20,22 @@ use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
 #[derive(Error, Debug)]
 enum ConversionError {
-    #[error("not an archive '{0}'")]
+    #[error("No archive at '{0}'")]
+    DoesNotExist(PathBuf),
+    #[error("Not an archive '{0}'")]
     NotAnArchive(PathBuf),
-    #[error("nothing to do for '{0}'")]
-    NothingToDo(PathBuf),
-    #[error("conversion not supported from {0:?} to {1:?}")]
+    #[error("Conversion not supported from {0:?} to {1:?}")]
     NotSupported(ImageFormat, ImageFormat),
-    #[error("conversion already done for '{0}'")]
-    AlreadyDone(PathBuf),
-    #[error("got interrupted")]
+    #[error("Got interrupted")]
     Interrupt,
     #[error("Error during extraction: {0}")]
     ExtractionError(String),
-    #[error("child process finished abnormally for '{0}'")]
+    #[error("Child process finished abnormally for '{0}'")]
     AbnormalExit(PathBuf),
-    #[error("could not start process with the program '{0}'")]
+    #[error("Could not start process with the program '{0}'")]
     SpawnFailure(String),
-    #[error("unspecific error '{0}'")]
-    Unspecific(String),
+    #[error("Unspecific error '{0}'")]
+    Unspecific(String, #[source] Box<dyn std::error::Error>),
 }
 use ConversionError::*;
 
@@ -91,6 +90,26 @@ struct ArchiveJob {
     jobs_in_process: Vec<ImageJob>,
     target_format: ImageFormat,
     n_workers: usize,
+}
+
+enum ArchiveJobInit {
+    RealTask(ArchiveJob),
+    NothingToDo(PathBuf),
+    AlreadyDone(PathBuf),
+}
+
+impl Display for ArchiveJobInit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ArchiveJobInit::RealTask(_) => write!(f, "Got an actual job to do"),
+            ArchiveJobInit::NothingToDo(path) => {
+                write!(f, "Nothing to do for '{}'", path.to_string_lossy())
+            }
+            ArchiveJobInit::AlreadyDone(path) => {
+                write!(f, "Already converted '{}'", path.to_string_lossy())
+            }
+        }
+    }
 }
 
 impl ValidArchive {
@@ -257,15 +276,18 @@ impl ImageJob {
                 let output = extract_console_output(child);
                 trace!("process output:\n{output}");
             }
-            Err(_) => return Err(Unspecific("error during wait".to_string())),
+            Err(e) => return Err(Unspecific("error during wait".to_string(), e.into())),
         }
 
-        if fs::remove_file(&self.image_path).is_err() {
-            return Err(Unspecific(format!(
-                "intermediate step: Could not delete '{:?}'",
-                self.image_path
-            )));
-        }
+        fs::remove_file(&self.image_path).map_err(|e| {
+            Unspecific(
+                format!(
+                    "intermediate step: Could not delete '{:?}'",
+                    self.image_path
+                ),
+                e.into(),
+            )
+        })?;
 
         let next_status = match (self.intermediate.unwrap(), self.target) {
             (from @ (Jpeg | Png), to @ Avif) => {
@@ -318,7 +340,7 @@ impl ImageJob {
                 let output = extract_console_output(child);
                 trace!("process output:\n{output}");
             }
-            Err(_) => return Err(Unspecific("error during wait".to_string())),
+            Err(e) => return Err(Unspecific("error during wait".to_string(), e.into())),
         }
         let delete_path = match self.intermediate {
             Some(intermediate) => self.image_path.with_extension(intermediate.to_string()),
@@ -326,13 +348,14 @@ impl ImageJob {
         };
 
         self.status = JobStatus::Done;
-        match fs::remove_file(&delete_path) {
-            Ok(_) => Ok(self.status),
-            Err(_) => Err(Unspecific(format!(
-                "converting step: Could not delete '{:?}'",
-                delete_path
-            ))),
-        }
+        fs::remove_file(&delete_path).map_err(|e| {
+            Unspecific(
+                format!("converting step: Could not delete '{delete_path:?}'"),
+                e.into(),
+            )
+        })?;
+
+        Ok(self.status)
     }
 
     fn proceed(&mut self) -> Result<JobStatus, ConversionError> {
@@ -367,56 +390,18 @@ impl ImageJob {
                 trace!("not ready");
                 Ok(false)
             }
-            Err(_) => {
+            Err(e) => {
                 trace!("error");
-                Err(Unspecific(self.image_path.to_string_lossy().to_string()))
+                Err(Unspecific(
+                    self.image_path.to_string_lossy().to_string(),
+                    e.into(),
+                ))
             }
         }
     }
 }
 
 impl ArchiveJob {
-    fn new(
-        conversion_file: ValidArchive,
-        target_format: ImageFormat,
-        n_workers: usize,
-        force: bool,
-    ) -> Result<ArchiveJob, ConversionError> {
-        trace!("called WorkUnit::new()");
-        let ValidArchive { archive_path } = conversion_file;
-
-        if already_converted(&archive_path, target_format) {
-            return Err(AlreadyDone(archive_path.to_path_buf()));
-        }
-
-        let extract_dir = get_conversion_root_dir(&archive_path);
-        if extract_dir.exists() {
-            return Err(ConversionError::ExtractionError(
-                "Extract directory already exists, delete it and try again".to_string(),
-            ));
-        }
-
-        let root_dir = get_extraction_root_dir(&archive_path);
-        let job_queue = images_in_archive(&archive_path)?
-            .iter()
-            .filter_map(|(image_path, format)| {
-                ImageJob::new(root_dir.join(image_path), *format, target_format).ok()
-            })
-            .filter(|job| force || convert_always(job.current, job.target))
-            .collect::<VecDeque<_>>();
-        if job_queue.is_empty() {
-            return Err(NothingToDo(archive_path));
-        }
-
-        Ok(ArchiveJob {
-            archive_path,
-            job_queue,
-            jobs_in_process: Vec::new(),
-            target_format,
-            n_workers,
-        })
-    }
-
     fn extract_cbz(&mut self) -> Result<(), ConversionError> {
         trace!("called extract_cbz() with {:?}", self.archive_path);
         assert!(self.archive_path.is_file());
@@ -436,27 +421,26 @@ impl ArchiveJob {
             format!("-o{}", extract_dir.to_str().unwrap()).as_str(),
         ]);
 
-        let mut signals = match Signals::new([SIGINT, SIGCHLD]) {
-            Ok(signals) => signals,
-            Err(_) => return Err(Unspecific("could not listen to signals".to_string())),
-        };
+        let mut signals = Signals::new([SIGINT, SIGCHLD])
+            .map_err(|e| Unspecific("could not listen to signals".to_string(), e.into()))?;
 
         let mut child = command
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|_| SpawnFailure("7z".to_string()))
-            .unwrap();
+            .map_err(|_| SpawnFailure("7z".to_string()))?;
 
+        // This actually does loop as signal-hook says it can spuriously return without any signals
+        // having been set.
+        #[expect(clippy::never_loop)]
         'outer: loop {
             for signal in signals.wait() {
                 match signal {
                     SIGINT => {
                         debug!("interrupted while extracting");
-                        let success = child.kill().is_ok();
-                        if !success {
-                            error!("could not kill extraction process");
-                        };
+                        child.kill().map_err(|e| {
+                            Unspecific("Could not kill 7z process".into(), e.into())
+                        })?;
                         return Err(Interrupt);
                     }
                     SIGCHLD => {
@@ -531,10 +515,8 @@ impl ArchiveJob {
         self.extract_cbz()?;
 
         // these signals will be catched from here on out until dropped
-        let mut signals = match Signals::new([SIGINT, SIGCHLD]) {
-            Ok(signals) => signals,
-            Err(_) => return Err(Unspecific("could not listen to signals".to_string())),
-        };
+        let mut signals = Signals::new([SIGINT, SIGCHLD])
+            .map_err(|e| Unspecific("could not listen to signals".to_string(), e.into()))?;
 
         // start out as many jobs as allowed
         trace!("start initial jobs");
@@ -627,6 +609,49 @@ impl ArchiveJob {
     }
 }
 
+impl ArchiveJobInit {
+    fn with(
+        conversion_file: ValidArchive,
+        target_format: ImageFormat,
+        n_workers: usize,
+        force: bool,
+    ) -> Result<ArchiveJobInit, ConversionError> {
+        trace!("called WorkUnit::new()");
+        let ValidArchive { archive_path } = conversion_file;
+
+        if already_converted(&archive_path, target_format) {
+            return Ok(ArchiveJobInit::AlreadyDone(archive_path.to_path_buf()));
+        }
+
+        let extract_dir = get_conversion_root_dir(&archive_path);
+        if extract_dir.exists() {
+            return Err(ConversionError::ExtractionError(
+                "Extract directory already exists, delete it and try again".to_string(),
+            ));
+        }
+
+        let root_dir = get_extraction_root_dir(&archive_path)?;
+        let job_queue = images_in_archive(&archive_path)?
+            .iter()
+            .filter_map(|(image_path, format)| {
+                ImageJob::new(root_dir.join(image_path), *format, target_format).ok()
+            })
+            .filter(|job| force || convert_always(job.current, job.target))
+            .collect::<VecDeque<_>>();
+        if job_queue.is_empty() {
+            return Ok(ArchiveJobInit::NothingToDo(archive_path));
+        }
+
+        Ok(ArchiveJobInit::RealTask(ArchiveJob {
+            archive_path,
+            job_queue,
+            jobs_in_process: Vec::new(),
+            target_format,
+            n_workers,
+        }))
+    }
+}
+
 impl std::fmt::Debug for ImageJob {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut writer = f.debug_struct("ConversionJob");
@@ -703,7 +728,7 @@ fn jxl_is_compressed_jpeg(image_path: &Path) -> Result<bool, ConversionError> {
                 .any(|line| line.starts_with("box: type: \"jbrd\""));
             Ok(has_jbrd_box)
         }
-        Err(_) => Err(Unspecific("error during wait".to_string())),
+        Err(e) => Err(Unspecific("error during wait".to_string(), e.into())),
     }
 }
 
@@ -722,35 +747,35 @@ fn images_in_archive(cbz_path: &Path) -> Result<Vec<(PathBuf, ImageFormat)>, Con
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|_| SpawnFailure("7z".to_string()))?;
-    match child.wait_with_output() {
-        Ok(output) => {
-            let files = output
-                .stdout
-                .lines()
-                .filter(|v| v.as_ref().is_ok_and(|line| line.starts_with("Path = ")))
-                .map(|v| v.unwrap().strip_prefix("Path = ").unwrap().to_string())
-                .map(PathBuf::from)
-                .filter_map(|file| {
-                    trace!("found file {file:?}");
-                    let extension = file.extension()?.to_string_lossy().to_lowercase();
-                    match extension.as_str() {
-                        "jpg" => Some((file, Jpeg)),
-                        "jpeg" => Some((file, Jpeg)),
-                        "png" => Some((file, Png)),
-                        "avif" => Some((file, Avif)),
-                        "jxl" => Some((file, Jxl)),
-                        "webp" => Some((file, Webp)),
-                        _ => None,
-                    }
-                })
-                .collect::<Vec<_>>();
-            Ok(files)
-        }
-        Err(e) => Err(ConversionError::Unspecific(e.to_string())),
-    }
+    let files = child
+        .wait_with_output()
+        .map_err(|e| {
+            ConversionError::Unspecific("Could not wait on 7z process".to_string(), e.into())
+        })?
+        .stdout
+        .lines()
+        .filter_map(|v| match v {
+            Ok(line) => line.strip_prefix("Path = ").map(PathBuf::from),
+            Err(_) => None,
+        })
+        .filter_map(|file| {
+            trace!("found file {file:?}");
+            let extension = file.extension()?.to_string_lossy().to_lowercase();
+            match extension.as_str() {
+                "jpg" => Some((file, Jpeg)),
+                "jpeg" => Some((file, Jpeg)),
+                "png" => Some((file, Png)),
+                "avif" => Some((file, Avif)),
+                "jxl" => Some((file, Jxl)),
+                "webp" => Some((file, Webp)),
+                _ => None,
+            }
+        })
+        .collect::<Vec<_>>();
+    Ok(files)
 }
 
-fn get_extraction_root_dir(cbz_path: &Path) -> PathBuf {
+fn get_extraction_root_dir(cbz_path: &Path) -> Result<PathBuf, ConversionError> {
     let mut command = Command::new("7z");
     command.args([
         "l",
@@ -766,16 +791,17 @@ fn get_extraction_root_dir(cbz_path: &Path) -> PathBuf {
         .unwrap();
 
     let archive_name = cbz_path.file_stem().unwrap();
-    let archive_root_dirs = match child.wait_with_output() {
-        Ok(output) => output
-            .stdout
-            .lines()
-            .filter(|v| v.as_ref().is_ok_and(|line| line.starts_with("Path = ")))
-            .map(|v| v.unwrap().strip_prefix("Path = ").unwrap().to_string())
-            .filter(|file| !file.contains("/"))
-            .collect::<Vec<_>>(),
-        Err(e) => panic!("{:?}", ConversionError::Unspecific(e.to_string())),
-    };
+    let archive_root_dirs = child
+        .wait_with_output()
+        .map_err(|e| {
+            ConversionError::Unspecific("Could not wait on 7z process".to_string(), e.into())
+        })?
+        .stdout
+        .lines()
+        .filter(|v| v.as_ref().is_ok_and(|line| line.starts_with("Path = ")))
+        .map(|v| v.unwrap().strip_prefix("Path = ").unwrap().to_string())
+        .filter(|file| !file.contains("/"))
+        .collect::<Vec<_>>();
 
     let has_root_within = archive_root_dirs.len() == 1 && *archive_root_dirs[0] == *archive_name;
     let extract_dir = if has_root_within {
@@ -790,7 +816,7 @@ fn get_extraction_root_dir(cbz_path: &Path) -> PathBuf {
         trace!("extract into new root directory");
         get_conversion_root_dir(cbz_path)
     };
-    extract_dir
+    Ok(extract_dir)
 }
 
 fn get_conversion_root_dir(cbz_path: &Path) -> PathBuf {
@@ -800,7 +826,7 @@ fn get_conversion_root_dir(cbz_path: &Path) -> PathBuf {
 }
 
 fn already_converted(path: &Path, format: ImageFormat) -> bool {
-    let conversion_ending = format!(".{}.cbz", format);
+    let conversion_ending = format!(".{format}.cbz");
 
     let dir = path.parent().unwrap();
     let name = path.file_stem().unwrap();
@@ -853,19 +879,12 @@ struct Args {
     force: bool,
 }
 
-fn main() -> Result<(), ConversionError> {
-    env_logger::builder()
-        .filter_level(log::LevelFilter::Info)
-        .format_timestamp_secs()
-        .parse_env("RUST_LOG")
-        .init();
-
+fn real_main() -> Result<(), ConversionError> {
     let matches = Args::parse();
     let format = matches.format;
     let path = matches.path;
     if !path.exists() {
-        error!("does not exists: {:?}", path);
-        exit(1);
+        return Err(ConversionError::DoesNotExist(path));
     }
 
     let n_workers = match matches.workers {
@@ -888,46 +907,46 @@ fn main() -> Result<(), ConversionError> {
 
             info!("Converting {:?}", conversion_file.archive_path);
 
-            let job = match ArchiveJob::new(conversion_file, format, n_workers, force) {
-                Ok(job) => job,
-                Err(e) => {
-                    match e {
-                        NothingToDo(path_buf) => info!("Nothing to do for {path_buf:?}"),
-                        AlreadyDone(path_buf) => info!("Already converted {path_buf:?}"),
-                        something_else => {
-                            error!("{something_else}");
-                            exit(1);
-                        }
-                    }
+            let job = match ArchiveJobInit::with(conversion_file, format, n_workers, force)? {
+                ArchiveJobInit::RealTask(job) => job,
+                e => {
+                    info!("{e}");
                     continue;
                 }
             };
-            if let Err(e) = job.run() {
-                error!("{e}");
-                exit(1);
-            };
+            job.run()?;
             info!("Done");
         }
     } else {
-        let Ok(conversion_file) = ValidArchive::try_new(path) else {
-            error!("This is not a Zip archive");
-            exit(1);
-        };
+        let conversion_file = ValidArchive::try_new(path.clone())?;
 
         info!("Converting {:?}", conversion_file.archive_path);
 
-        let job = ArchiveJob::new(conversion_file, format, n_workers, force)?;
-        match job.run() {
-            Ok(()) => info!("Done"),
-            Err(NothingToDo(path)) => info!("Nothing to do for {path:?}"),
-            Err(AlreadyDone(path)) => info!("Already converted {path:?}"),
-            Err(e) => {
+        let job = match ArchiveJobInit::with(conversion_file, format, n_workers, force)? {
+            ArchiveJobInit::RealTask(job) => job,
+            e => {
                 error!("{e}");
+                return Ok(());
             }
-        }
+        };
+        job.run()?;
+        info!("Done");
     }
 
     Ok(())
+}
+
+fn main() {
+    env_logger::builder()
+        .filter_level(log::LevelFilter::Info)
+        .format_timestamp_secs()
+        .parse_env("RUST_LOG")
+        .init();
+
+    if let Err(e) = real_main() {
+        error!("{e}");
+        std::process::exit(1);
+    }
 }
 
 #[cfg(test)]
