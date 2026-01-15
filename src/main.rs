@@ -16,23 +16,6 @@ use tracing::{debug, error, info, trace};
 use walkdir::WalkDir;
 use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
-#[derive(Error, Debug)]
-enum ConversionError {
-    #[error("Invalid archive path provided")]
-    InvalidPath(#[from] InvalidArchive),
-    #[error("Error while handling an archive")]
-    Archive(#[from] ArchiveError),
-    #[error("Conversion for an image failed")]
-    ImageJob(#[from] ImageJobError),
-    #[error("Got interrupted")]
-    Interrupt,
-    #[error("Some process had an error")]
-    Process(#[from] spawn::ProcessError),
-    #[error("Unspecific error '{0}'")]
-    Unspecific(String, #[source] Box<dyn std::error::Error + Send + Sync>),
-}
-use ConversionError::*;
-
 #[derive(clap::ValueEnum, Clone, Copy, Debug, Default, PartialEq)]
 enum ImageFormat {
     #[default]
@@ -186,14 +169,6 @@ enum ImageJob {
     Completed(ImageJobCompleted),
 }
 
-#[derive(Debug, Error)]
-enum ImageJobError {
-    #[error("An error with a child process occured")]
-    Process(#[from] spawn::ProcessError),
-    #[error("Could not delete the file: '{0}'")]
-    DeleteFile(PathBuf, #[source] std::io::Error),
-}
-
 impl ImageJobWaiting {
     fn start_conversion(self) -> Result<ImageJobRunning, ProcessError> {
         let ImageJobWaiting { image_path, task } = self;
@@ -238,29 +213,13 @@ impl ImageJobWaiting {
 
 impl ImageJobRunning {
     fn child_done(&mut self) -> Result<bool, ConversionError> {
-        match self.child.try_wait() {
-            Ok(Some(_)) => {
-                trace!("ready");
-                Ok(true)
-            }
-            Ok(None) => {
-                trace!("not ready");
-                Ok(false)
-            }
-            Err(e) => {
-                trace!("error");
-                Err(Unspecific(
-                    self.image_path.to_string_lossy().to_string(),
-                    e.into(),
-                ))
-            }
-        }
+        Ok(self.child.try_wait()?.is_some())
     }
 }
 
 impl ImageJobCompleted {
     /// wait on child process and delete original image file
-    fn complete(self) -> Result<Option<ImageJobWaiting>, ImageJobError> {
+    fn complete(self) -> Result<Option<ImageJobWaiting>, ConversionError> {
         let Self(ImageJobRunning {
             child,
             image_path,
@@ -269,7 +228,7 @@ impl ImageJobCompleted {
 
         child.wait_with_output()?;
         if let Err(err) = fs::remove_file(&image_path) {
-            return Err(ImageJobError::DeleteFile(image_path, err));
+            return Err(ConversionError::DeleteFile(image_path, err));
         };
 
         let after = after.map(|direct| ImageJobWaiting {
@@ -336,10 +295,26 @@ impl ImageJob {
 enum ArchiveError {
     #[error("Extract directory already exists at '{0}', delete it and try again")]
     ExtractDirExists(PathBuf),
+    #[error("Some IO operation failed")]
+    Io(#[from] std::io::Error),
     #[error("An error with the extraction process occured")]
     Process(#[from] ProcessError),
-    #[error("Interrupted while extracting archive")]
+    #[error("Error during conversion")]
+    Conversion(#[from] ConversionError),
+    #[error("Error while creating archive")]
+    Zipping(#[from] zip::result::ZipError),
+    #[error("Got interrupted")]
     Interrupt,
+}
+
+#[derive(Error, Debug)]
+enum ConversionError {
+    #[error("An error with occured in a conversion process")]
+    Process(#[from] ProcessError),
+    #[error("Could not listen to process signals")]
+    Signals(#[source] std::io::Error),
+    #[error("Could not delete the file: '{0}'")]
+    DeleteFile(PathBuf, #[source] std::io::Error),
 }
 
 impl ArchiveJob {
@@ -392,7 +367,7 @@ impl ArchiveJob {
         assert!(!extract_dir.exists());
 
         debug!("extracting {:?} to {:?}", self.archive_path, extract_dir);
-        fs::create_dir_all(&extract_dir).unwrap();
+        fs::create_dir_all(&extract_dir)?;
 
         let mut signals = Signals::new([SIGINT, SIGCHLD]).map_err(spawn::ProcessError::Signals)?;
 
@@ -422,7 +397,7 @@ impl ArchiveJob {
         Ok(())
     }
 
-    fn compress_cbz(&mut self) {
+    fn compress_cbz(&mut self) -> Result<(), ArchiveError> {
         trace!("called compress_cbz() with {:?}", self.archive_path);
 
         let dir = self.archive_path.parent().unwrap();
@@ -435,7 +410,7 @@ impl ArchiveJob {
 
         let extract_dir = get_conversion_root_dir(&self.archive_path);
         debug!("compress dir {extract_dir:?} to archive {zip_path:?}");
-        let file = File::create(zip_path).unwrap();
+        let file = File::create(zip_path)?;
 
         let mut zipper = ZipWriter::new(file);
         let options = SimpleFileOptions::default()
@@ -456,28 +431,28 @@ impl ArchiveJob {
                 .expect("Path is not UTF-8 conformant");
 
             if entry.is_file() {
-                zipper.start_file(path_string, options).unwrap();
-                File::open(entry).unwrap().read_to_end(&mut buffer).unwrap();
-                zipper.write_all(&buffer).unwrap();
+                zipper.start_file(path_string, options)?;
+                File::open(entry)?.read_to_end(&mut buffer)?;
+                zipper.write_all(&buffer)?;
                 buffer.clear();
             } else if !file_name.as_os_str().is_empty() {
-                zipper.add_directory(path_string, options).unwrap();
+                zipper.add_directory(path_string, options)?;
             }
         }
 
-        zipper.finish().unwrap();
+        zipper.finish()?;
         debug!("compression done");
+        Ok(())
     }
 
-    fn run(mut self) -> Result<(), ConversionError> {
+    fn run(mut self) -> Result<(), ArchiveError> {
         debug!("start conversion for {:?}", self.archive_path);
 
         assert!(!self.job_queue.is_empty());
         self.extract_cbz()?;
 
         // these signals will be catched from here on out until dropped
-        let mut signals = Signals::new([SIGINT, SIGCHLD])
-            .map_err(|e| Unspecific("could not listen to signals".to_string(), e.into()))?;
+        let mut signals = Signals::new([SIGINT, SIGCHLD]).map_err(ConversionError::Signals)?;
 
         // start out as many jobs as allowed
         trace!("start initial jobs");
@@ -495,7 +470,7 @@ impl ArchiveJob {
                 match signal {
                     SIGINT => {
                         debug!("got signal SIGINT while converting");
-                        return Err(Interrupt);
+                        return Err(ArchiveError::Interrupt);
                     }
                     SIGCHLD => {
                         debug!("got signal SIGCHLD for conversion");
@@ -508,7 +483,7 @@ impl ArchiveJob {
         drop(signals);
         debug!("done converting");
 
-        self.compress_cbz();
+        self.compress_cbz()?;
         Ok(())
     }
 
@@ -674,7 +649,15 @@ struct Args {
     force: bool,
 }
 
-fn real_main() -> Result<(), ConversionError> {
+#[derive(Error, Debug)]
+enum AppError {
+    #[error("Invalid archive path provided")]
+    InvalidPath(#[from] InvalidArchive),
+    #[error("Error while handling an archive")]
+    Archive(#[from] ArchiveError),
+}
+
+fn real_main() -> Result<(), AppError> {
     let matches = Args::parse();
     let format = matches.format;
     let path = matches.path;
