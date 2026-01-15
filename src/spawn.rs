@@ -26,6 +26,26 @@ pub enum SpawnError {
     E7z(String, #[source] std::io::Error),
 }
 
+#[derive(Debug, Error)]
+pub enum AbnormalExit {
+    #[error("Could not parse error output")]
+    InvalidUtf8(#[from] std::string::FromUtf8Error),
+    #[error("Process printed error output: {0}")]
+    StdErr(String),
+}
+
+#[derive(Debug, Error)]
+pub enum ProcessError {
+    #[error("Could not spawn a process")]
+    Spawn(#[from] SpawnError),
+    #[error("A process exited abnormally, producing output: {0}")]
+    AbnormalExit(AbnormalExit),
+    #[error("Could not wait on a child process")]
+    Wait(#[source] std::io::Error),
+    #[error("Could not listen to process signals")]
+    Signals(#[source] std::io::Error),
+}
+
 /// Child process that gets killed on drop
 #[derive(Debug)]
 pub struct ManagedChild(Option<Child>);
@@ -35,22 +55,31 @@ impl ManagedChild {
         Self(Some(child))
     }
 
+    pub fn try_wait(&mut self) -> Result<Option<std::process::ExitStatus>, ProcessError> {
+        self.0
+            .as_mut()
+            .unwrap()
+            .try_wait()
+            .map_err(ProcessError::Wait)
+    }
+
     pub fn into_inner(mut self) -> Child {
         self.0.take().unwrap()
     }
-}
 
-impl std::ops::Deref for ManagedChild {
-    type Target = Child;
-
-    fn deref(&self) -> &Self::Target {
-        self.0.as_ref().unwrap()
-    }
-}
-
-impl std::ops::DerefMut for ManagedChild {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.0.as_mut().unwrap()
+    pub fn wait_with_output(self) -> Result<std::process::Output, ProcessError> {
+        let output = self
+            .into_inner()
+            .wait_with_output()
+            .map_err(ProcessError::Wait)?;
+        if !output.status.success() {
+            let abnormal_exit = match output.stderr.try_into() {
+                Ok(s) => AbnormalExit::StdErr(s),
+                Err(e) => AbnormalExit::InvalidUtf8(e),
+            };
+            return Err(ProcessError::AbnormalExit(abnormal_exit));
+        }
+        Ok(output)
     }
 }
 
