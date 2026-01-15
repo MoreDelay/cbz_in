@@ -67,6 +67,22 @@ struct ValidArchive {
     archive_path: PathBuf,
 }
 
+impl ValidArchive {
+    fn try_new(archive_path: PathBuf) -> Result<Self, ConversionError> {
+        const EXPECTED_EXTENSION: [&str; 2] = ["zip", "cbz"];
+
+        let correct_extension = archive_path.extension().is_some_and(|ext| {
+            EXPECTED_EXTENSION
+                .iter()
+                .any(|valid_ext| ext.eq_ignore_ascii_case(valid_ext))
+        });
+        if !correct_extension {
+            return Err(NotAnArchive(archive_path));
+        }
+        Ok(ValidArchive { archive_path })
+    }
+}
+
 #[derive(Debug)]
 struct ConversionDirect {
     current: ImageFormat,
@@ -119,17 +135,15 @@ impl ConversionTask {
         Ok(out)
     }
 
-    fn conversion_tuple(&self) -> (ImageFormat, ImageFormat) {
-        match self {
+    fn perform_always(&self) -> bool {
+        let tuple = match self {
             ConversionTask::Direct(ConversionDirect { current, target }) => (*current, *target),
             ConversionTask::Intermediate(ConversionIntermediate {
                 current, target, ..
             }) => (*current, *target),
-        }
-    }
+        };
 
-    fn perform_always(&self) -> bool {
-        match self.conversion_tuple() {
+        match tuple {
             (Jpeg | Png, _) => true,
             (_, Jpeg | Png) => true,
             (_, _) => false,
@@ -149,9 +163,12 @@ struct ImageJobRunning {
     after: Option<ConversionDirect>,
 }
 #[derive(Debug)]
+struct ImageJobCompleted(ImageJobRunning);
+#[derive(Debug)]
 enum ImageJob {
     Waiting(ImageJobWaiting),
     Running(ImageJobRunning),
+    Completed(ImageJobCompleted),
 }
 
 impl ImageJobWaiting {
@@ -197,13 +214,35 @@ impl ImageJobWaiting {
 }
 
 impl ImageJobRunning {
+    fn child_done(&mut self) -> Result<bool, ConversionError> {
+        match self.child.try_wait() {
+            Ok(Some(_)) => {
+                trace!("ready");
+                Ok(true)
+            }
+            Ok(None) => {
+                trace!("not ready");
+                Ok(false)
+            }
+            Err(e) => {
+                trace!("error");
+                Err(Unspecific(
+                    self.image_path.to_string_lossy().to_string(),
+                    e.into(),
+                ))
+            }
+        }
+    }
+}
+
+impl ImageJobCompleted {
     /// wait on child process and delete original image file
     fn complete(self) -> Result<Option<ImageJobWaiting>, ConversionError> {
-        let ImageJobRunning {
+        let Self(ImageJobRunning {
             mut child,
             image_path,
             after,
-        } = self;
+        }) = self;
 
         match child.wait() {
             Ok(status) if !status.success() => {
@@ -248,20 +287,11 @@ enum NothingToDo {
     AlreadyDone(PathBuf),
 }
 
-impl ValidArchive {
-    fn try_new(archive_path: PathBuf) -> Result<Self, ConversionError> {
-        const EXPECTED_EXTENSION: [&str; 2] = ["zip", "cbz"];
-
-        let correct_extension = archive_path.extension().is_some_and(|ext| {
-            EXPECTED_EXTENSION
-                .iter()
-                .any(|valid_ext| ext.eq_ignore_ascii_case(valid_ext))
-        });
-        if !correct_extension {
-            return Err(NotAnArchive(archive_path));
-        }
-        Ok(ValidArchive { archive_path })
-    }
+#[derive(Debug)]
+enum Proceeded {
+    SameAsBefore(ImageJob),
+    ActuallyProceeded(ImageJob),
+    Finished,
 }
 
 impl ImageJob {
@@ -270,46 +300,27 @@ impl ImageJob {
         Self::Waiting(waiting)
     }
 
-    fn proceed(self) -> Result<Option<Self>, ConversionError> {
+    fn proceed(self) -> Result<Proceeded, ConversionError> {
         debug!("proceed with {self:?}");
-        let running = match self {
+        let proceeded = match self {
             ImageJob::Waiting(waiting) => {
                 let running = waiting.start_conversion()?;
-                Some(Self::Running(running))
+                Proceeded::ActuallyProceeded(Self::Running(running))
             }
-            ImageJob::Running(running) => running
-                .complete()?
-                .map(|waiting| waiting.start_conversion())
-                .transpose()?
-                .map(Self::Running),
+            ImageJob::Running(mut running) => match running.child_done()? {
+                false => Proceeded::SameAsBefore(Self::Running(running)),
+                true => {
+                    let completed = ImageJobCompleted(running);
+                    Proceeded::ActuallyProceeded(Self::Completed(completed))
+                }
+            },
+            ImageJob::Completed(completed) => match completed.complete()? {
+                Some(waiting) => Proceeded::ActuallyProceeded(Self::Waiting(waiting)),
+                None => Proceeded::Finished,
+            },
         };
-        debug!("after proceed {running:?}");
-        Ok(running)
-    }
-
-    fn can_proceed(&mut self) -> Result<bool, ConversionError> {
-        let (child, image_path) = match self {
-            ImageJob::Waiting(_) => return Ok(true),
-            ImageJob::Running(running) => (&mut running.child, &running.image_path),
-        };
-
-        match child.try_wait() {
-            Ok(Some(_)) => {
-                trace!("ready");
-                Ok(true)
-            }
-            Ok(None) => {
-                trace!("not ready");
-                Ok(false)
-            }
-            Err(e) => {
-                trace!("error");
-                Err(Unspecific(
-                    image_path.to_string_lossy().to_string(),
-                    e.into(),
-                ))
-            }
-        }
+        debug!("after proceed {proceeded:?}");
+        Ok(proceeded)
     }
 }
 
@@ -464,10 +475,9 @@ impl ArchiveJob {
             let Some(job) = self.job_queue.pop_front() else {
                 break;
             };
-            if let Some(job) = job.proceed()? {
-                *slot = Some(job);
-            }
+            *slot = Some(job);
         }
+        self.proceed_jobs()?;
 
         trace!("start new jobs as old ones complete");
         while self.jobs_pending() {
@@ -480,9 +490,6 @@ impl ArchiveJob {
                     SIGCHLD => {
                         debug!("got signal SIGCHLD for conversion");
                         self.proceed_jobs()?;
-                        if !self.job_queue.is_empty() {
-                            self.start_next_jobs()?;
-                        }
                     }
                     _ => unreachable!(),
                 }
@@ -496,37 +503,26 @@ impl ArchiveJob {
     }
 
     fn proceed_jobs(&mut self) -> Result<(), ConversionError> {
-        trace!("proceed all ready jobs");
+        trace!("proceed all jobs");
+
         for slot in self.jobs_in_progress.iter_mut() {
-            trace!("job in progress: {slot:?}");
-            let Some(mut job) = slot.take() else { continue };
-
-            let job = match job.can_proceed()? {
-                true => job.proceed()?,
-                false => Some(job),
-            };
-            *slot = job;
-        }
-        Ok(())
-    }
-
-    fn start_next_jobs(&mut self) -> Result<(), ConversionError> {
-        trace!("start new jobs");
-        'replace: for slot in self.jobs_in_progress.iter_mut() {
-            if slot.is_some() {
-                continue;
-            }
-            let new_job = 'search: loop {
-                let new_job = match self.job_queue.pop_front() {
-                    Some(new_job) => new_job,
-                    None => break 'replace,
-                };
-                match new_job.proceed()? {
-                    Some(new_job) => break 'search new_job,
-                    None => continue,
+            loop {
+                trace!("job in progress: {slot:?}");
+                match slot.take() {
+                    Some(job) => match job.proceed()? {
+                        Proceeded::SameAsBefore(job) => {
+                            *slot = Some(job);
+                            break;
+                        }
+                        Proceeded::ActuallyProceeded(job) => *slot = Some(job),
+                        Proceeded::Finished => (),
+                    },
+                    None => match self.job_queue.pop_front() {
+                        Some(job) => *slot = Some(job),
+                        None => break,
+                    },
                 }
-            };
-            *slot = Some(new_job);
+            }
         }
         Ok(())
     }
