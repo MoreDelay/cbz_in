@@ -5,16 +5,16 @@ use std::fmt::Display;
 use std::fs::{self, File};
 use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::Child;
 use std::thread;
 
 use clap::Parser;
-use log::{debug, error, info, trace};
 use signal_hook::{
     consts::{SIGCHLD, SIGINT},
     iterator::Signals,
 };
 use thiserror::Error;
+use tracing::{debug, error, info, trace};
 use walkdir::WalkDir;
 use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
@@ -32,10 +32,10 @@ enum ConversionError {
     ExtractionError(String),
     #[error("Child process finished abnormally for '{0}'")]
     AbnormalExit(PathBuf),
-    #[error("Could not start process with the program '{0}'")]
-    SpawnFailure(String),
+    #[error("Could not start process")]
+    ProcessSpawn(#[from] spawn::SpawnError),
     #[error("Unspecific error '{0}'")]
-    Unspecific(String, #[source] Box<dyn std::error::Error>),
+    Unspecific(String, #[source] Box<dyn std::error::Error + Send + Sync>),
 }
 use ConversionError::*;
 
@@ -412,27 +412,15 @@ impl ArchiveJob {
         debug!("extracting {:?} to {:?}", self.archive_path, extract_dir);
         fs::create_dir_all(&extract_dir).unwrap();
 
-        let mut command = Command::new("7z");
-        command.args([
-            "x",
-            "-tzip", // undocumented switch to remove header lines
-            self.archive_path.to_str().unwrap(),
-            "-spe",
-            format!("-o{}", extract_dir.to_str().unwrap()).as_str(),
-        ]);
-
         let mut signals = Signals::new([SIGINT, SIGCHLD])
             .map_err(|e| Unspecific("could not listen to signals".to_string(), e.into()))?;
 
-        let mut child = command
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|_| SpawnFailure("7z".to_string()))?;
+        let mut child = spawn::extract_zip(&self.archive_path, &extract_dir)?;
 
-        // This actually does loop as signal-hook says it can spuriously return without any signals
-        // having been set.
-        #[expect(clippy::never_loop)]
+        #[expect(
+            clippy::never_loop,
+            reason = "signal-hook says it can spuriously return without any signals set"
+        )]
         'outer: loop {
             for signal in signals.wait() {
                 match signal {
@@ -705,13 +693,7 @@ fn extract_console_output(child: &mut Child) -> String {
 }
 
 fn jxl_is_compressed_jpeg(image_path: &Path) -> Result<bool, ConversionError> {
-    let mut command = Command::new("jxlinfo");
-    command.args(["-v", image_path.to_str().unwrap()]);
-    let mut child = command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|_| SpawnFailure("jxlinfo".to_string()))?;
+    let mut child = spawn::run_jxlinfo(image_path)?;
 
     match child.wait() {
         Ok(status) if !status.success() => {
@@ -735,18 +717,7 @@ fn jxl_is_compressed_jpeg(image_path: &Path) -> Result<bool, ConversionError> {
 fn images_in_archive(cbz_path: &Path) -> Result<Vec<(PathBuf, ImageFormat)>, ConversionError> {
     trace!("called images_in_archive()");
 
-    let mut command = Command::new("7z");
-    command.args([
-        "l",
-        "-ba",  // undocumented switch to remove header lines
-        "-slt", // use format that is easier to parse
-        cbz_path.to_str().unwrap(),
-    ]);
-    let child = command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|_| SpawnFailure("7z".to_string()))?;
+    let child = spawn::list_archive_files(cbz_path)?;
     let files = child
         .wait_with_output()
         .map_err(|e| {
@@ -776,19 +747,7 @@ fn images_in_archive(cbz_path: &Path) -> Result<Vec<(PathBuf, ImageFormat)>, Con
 }
 
 fn get_extraction_root_dir(cbz_path: &Path) -> Result<PathBuf, ConversionError> {
-    let mut command = Command::new("7z");
-    command.args([
-        "l",
-        "-ba",  // undocumented switch to remove header lines
-        "-slt", // use format that is easier to parse
-        cbz_path.to_str().unwrap(),
-    ]);
-    let child = command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|_| SpawnFailure("7z".to_string()))
-        .unwrap();
+    let child = spawn::list_archive_files(cbz_path)?;
 
     let archive_name = cbz_path.file_stem().unwrap();
     let archive_root_dirs = child
@@ -936,17 +895,28 @@ fn real_main() -> Result<(), ConversionError> {
     Ok(())
 }
 
-fn main() {
-    env_logger::builder()
-        .filter_level(log::LevelFilter::Info)
-        .format_timestamp_secs()
-        .parse_env("RUST_LOG")
-        .init();
-
-    if let Err(e) = real_main() {
-        error!("{e}");
-        std::process::exit(1);
+fn log_error(error: &dyn std::error::Error) {
+    error!("{error}");
+    let mut source = error.source();
+    if source.is_some() {
+        error!("Caused by:");
     }
+    let mut counter = 0;
+    while let Some(error) = source {
+        error!("    {counter}: {error}");
+        source = error.source();
+        counter += 1;
+    }
+}
+
+fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt::init();
+
+    let ret = real_main();
+    if let Err(e) = &ret {
+        log_error(e);
+    }
+    Ok(ret?)
 }
 
 #[cfg(test)]
