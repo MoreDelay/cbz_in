@@ -281,7 +281,7 @@ impl ImageJob {
                 .complete()?
                 .map(|waiting| waiting.start_conversion())
                 .transpose()?
-                .map(|running| Self::Running(running)),
+                .map(Self::Running),
         };
         debug!("after proceed {running:?}");
         Ok(running)
