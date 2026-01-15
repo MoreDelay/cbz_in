@@ -6,24 +6,24 @@ use tracing::trace;
 
 #[derive(Debug, Error)]
 pub enum SpawnError {
-    #[error("Could not spawn magick process: {0:?}")]
-    Magick(Command, #[source] std::io::Error),
-    #[error("Could not spawn cavif process: {0:?}")]
-    Cavif(Command, #[source] std::io::Error),
-    #[error("Could not spawn cjxl process: {0:?}")]
-    Cjxl(Command, #[source] std::io::Error),
-    #[error("Could not spawn cwebp process: {0:?}")]
-    Cwebp(Command, #[source] std::io::Error),
-    #[error("Could not spawn dwebp process: {0:?}")]
-    Dwebp(Command, #[source] std::io::Error),
-    #[error("Could not spawn djxl process: {0:?}")]
-    Djxl(Command, #[source] std::io::Error),
-    #[error("Could not spawn avifdec process: {0:?}")]
-    Avifdec(Command, #[source] std::io::Error),
-    #[error("Could not spawn jxlinfo process: {0:?}")]
-    Jxlinfo(Command, #[source] std::io::Error),
-    #[error("Could not spawn 7z process: {0:?}")]
-    E7z(Command, #[source] std::io::Error),
+    #[error("Could not spawn magick process: {0}")]
+    Magick(String, #[source] std::io::Error),
+    #[error("Could not spawn cavif process: {0}")]
+    Cavif(String, #[source] std::io::Error),
+    #[error("Could not spawn cjxl process: {0}")]
+    Cjxl(String, #[source] std::io::Error),
+    #[error("Could not spawn cwebp process: {0}")]
+    Cwebp(String, #[source] std::io::Error),
+    #[error("Could not spawn dwebp process: {0}")]
+    Dwebp(String, #[source] std::io::Error),
+    #[error("Could not spawn djxl process: {0}")]
+    Djxl(String, #[source] std::io::Error),
+    #[error("Could not spawn avifdec process: {0}")]
+    Avifdec(String, #[source] std::io::Error),
+    #[error("Could not spawn jxlinfo process: {0}")]
+    Jxlinfo(String, #[source] std::io::Error),
+    #[error("Could not spawn 7z process: {0}")]
+    E7z(String, #[source] std::io::Error),
 }
 
 /// Child process that gets killed on drop
@@ -69,14 +69,13 @@ pub fn convert_jpeg_to_png(
     input_path: &Path,
     output_path: &Path,
 ) -> Result<ManagedChild, SpawnError> {
-    let mut command = Command::new("magick");
-    command.args([input_path.to_str().unwrap(), output_path.to_str().unwrap()]);
-    command
-        .stdout(Stdio::piped())
+    let mut cmd = Command::new("magick");
+    cmd.args([input_path.to_str().unwrap(), output_path.to_str().unwrap()]);
+    cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| SpawnError::Magick(command, e))
-        .map(|c| ManagedChild::new(c))
+        .map_err(|e| SpawnError::Magick(format!("{cmd:?}"), e))
+        .map(ManagedChild::new)
 }
 
 pub fn convert_png_to_jpeg(
@@ -93,8 +92,8 @@ pub fn convert_png_to_jpeg(
     cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| SpawnError::Magick(cmd, e))
-        .map(|c| ManagedChild::new(c))
+        .map_err(|e| SpawnError::Magick(format!("{cmd:?}"), e))
+        .map(ManagedChild::new)
 }
 
 pub fn encode_avif(input_path: &Path, output_path: &Path) -> Result<ManagedChild, SpawnError> {
@@ -110,8 +109,8 @@ pub fn encode_avif(input_path: &Path, output_path: &Path) -> Result<ManagedChild
     cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| SpawnError::Cavif(cmd, e))
-        .map(|c| ManagedChild::new(c))
+        .map_err(|e| SpawnError::Cavif(format!("{cmd:?}"), e))
+        .map(ManagedChild::new)
 }
 
 pub fn encode_jxl(input_path: &Path, output_path: &Path) -> Result<ManagedChild, SpawnError> {
@@ -126,8 +125,8 @@ pub fn encode_jxl(input_path: &Path, output_path: &Path) -> Result<ManagedChild,
     cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| SpawnError::Cjxl(cmd, e))
-        .map(|c| ManagedChild::new(c))
+        .map_err(|e| SpawnError::Cjxl(format!("{cmd:?}"), e))
+        .map(ManagedChild::new)
 }
 
 pub fn encode_webp(input_path: &Path, output_path: &Path) -> Result<ManagedChild, SpawnError> {
@@ -142,8 +141,8 @@ pub fn encode_webp(input_path: &Path, output_path: &Path) -> Result<ManagedChild
     cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| SpawnError::Cwebp(cmd, e))
-        .map(|c| ManagedChild::new(c))
+        .map_err(|e| SpawnError::Cwebp(format!("{cmd:?}"), e))
+        .map(ManagedChild::new)
 }
 
 pub fn decode_webp(input_path: &Path, output_path: &Path) -> Result<ManagedChild, SpawnError> {
@@ -156,8 +155,8 @@ pub fn decode_webp(input_path: &Path, output_path: &Path) -> Result<ManagedChild
     cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| SpawnError::Dwebp(cmd, e))
-        .map(|c| ManagedChild::new(c))
+        .map_err(|e| SpawnError::Dwebp(format!("{cmd:?}"), e))
+        .map(ManagedChild::new)
 }
 
 pub fn decode_jxl_to_png(
@@ -173,8 +172,8 @@ pub fn decode_jxl_to_png(
     cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| SpawnError::Djxl(cmd, e))
-        .map(|c| ManagedChild::new(c))
+        .map_err(|e| SpawnError::Djxl(format!("{cmd:?}"), e))
+        .map(ManagedChild::new)
 }
 
 pub fn decode_jxl_to_jpeg(
@@ -190,8 +189,8 @@ pub fn decode_jxl_to_jpeg(
     cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| SpawnError::Djxl(cmd, e))
-        .map(|c| ManagedChild::new(c))
+        .map_err(|e| SpawnError::Djxl(format!("{cmd:?}"), e))
+        .map(ManagedChild::new)
 }
 
 pub fn decode_avif_to_png(
@@ -208,8 +207,8 @@ pub fn decode_avif_to_png(
     cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| SpawnError::Avifdec(cmd, e))
-        .map(|c| ManagedChild::new(c))
+        .map_err(|e| SpawnError::Avifdec(format!("{cmd:?}"), e))
+        .map(ManagedChild::new)
 }
 
 pub fn decode_avif_to_jpeg(
@@ -228,8 +227,8 @@ pub fn decode_avif_to_jpeg(
     cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| SpawnError::Avifdec(cmd, e))
-        .map(|c| ManagedChild::new(c))
+        .map_err(|e| SpawnError::Avifdec(format!("{cmd:?}"), e))
+        .map(ManagedChild::new)
 }
 
 pub fn run_jxlinfo(image_path: &Path) -> Result<ManagedChild, SpawnError> {
@@ -238,8 +237,8 @@ pub fn run_jxlinfo(image_path: &Path) -> Result<ManagedChild, SpawnError> {
     cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| SpawnError::Jxlinfo(cmd, e))
-        .map(|c| ManagedChild::new(c))
+        .map_err(|e| SpawnError::Jxlinfo(format!("{cmd:?}"), e))
+        .map(ManagedChild::new)
 }
 
 pub fn list_archive_files(archive: &Path) -> Result<ManagedChild, SpawnError> {
@@ -253,8 +252,8 @@ pub fn list_archive_files(archive: &Path) -> Result<ManagedChild, SpawnError> {
     cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| SpawnError::E7z(cmd, e))
-        .map(|c| ManagedChild::new(c))
+        .map_err(|e| SpawnError::E7z(format!("{cmd:?}"), e))
+        .map(ManagedChild::new)
 }
 
 pub fn extract_zip(archive: &Path, destination: &Path) -> Result<ManagedChild, SpawnError> {
@@ -269,6 +268,6 @@ pub fn extract_zip(archive: &Path, destination: &Path) -> Result<ManagedChild, S
     cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| SpawnError::E7z(cmd, e))
-        .map(|c| ManagedChild::new(c))
+        .map_err(|e| SpawnError::E7z(format!("{cmd:?}"), e))
+        .map(ManagedChild::new)
 }
