@@ -1,7 +1,6 @@
 mod spawn;
 
 use std::collections::VecDeque;
-use std::fmt::Display;
 use std::fs::{self, File};
 use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
@@ -92,24 +91,12 @@ struct ArchiveJob {
     n_workers: usize,
 }
 
-enum ArchiveJobInit {
-    RealTask(ArchiveJob),
-    NothingToDo(PathBuf),
+#[derive(Debug, Error)]
+enum NothingToDo {
+    #[error("No files to convert for '{0}'")]
+    NoFilesToConvert(PathBuf),
+    #[error("Already converted '{0}'")]
     AlreadyDone(PathBuf),
-}
-
-impl Display for ArchiveJobInit {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ArchiveJobInit::RealTask(_) => write!(f, "Got an actual job to do"),
-            ArchiveJobInit::NothingToDo(path) => {
-                write!(f, "Nothing to do for '{}'", path.to_string_lossy())
-            }
-            ArchiveJobInit::AlreadyDone(path) => {
-                write!(f, "Already converted '{}'", path.to_string_lossy())
-            }
-        }
-    }
 }
 
 impl ValidArchive {
@@ -402,6 +389,47 @@ impl ImageJob {
 }
 
 impl ArchiveJob {
+    fn with(
+        conversion_file: ValidArchive,
+        target_format: ImageFormat,
+        n_workers: usize,
+        force: bool,
+    ) -> Result<Result<Self, NothingToDo>, ConversionError> {
+        trace!("called WorkUnit::new()");
+        let ValidArchive { archive_path } = conversion_file;
+
+        if already_converted(&archive_path, target_format) {
+            return Ok(Err(NothingToDo::AlreadyDone(archive_path.to_path_buf())));
+        }
+
+        let extract_dir = get_conversion_root_dir(&archive_path);
+        if extract_dir.exists() {
+            return Err(ConversionError::ExtractionError(
+                "Extract directory already exists, delete it and try again".to_string(),
+            ));
+        }
+
+        let root_dir = get_extraction_root_dir(&archive_path)?;
+        let job_queue = images_in_archive(&archive_path)?
+            .iter()
+            .filter_map(|(image_path, format)| {
+                ImageJob::new(root_dir.join(image_path), *format, target_format).ok()
+            })
+            .filter(|job| force || convert_always(job.current, job.target))
+            .collect::<VecDeque<_>>();
+        if job_queue.is_empty() {
+            return Ok(Err(NothingToDo::NoFilesToConvert(archive_path)));
+        }
+
+        Ok(Ok(Self {
+            archive_path,
+            job_queue,
+            jobs_in_process: Vec::new(),
+            target_format,
+            n_workers,
+        }))
+    }
+
     fn extract_cbz(&mut self) -> Result<(), ConversionError> {
         trace!("called extract_cbz() with {:?}", self.archive_path);
         assert!(self.archive_path.is_file());
@@ -594,49 +622,6 @@ impl ArchiveJob {
             .map(|job| job.status)
             .all(|status| JobStatus::Done == status);
         !all_done
-    }
-}
-
-impl ArchiveJobInit {
-    fn with(
-        conversion_file: ValidArchive,
-        target_format: ImageFormat,
-        n_workers: usize,
-        force: bool,
-    ) -> Result<ArchiveJobInit, ConversionError> {
-        trace!("called WorkUnit::new()");
-        let ValidArchive { archive_path } = conversion_file;
-
-        if already_converted(&archive_path, target_format) {
-            return Ok(ArchiveJobInit::AlreadyDone(archive_path.to_path_buf()));
-        }
-
-        let extract_dir = get_conversion_root_dir(&archive_path);
-        if extract_dir.exists() {
-            return Err(ConversionError::ExtractionError(
-                "Extract directory already exists, delete it and try again".to_string(),
-            ));
-        }
-
-        let root_dir = get_extraction_root_dir(&archive_path)?;
-        let job_queue = images_in_archive(&archive_path)?
-            .iter()
-            .filter_map(|(image_path, format)| {
-                ImageJob::new(root_dir.join(image_path), *format, target_format).ok()
-            })
-            .filter(|job| force || convert_always(job.current, job.target))
-            .collect::<VecDeque<_>>();
-        if job_queue.is_empty() {
-            return Ok(ArchiveJobInit::NothingToDo(archive_path));
-        }
-
-        Ok(ArchiveJobInit::RealTask(ArchiveJob {
-            archive_path,
-            job_queue,
-            jobs_in_process: Vec::new(),
-            target_format,
-            n_workers,
-        }))
     }
 }
 
@@ -866,9 +851,9 @@ fn real_main() -> Result<(), ConversionError> {
 
             info!("Converting {:?}", conversion_file.archive_path);
 
-            let job = match ArchiveJobInit::with(conversion_file, format, n_workers, force)? {
-                ArchiveJobInit::RealTask(job) => job,
-                e => {
+            let job = match ArchiveJob::with(conversion_file, format, n_workers, force)? {
+                Ok(job) => job,
+                Err(e) => {
                     info!("{e}");
                     continue;
                 }
@@ -881,9 +866,9 @@ fn real_main() -> Result<(), ConversionError> {
 
         info!("Converting {:?}", conversion_file.archive_path);
 
-        let job = match ArchiveJobInit::with(conversion_file, format, n_workers, force)? {
-            ArchiveJobInit::RealTask(job) => job,
-            e => {
+        let job = match ArchiveJob::with(conversion_file, format, n_workers, force)? {
+            Ok(job) => job,
+            Err(e) => {
                 error!("{e}");
                 return Ok(());
             }
