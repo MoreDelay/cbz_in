@@ -49,14 +49,14 @@ enum ImageFormat {
 }
 use ImageFormat::*;
 
-impl std::fmt::Display for ImageFormat {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl ImageFormat {
+    fn ext(self) -> &'static str {
         match self {
-            Jpeg => write!(f, "jpeg"),
-            Png => write!(f, "png"),
-            Avif => write!(f, "avif"),
-            Jxl => write!(f, "jxl"),
-            Webp => write!(f, "webp"),
+            Jpeg => "jpeg",
+            Png => "png",
+            Avif => "avif",
+            Jxl => "jxl",
+            Webp => "webp",
         }
     }
 }
@@ -140,70 +140,70 @@ impl ImageJob {
         let next_status = match (self.current, self.target) {
             (Jpeg, to @ Png) => {
                 let input_path = &self.image_path;
-                let output_path = self.image_path.with_extension(to.to_string());
+                let output_path = self.image_path.with_extension(to.ext());
                 let child = spawn::convert_jpeg_to_png(input_path, &output_path)?;
                 self.child = Some(child);
                 JobStatus::Encoding
             }
             (Png, to @ Jpeg) => {
                 let input_path = &self.image_path;
-                let output_path = self.image_path.with_extension(to.to_string());
+                let output_path = self.image_path.with_extension(to.ext());
                 let child = spawn::convert_png_to_jpeg(input_path, &output_path)?;
                 self.child = Some(child);
                 JobStatus::Encoding
             }
             (Jpeg | Png, to @ Avif) => {
                 let input_path = &self.image_path;
-                let output_path = self.image_path.with_extension(to.to_string());
+                let output_path = self.image_path.with_extension(to.ext());
                 let child = spawn::encode_avif(input_path, &output_path)?;
                 self.child = Some(child);
                 JobStatus::Encoding
             }
             (Jpeg | Png, to @ Jxl) => {
                 let input_path = &self.image_path;
-                let output_path = self.image_path.with_extension(to.to_string());
+                let output_path = self.image_path.with_extension(to.ext());
                 let child = spawn::encode_jxl(input_path, &output_path)?;
                 self.child = Some(child);
                 JobStatus::Encoding
             }
             (Jpeg | Png, to @ Webp) => {
                 let input_path = &self.image_path;
-                let output_path = self.image_path.with_extension(to.to_string());
+                let output_path = self.image_path.with_extension(to.ext());
                 let child = spawn::encode_webp(input_path, &output_path)?;
                 self.child = Some(child);
                 JobStatus::Encoding
             }
             (Avif, to @ Jpeg) => {
                 let input_path = &self.image_path;
-                let output_path = self.image_path.with_extension(to.to_string());
+                let output_path = self.image_path.with_extension(to.ext());
                 let child = spawn::decode_avif_to_jpeg(input_path, &output_path)?;
                 self.child = Some(child);
                 JobStatus::Encoding
             }
             (Avif, to @ Png) => {
                 let input_path = &self.image_path;
-                let output_path = self.image_path.with_extension(to.to_string());
+                let output_path = self.image_path.with_extension(to.ext());
                 let child = spawn::decode_avif_to_png(input_path, &output_path)?;
                 self.child = Some(child);
                 JobStatus::Encoding
             }
             (Jxl, to @ Jpeg) => {
                 let input_path = &self.image_path;
-                let output_path = self.image_path.with_extension(to.to_string());
+                let output_path = self.image_path.with_extension(to.ext());
                 let child = spawn::decode_jxl_to_jpeg(input_path, &output_path)?;
                 self.child = Some(child);
                 JobStatus::Encoding
             }
             (Jxl, to @ Png) => {
                 let input_path = &self.image_path;
-                let output_path = self.image_path.with_extension(to.to_string());
+                let output_path = self.image_path.with_extension(to.ext());
                 let child = spawn::decode_jxl_to_png(input_path, &output_path)?;
                 self.child = Some(child);
                 JobStatus::Encoding
             }
             (Webp, to @ Png) => {
                 let input_path = &self.image_path;
-                let output_path = self.image_path.with_extension(to.to_string());
+                let output_path = self.image_path.with_extension(to.ext());
                 let child = spawn::decode_webp(input_path, &output_path)?;
                 self.child = Some(child);
                 JobStatus::Encoding
@@ -211,7 +211,7 @@ impl ImageJob {
             (Avif, Jxl | Webp) => {
                 self.intermediate = Some(Png);
                 let input_path = &self.image_path;
-                let output_path = self.image_path.with_extension(Png.to_string());
+                let output_path = self.image_path.with_extension(Png.ext());
                 let child = spawn::decode_avif_to_png(input_path, &output_path)?;
                 self.child = Some(child);
                 JobStatus::Decoding
@@ -220,11 +220,11 @@ impl ImageJob {
                 let input_path = &self.image_path;
                 let child = if jxl_is_compressed_jpeg(&self.image_path)? {
                     self.intermediate = Some(Jpeg);
-                    let output_path = self.image_path.with_extension(Jpeg.to_string());
+                    let output_path = self.image_path.with_extension(Jpeg.ext());
                     spawn::decode_jxl_to_jpeg(input_path, &output_path)?
                 } else {
                     self.intermediate = Some(Png);
-                    let output_path = self.image_path.with_extension(Png.to_string());
+                    let output_path = self.image_path.with_extension(Png.ext());
                     spawn::decode_jxl_to_png(input_path, &output_path)?
                 };
                 self.child = Some(child);
@@ -233,7 +233,7 @@ impl ImageJob {
             (Webp, Jpeg | Avif | Jxl) => {
                 self.intermediate = Some(Png);
                 let input_path = &self.image_path;
-                let output_path = self.image_path.with_extension(Png.to_string());
+                let output_path = self.image_path.with_extension(Png.ext());
                 let child = spawn::decode_webp(input_path, &output_path)?;
                 self.child = Some(child);
                 JobStatus::Decoding
@@ -278,29 +278,29 @@ impl ImageJob {
 
         let next_status = match (self.intermediate.unwrap(), self.target) {
             (from @ (Jpeg | Png), to @ Avif) => {
-                let input_path = self.image_path.with_extension(from.to_string());
-                let output_path = self.image_path.with_extension(to.to_string());
+                let input_path = self.image_path.with_extension(from.ext());
+                let output_path = self.image_path.with_extension(to.ext());
                 let child = spawn::encode_avif(&input_path, &output_path)?;
                 self.child = Some(child);
                 JobStatus::Encoding
             }
             (from @ (Jpeg | Png), to @ Jxl) => {
-                let input_path = self.image_path.with_extension(from.to_string());
-                let output_path = self.image_path.with_extension(to.to_string());
+                let input_path = self.image_path.with_extension(from.ext());
+                let output_path = self.image_path.with_extension(to.ext());
                 let child = spawn::encode_jxl(&input_path, &output_path)?;
                 self.child = Some(child);
                 JobStatus::Encoding
             }
             (from @ Png, to @ Jpeg) => {
-                let input_path = self.image_path.with_extension(from.to_string());
-                let output_path = self.image_path.with_extension(to.to_string());
+                let input_path = self.image_path.with_extension(from.ext());
+                let output_path = self.image_path.with_extension(to.ext());
                 let child = spawn::convert_png_to_jpeg(&input_path, &output_path)?;
                 self.child = Some(child);
                 JobStatus::Encoding
             }
             (from @ Png, to @ Webp) => {
-                let input_path = self.image_path.with_extension(from.to_string());
-                let output_path = self.image_path.with_extension(to.to_string());
+                let input_path = self.image_path.with_extension(from.ext());
+                let output_path = self.image_path.with_extension(to.ext());
                 let child = spawn::encode_webp(&input_path, &output_path)?;
                 self.child = Some(child);
                 JobStatus::Encoding
@@ -330,7 +330,7 @@ impl ImageJob {
             Err(e) => return Err(Unspecific("error during wait".to_string(), e.into())),
         }
         let delete_path = match self.intermediate {
-            Some(intermediate) => self.image_path.with_extension(intermediate.to_string()),
+            Some(intermediate) => self.image_path.with_extension(intermediate.ext()),
             None => self.image_path.clone(),
         };
 
@@ -485,7 +485,7 @@ impl ArchiveJob {
         let zip_path = dir.join(format!(
             "{}.{}.cbz",
             name.to_str().unwrap(),
-            self.target_format
+            self.target_format.ext()
         ));
 
         let extract_dir = get_conversion_root_dir(&self.archive_path);
@@ -770,7 +770,7 @@ fn get_conversion_root_dir(cbz_path: &Path) -> PathBuf {
 }
 
 fn already_converted(path: &Path, format: ImageFormat) -> bool {
-    let conversion_ending = format!(".{format}.cbz");
+    let conversion_ending = format!(".{}.cbz", format.ext());
 
     let dir = path.parent().unwrap();
     let name = path.file_stem().unwrap();
