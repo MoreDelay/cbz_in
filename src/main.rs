@@ -49,6 +49,8 @@ enum ImageFormat {
 }
 use ImageFormat::*;
 
+use crate::spawn::ManagedChild;
+
 impl ImageFormat {
     fn ext(self) -> &'static str {
         match self {
@@ -61,34 +63,181 @@ impl ImageFormat {
     }
 }
 
-#[derive(Default, Clone, Copy, Debug, PartialEq)]
-enum JobStatus {
-    Init,
-    Decoding,
-    Encoding,
-    #[default]
-    Done,
-}
-
 struct ValidArchive {
     archive_path: PathBuf,
 }
 
-struct ImageJob {
-    status: JobStatus,
-    image_path: PathBuf,
+#[derive(Debug)]
+struct ConversionDirect {
     current: ImageFormat,
-    intermediate: Option<ImageFormat>,
     target: ImageFormat,
-    child: Option<Child>,
+}
+#[derive(Debug)]
+struct ConversionIntermediate {
+    current: ImageFormat,
+    inbetween: ImageFormat,
+    target: ImageFormat,
+}
+#[derive(Debug)]
+enum ConversionTask {
+    Direct(ConversionDirect),
+    Intermediate(ConversionIntermediate),
+}
+
+impl ConversionTask {
+    fn new(
+        image_path: &Path,
+        current: ImageFormat,
+        target: ImageFormat,
+    ) -> Result<Self, ConversionError> {
+        let out = match (current, target) {
+            (a, b) if a == b => return Err(NotSupported(current, target)),
+            (Avif, Jxl | Webp) => Self::Intermediate(ConversionIntermediate {
+                current,
+                inbetween: Png,
+                target,
+            }),
+            (Jxl, Avif | Webp) => match jxl_is_compressed_jpeg(image_path)? {
+                true => Self::Intermediate(ConversionIntermediate {
+                    current,
+                    inbetween: Jpeg,
+                    target,
+                }),
+                false => Self::Intermediate(ConversionIntermediate {
+                    current,
+                    inbetween: Png,
+                    target,
+                }),
+            },
+            (Webp, Jpeg | Avif | Jxl) => Self::Intermediate(ConversionIntermediate {
+                current,
+                inbetween: Png,
+                target,
+            }),
+            (_, _) => Self::Direct(ConversionDirect { current, target }),
+        };
+        Ok(out)
+    }
+
+    fn conversion_tuple(&self) -> (ImageFormat, ImageFormat) {
+        match self {
+            ConversionTask::Direct(ConversionDirect { current, target }) => (*current, *target),
+            ConversionTask::Intermediate(ConversionIntermediate {
+                current, target, ..
+            }) => (*current, *target),
+        }
+    }
+
+    fn perform_always(&self) -> bool {
+        match self.conversion_tuple() {
+            (Jpeg | Png, _) => true,
+            (_, Jpeg | Png) => true,
+            (_, _) => false,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ImageJobWaiting {
+    image_path: PathBuf,
+    task: ConversionTask,
+}
+#[derive(Debug)]
+struct ImageJobRunning {
+    child: ManagedChild,
+    image_path: PathBuf,
+    after: Option<ConversionDirect>,
+}
+#[derive(Debug)]
+enum ImageJob {
+    Waiting(ImageJobWaiting),
+    Running(ImageJobRunning),
+}
+
+impl ImageJobWaiting {
+    fn start_conversion(self) -> Result<ImageJobRunning, ConversionError> {
+        let ImageJobWaiting { image_path, task } = self;
+        let (current, target, after) = match task {
+            ConversionTask::Direct(ConversionDirect { current, target }) => (current, target, None),
+            ConversionTask::Intermediate(ConversionIntermediate {
+                current,
+                inbetween,
+                target,
+            }) => (
+                current,
+                inbetween,
+                Some(ConversionDirect {
+                    current: inbetween,
+                    target,
+                }),
+            ),
+        };
+        let input_path = &image_path;
+        let output_path = &image_path.with_extension(target.ext());
+        let child = match (current, target) {
+            (Jpeg, Png) => spawn::convert_jpeg_to_png(input_path, output_path)?,
+            (Png, Jpeg) => spawn::convert_png_to_jpeg(input_path, output_path)?,
+            (Jpeg | Png, Avif) => spawn::encode_avif(input_path, output_path)?,
+            (Jpeg | Png, Jxl) => spawn::encode_jxl(input_path, output_path)?,
+            (Jpeg | Png, Webp) => spawn::encode_webp(input_path, output_path)?,
+            (Avif, Jpeg) => spawn::decode_avif_to_jpeg(input_path, output_path)?,
+            (Avif, Png) => spawn::decode_avif_to_png(input_path, output_path)?,
+            (Jxl, Jpeg) => spawn::decode_jxl_to_jpeg(input_path, output_path)?,
+            (Jxl, Png) => spawn::decode_jxl_to_png(input_path, output_path)?,
+            (Webp, Png) => spawn::decode_webp(input_path, output_path)?,
+            (_, _) => unreachable!(),
+        };
+
+        Ok(ImageJobRunning {
+            child,
+            image_path,
+            after,
+        })
+    }
+}
+
+impl ImageJobRunning {
+    /// wait on child process and delete original image file
+    fn complete(self) -> Result<Option<ImageJobWaiting>, ConversionError> {
+        let ImageJobRunning {
+            mut child,
+            image_path,
+            after,
+        } = self;
+
+        match child.wait() {
+            Ok(status) if !status.success() => {
+                let output = extract_console_output(&mut child);
+                debug!("error on process {image_path:?}:\n{output}");
+                return Err(AbnormalExit(image_path));
+            }
+            Ok(_) => {
+                let output = extract_console_output(&mut child);
+                trace!("process output:\n{output}");
+            }
+            Err(e) => return Err(Unspecific("error during wait".to_string(), e.into())),
+        }
+
+        fs::remove_file(&image_path).map_err(|e| {
+            Unspecific(
+                format!("completing conversion: Could not delete '{:?}'", image_path),
+                e.into(),
+            )
+        })?;
+
+        let after = after.map(|direct| ImageJobWaiting {
+            image_path: image_path.with_extension(direct.current.ext()),
+            task: ConversionTask::Direct(direct),
+        });
+        Ok(after)
+    }
 }
 
 struct ArchiveJob {
     archive_path: PathBuf,
     job_queue: VecDeque<ImageJob>,
-    jobs_in_process: Vec<ImageJob>,
-    target_format: ImageFormat,
-    n_workers: usize,
+    jobs_in_progress: Vec<Option<ImageJob>>,
+    target: ImageFormat,
 }
 
 #[derive(Debug, Error)]
@@ -116,258 +265,34 @@ impl ValidArchive {
 }
 
 impl ImageJob {
-    fn new(
-        image_path: PathBuf,
-        from: ImageFormat,
-        to: ImageFormat,
-    ) -> Result<ImageJob, ConversionError> {
-        match (from, to) {
-            (a, b) if a == b => return Err(NotSupported(from, to)),
-            (_, Jpeg | Png | Avif | Jxl | Webp) => (),
-        }
-
-        Ok(ImageJob {
-            status: JobStatus::Init,
-            image_path,
-            current: from,
-            intermediate: None,
-            target: to,
-            child: None,
-        })
+    fn new(image_path: PathBuf, task: ConversionTask) -> Self {
+        let waiting = ImageJobWaiting { image_path, task };
+        Self::Waiting(waiting)
     }
 
-    fn on_init(&mut self) -> Result<JobStatus, ConversionError> {
-        let next_status = match (self.current, self.target) {
-            (Jpeg, to @ Png) => {
-                let input_path = &self.image_path;
-                let output_path = self.image_path.with_extension(to.ext());
-                let child = spawn::convert_jpeg_to_png(input_path, &output_path)?;
-                self.child = Some(child);
-                JobStatus::Encoding
-            }
-            (Png, to @ Jpeg) => {
-                let input_path = &self.image_path;
-                let output_path = self.image_path.with_extension(to.ext());
-                let child = spawn::convert_png_to_jpeg(input_path, &output_path)?;
-                self.child = Some(child);
-                JobStatus::Encoding
-            }
-            (Jpeg | Png, to @ Avif) => {
-                let input_path = &self.image_path;
-                let output_path = self.image_path.with_extension(to.ext());
-                let child = spawn::encode_avif(input_path, &output_path)?;
-                self.child = Some(child);
-                JobStatus::Encoding
-            }
-            (Jpeg | Png, to @ Jxl) => {
-                let input_path = &self.image_path;
-                let output_path = self.image_path.with_extension(to.ext());
-                let child = spawn::encode_jxl(input_path, &output_path)?;
-                self.child = Some(child);
-                JobStatus::Encoding
-            }
-            (Jpeg | Png, to @ Webp) => {
-                let input_path = &self.image_path;
-                let output_path = self.image_path.with_extension(to.ext());
-                let child = spawn::encode_webp(input_path, &output_path)?;
-                self.child = Some(child);
-                JobStatus::Encoding
-            }
-            (Avif, to @ Jpeg) => {
-                let input_path = &self.image_path;
-                let output_path = self.image_path.with_extension(to.ext());
-                let child = spawn::decode_avif_to_jpeg(input_path, &output_path)?;
-                self.child = Some(child);
-                JobStatus::Encoding
-            }
-            (Avif, to @ Png) => {
-                let input_path = &self.image_path;
-                let output_path = self.image_path.with_extension(to.ext());
-                let child = spawn::decode_avif_to_png(input_path, &output_path)?;
-                self.child = Some(child);
-                JobStatus::Encoding
-            }
-            (Jxl, to @ Jpeg) => {
-                let input_path = &self.image_path;
-                let output_path = self.image_path.with_extension(to.ext());
-                let child = spawn::decode_jxl_to_jpeg(input_path, &output_path)?;
-                self.child = Some(child);
-                JobStatus::Encoding
-            }
-            (Jxl, to @ Png) => {
-                let input_path = &self.image_path;
-                let output_path = self.image_path.with_extension(to.ext());
-                let child = spawn::decode_jxl_to_png(input_path, &output_path)?;
-                self.child = Some(child);
-                JobStatus::Encoding
-            }
-            (Webp, to @ Png) => {
-                let input_path = &self.image_path;
-                let output_path = self.image_path.with_extension(to.ext());
-                let child = spawn::decode_webp(input_path, &output_path)?;
-                self.child = Some(child);
-                JobStatus::Encoding
-            }
-            (Avif, Jxl | Webp) => {
-                self.intermediate = Some(Png);
-                let input_path = &self.image_path;
-                let output_path = self.image_path.with_extension(Png.ext());
-                let child = spawn::decode_avif_to_png(input_path, &output_path)?;
-                self.child = Some(child);
-                JobStatus::Decoding
-            }
-            (Jxl, Avif | Webp) => {
-                let input_path = &self.image_path;
-                let child = if jxl_is_compressed_jpeg(&self.image_path)? {
-                    self.intermediate = Some(Jpeg);
-                    let output_path = self.image_path.with_extension(Jpeg.ext());
-                    spawn::decode_jxl_to_jpeg(input_path, &output_path)?
-                } else {
-                    self.intermediate = Some(Png);
-                    let output_path = self.image_path.with_extension(Png.ext());
-                    spawn::decode_jxl_to_png(input_path, &output_path)?
-                };
-                self.child = Some(child);
-                JobStatus::Decoding
-            }
-            (Webp, Jpeg | Avif | Jxl) => {
-                self.intermediate = Some(Png);
-                let input_path = &self.image_path;
-                let output_path = self.image_path.with_extension(Png.ext());
-                let child = spawn::decode_webp(input_path, &output_path)?;
-                self.child = Some(child);
-                JobStatus::Decoding
-            }
-            (Jpeg, Jpeg) => JobStatus::Done,
-            (Png, Png) => JobStatus::Done,
-            (Avif, Avif) => JobStatus::Done,
-            (Jxl, Jxl) => JobStatus::Done,
-            (Webp, Webp) => JobStatus::Done,
-        };
-        self.status = next_status;
-        Ok(next_status)
-    }
-
-    fn on_decoding(&mut self) -> Result<JobStatus, ConversionError> {
-        let child: &mut Child = match &mut self.child {
-            Some(child) => child,
-            None => unreachable!(),
-        };
-        match child.wait() {
-            Ok(status) if !status.success() => {
-                let output = extract_console_output(child);
-                debug!("error on process:\n{output}");
-                return Err(AbnormalExit(self.image_path.clone()));
-            }
-            Ok(_) => {
-                let output = extract_console_output(child);
-                trace!("process output:\n{output}");
-            }
-            Err(e) => return Err(Unspecific("error during wait".to_string(), e.into())),
-        }
-
-        fs::remove_file(&self.image_path).map_err(|e| {
-            Unspecific(
-                format!(
-                    "intermediate step: Could not delete '{:?}'",
-                    self.image_path
-                ),
-                e.into(),
-            )
-        })?;
-
-        let next_status = match (self.intermediate.unwrap(), self.target) {
-            (from @ (Jpeg | Png), to @ Avif) => {
-                let input_path = self.image_path.with_extension(from.ext());
-                let output_path = self.image_path.with_extension(to.ext());
-                let child = spawn::encode_avif(&input_path, &output_path)?;
-                self.child = Some(child);
-                JobStatus::Encoding
-            }
-            (from @ (Jpeg | Png), to @ Jxl) => {
-                let input_path = self.image_path.with_extension(from.ext());
-                let output_path = self.image_path.with_extension(to.ext());
-                let child = spawn::encode_jxl(&input_path, &output_path)?;
-                self.child = Some(child);
-                JobStatus::Encoding
-            }
-            (from @ Png, to @ Jpeg) => {
-                let input_path = self.image_path.with_extension(from.ext());
-                let output_path = self.image_path.with_extension(to.ext());
-                let child = spawn::convert_png_to_jpeg(&input_path, &output_path)?;
-                self.child = Some(child);
-                JobStatus::Encoding
-            }
-            (from @ Png, to @ Webp) => {
-                let input_path = self.image_path.with_extension(from.ext());
-                let output_path = self.image_path.with_extension(to.ext());
-                let child = spawn::encode_webp(&input_path, &output_path)?;
-                self.child = Some(child);
-                JobStatus::Encoding
-            }
-            (_, Jpeg | Png | Avif | Jxl | Webp) => unreachable!(),
-        };
-        self.status = next_status;
-        Ok(next_status)
-    }
-
-    // wait on child process and delete original image file
-    fn on_encoding(&mut self) -> Result<JobStatus, ConversionError> {
-        let child: &mut Child = match &mut self.child {
-            Some(child) => child,
-            None => unreachable!(),
-        };
-        match child.wait() {
-            Ok(status) if !status.success() => {
-                let output = extract_console_output(child);
-                debug!("error on process:\n{output}");
-                return Err(AbnormalExit(self.image_path.clone()));
-            }
-            Ok(_) => {
-                let output = extract_console_output(child);
-                trace!("process output:\n{output}");
-            }
-            Err(e) => return Err(Unspecific("error during wait".to_string(), e.into())),
-        }
-        let delete_path = match self.intermediate {
-            Some(intermediate) => self.image_path.with_extension(intermediate.ext()),
-            None => self.image_path.clone(),
-        };
-
-        self.status = JobStatus::Done;
-        fs::remove_file(&delete_path).map_err(|e| {
-            Unspecific(
-                format!("converting step: Could not delete '{delete_path:?}'"),
-                e.into(),
-            )
-        })?;
-
-        Ok(self.status)
-    }
-
-    fn proceed(&mut self) -> Result<JobStatus, ConversionError> {
+    fn proceed(self) -> Result<Option<Self>, ConversionError> {
         debug!("proceed with {self:?}");
-        let result = match self.status {
-            JobStatus::Init => self.on_init(),
-            JobStatus::Decoding => self.on_decoding(),
-            JobStatus::Encoding => self.on_encoding(),
-            JobStatus::Done => Ok(JobStatus::Done),
+        let running = match self {
+            ImageJob::Waiting(waiting) => {
+                let running = waiting.start_conversion()?;
+                Some(Self::Running(running))
+            }
+            ImageJob::Running(running) => running
+                .complete()?
+                .map(|waiting| waiting.start_conversion())
+                .transpose()?
+                .map(|running| Self::Running(running)),
         };
-        debug!("after proceed {self:?}");
-        result
+        debug!("after proceed {running:?}");
+        Ok(running)
     }
 
     fn can_proceed(&mut self) -> Result<bool, ConversionError> {
-        match self.status {
-            JobStatus::Init => unreachable!(),
-            JobStatus::Decoding => (),
-            JobStatus::Encoding => (),
-            JobStatus::Done => return Ok(false),
-        }
-        let child: &mut Child = match &mut self.child {
-            Some(child) => child,
-            None => unreachable!(),
+        let (child, image_path) = match self {
+            ImageJob::Waiting(_) => return Ok(true),
+            ImageJob::Running(running) => (&mut running.child, &running.image_path),
         };
+
         match child.try_wait() {
             Ok(Some(_)) => {
                 trace!("ready");
@@ -380,7 +305,7 @@ impl ImageJob {
             Err(e) => {
                 trace!("error");
                 Err(Unspecific(
-                    self.image_path.to_string_lossy().to_string(),
+                    image_path.to_string_lossy().to_string(),
                     e.into(),
                 ))
             }
@@ -391,14 +316,14 @@ impl ImageJob {
 impl ArchiveJob {
     fn with(
         conversion_file: ValidArchive,
-        target_format: ImageFormat,
+        target: ImageFormat,
         n_workers: usize,
         force: bool,
     ) -> Result<Result<Self, NothingToDo>, ConversionError> {
         trace!("called WorkUnit::new()");
         let ValidArchive { archive_path } = conversion_file;
 
-        if already_converted(&archive_path, target_format) {
+        if already_converted(&archive_path, target) {
             return Ok(Err(NothingToDo::AlreadyDone(archive_path.to_path_buf())));
         }
 
@@ -411,22 +336,24 @@ impl ArchiveJob {
 
         let root_dir = get_extraction_root_dir(&archive_path)?;
         let job_queue = images_in_archive(&archive_path)?
-            .iter()
+            .into_iter()
             .filter_map(|(image_path, format)| {
-                ImageJob::new(root_dir.join(image_path), *format, target_format).ok()
+                let image_path = root_dir.join(image_path);
+                let task = ConversionTask::new(&image_path, format, target).ok()?;
+                let perform = force || task.perform_always();
+                perform.then_some(ImageJob::new(image_path, task))
             })
-            .filter(|job| force || convert_always(job.current, job.target))
             .collect::<VecDeque<_>>();
         if job_queue.is_empty() {
             return Ok(Err(NothingToDo::NoFilesToConvert(archive_path)));
         }
 
+        let jobs_in_progress = Vec::from_iter((0..n_workers).map(|_| None));
         Ok(Ok(Self {
             archive_path,
             job_queue,
-            jobs_in_process: Vec::new(),
-            target_format,
-            n_workers,
+            jobs_in_progress,
+            target,
         }))
     }
 
@@ -443,7 +370,7 @@ impl ArchiveJob {
         let mut signals = Signals::new([SIGINT, SIGCHLD])
             .map_err(|e| Unspecific("could not listen to signals".to_string(), e.into()))?;
 
-        let mut child = spawn::extract_zip(&self.archive_path, &extract_dir)?;
+        let child = spawn::extract_zip(&self.archive_path, &extract_dir)?;
 
         #[expect(
             clippy::never_loop,
@@ -454,9 +381,6 @@ impl ArchiveJob {
                 match signal {
                     SIGINT => {
                         debug!("interrupted while extracting");
-                        child.kill().map_err(|e| {
-                            Unspecific("Could not kill 7z process".into(), e.into())
-                        })?;
                         return Err(Interrupt);
                     }
                     SIGCHLD => {
@@ -468,7 +392,7 @@ impl ArchiveJob {
         }
         debug!("extraction done");
 
-        match child.wait_with_output() {
+        match child.into_inner().wait_with_output() {
             Ok(output) if output.status.code().is_some_and(|code| code == 0) => Ok(()),
             Ok(_) => Err(ConversionError::ExtractionError(
                 "Extraction with 7z unsuccessful".to_string(),
@@ -485,7 +409,7 @@ impl ArchiveJob {
         let zip_path = dir.join(format!(
             "{}.{}.cbz",
             name.to_str().unwrap(),
-            self.target_format.ext()
+            self.target.ext()
         ));
 
         let extract_dir = get_conversion_root_dir(&self.archive_path);
@@ -536,18 +460,12 @@ impl ArchiveJob {
 
         // start out as many jobs as allowed
         trace!("start initial jobs");
-        while self.jobs_in_process.len() < self.n_workers {
-            let mut job = match self.job_queue.pop_front() {
-                Some(job) => job,
-                None => break,
+        for slot in self.jobs_in_progress.iter_mut() {
+            let Some(job) = self.job_queue.pop_front() else {
+                break;
             };
-
-            let status = job.proceed()?;
-            match status {
-                JobStatus::Init => unreachable!(),
-                JobStatus::Decoding => self.jobs_in_process.push(job),
-                JobStatus::Encoding => self.jobs_in_process.push(job),
-                JobStatus::Done => (),
+            if let Some(job) = job.proceed()? {
+                *slot = Some(job);
             }
         }
 
@@ -579,79 +497,42 @@ impl ArchiveJob {
 
     fn proceed_jobs(&mut self) -> Result<(), ConversionError> {
         trace!("proceed all ready jobs");
-        for job in self.jobs_in_process.iter_mut() {
-            trace!("job in process: {job:?}");
-            if job.can_proceed()? {
-                match job.proceed()? {
-                    JobStatus::Init => unreachable!(),
-                    JobStatus::Decoding => unreachable!(),
-                    JobStatus::Encoding => (),
-                    JobStatus::Done => (),
-                }
-            }
+        for slot in self.jobs_in_progress.iter_mut() {
+            trace!("job in progress: {slot:?}");
+            let Some(mut job) = slot.take() else { continue };
+
+            let job = match job.can_proceed()? {
+                true => job.proceed()?,
+                false => Some(job),
+            };
+            *slot = job;
         }
         Ok(())
     }
 
     fn start_next_jobs(&mut self) -> Result<(), ConversionError> {
         trace!("start new jobs");
-        'replace: for job in self.jobs_in_process.iter_mut() {
-            trace!("job in process: {job:?}");
-            if let JobStatus::Done = job.status {
-                let mut new_job = 'search: loop {
-                    let mut new_job = match self.job_queue.pop_front() {
-                        Some(new_job) => new_job,
-                        None => break 'replace,
-                    };
-                    match new_job.proceed()? {
-                        JobStatus::Done => continue,
-                        _ => break 'search new_job,
-                    }
-                };
-                trace!("replace job {job:?} for {new_job:?}");
-                std::mem::swap(job, &mut new_job);
+        'replace: for slot in self.jobs_in_progress.iter_mut() {
+            if slot.is_some() {
+                continue;
             }
+            let new_job = 'search: loop {
+                let new_job = match self.job_queue.pop_front() {
+                    Some(new_job) => new_job,
+                    None => break 'replace,
+                };
+                match new_job.proceed()? {
+                    Some(new_job) => break 'search new_job,
+                    None => continue,
+                }
+            };
+            *slot = Some(new_job);
         }
         Ok(())
     }
 
     fn jobs_pending(&self) -> bool {
-        let all_done = self
-            .jobs_in_process
-            .iter()
-            .map(|job| job.status)
-            .all(|status| JobStatus::Done == status);
-        !all_done
-    }
-}
-
-impl std::fmt::Debug for ImageJob {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut writer = f.debug_struct("ConversionJob");
-        writer
-            .field("status", &self.status)
-            .field("from", &self.current)
-            .field("to", &self.target);
-        if let Some(inter) = self.intermediate {
-            writer.field("over", &inter);
-        }
-        writer
-            .field("image_path", &self.image_path.to_string_lossy())
-            .finish()
-    }
-}
-
-impl Drop for ImageJob {
-    fn drop(&mut self) {
-        trace!("drop {self:?}");
-        let mut child = match self.child.take() {
-            Some(child) => child,
-            None => return,
-        };
-
-        // ignore errors
-        let _ = child.kill();
-        let _ = child.wait(); // is this necessary?
+        self.jobs_in_progress.iter().any(|job| job.is_some())
     }
 }
 
@@ -704,6 +585,7 @@ fn images_in_archive(cbz_path: &Path) -> Result<Vec<(PathBuf, ImageFormat)>, Con
 
     let child = spawn::list_archive_files(cbz_path)?;
     let files = child
+        .into_inner()
         .wait_with_output()
         .map_err(|e| {
             ConversionError::Unspecific("Could not wait on 7z process".to_string(), e.into())
@@ -736,6 +618,7 @@ fn get_extraction_root_dir(cbz_path: &Path) -> Result<PathBuf, ConversionError> 
 
     let archive_name = cbz_path.file_stem().unwrap();
     let archive_root_dirs = child
+        .into_inner()
         .wait_with_output()
         .map_err(|e| {
             ConversionError::Unspecific("Could not wait on 7z process".to_string(), e.into())
@@ -782,14 +665,6 @@ fn already_converted(path: &Path, format: ImageFormat) -> bool {
     trace!(" is converted archive? {is_converted_archive}");
     trace!("has converted archive? {has_converted_archive}");
     is_converted_archive || has_converted_archive
-}
-
-fn convert_always(from: ImageFormat, to: ImageFormat) -> bool {
-    match (from, to) {
-        (Jpeg | Png, _) => true,
-        (_, Jpeg | Png) => true,
-        (_, _) => false,
-    }
 }
 
 #[derive(Parser)]
