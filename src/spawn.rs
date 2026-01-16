@@ -4,80 +4,98 @@ use std::process::{Child, Command, Stdio};
 use thiserror::Error;
 use tracing::trace;
 
-#[derive(Debug, Error)]
-pub enum SpawnError {
-    #[error("Could not spawn magick process: {0}")]
-    Magick(String, #[source] std::io::Error),
-    #[error("Could not spawn cavif process: {0}")]
-    Cavif(String, #[source] std::io::Error),
-    #[error("Could not spawn cjxl process: {0}")]
-    Cjxl(String, #[source] std::io::Error),
-    #[error("Could not spawn cwebp process: {0}")]
-    Cwebp(String, #[source] std::io::Error),
-    #[error("Could not spawn dwebp process: {0}")]
-    Dwebp(String, #[source] std::io::Error),
-    #[error("Could not spawn djxl process: {0}")]
-    Djxl(String, #[source] std::io::Error),
-    #[error("Could not spawn avifdec process: {0}")]
-    Avifdec(String, #[source] std::io::Error),
-    #[error("Could not spawn jxlinfo process: {0}")]
-    Jxlinfo(String, #[source] std::io::Error),
-    #[error("Could not spawn 7z process: {0}")]
-    E7z(String, #[source] std::io::Error),
+#[derive(Debug, Clone, Copy)]
+pub enum Tool {
+    Magick,
+    Cavif,
+    Cjxl,
+    Cwebp,
+    Dwebp,
+    Djxl,
+    Avifdec,
+    Jxlinfo,
+    _7z,
+}
+
+impl Tool {
+    fn name(self) -> &'static str {
+        match self {
+            Tool::Magick => "magick",
+            Tool::Cavif => "cavif",
+            Tool::Cjxl => "cjxl",
+            Tool::Cwebp => "cwebp",
+            Tool::Dwebp => "dwebp",
+            Tool::Djxl => "djxl",
+            Tool::Avifdec => "avifdec",
+            Tool::Jxlinfo => "jxlinfo",
+            Tool::_7z => "7z",
+        }
+    }
+}
+
+impl std::fmt::Display for Tool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
 }
 
 #[derive(Debug, Error)]
 pub enum AbnormalExit {
     #[error("Could not parse error output")]
     InvalidUtf8(#[from] std::string::FromUtf8Error),
-    #[error("Process printed error output: {0}")]
+    #[error("Process printed error output:\n{0}")]
     StdErr(String),
 }
 
 #[derive(Debug, Error)]
 pub enum ProcessError {
-    #[error("Could not spawn a process")]
-    Spawn(#[from] SpawnError),
-    #[error("A process exited abnormally, producing output: {0}")]
-    AbnormalExit(AbnormalExit),
-    #[error("Could not wait on a child process")]
-    Wait(#[source] std::io::Error),
-    #[error("Could not listen to process signals")]
-    Signals(#[source] std::io::Error),
+    #[error("Could not spawn a process for the tool '{0}'")]
+    Spawn(Tool, #[source] std::io::Error),
+    #[error("A process for the tool '{0}' exited abnormally")]
+    AbnormalExit(Tool, #[source] AbnormalExit),
+    #[error("Could not wait on a child process for the tool '{0}'")]
+    Wait(Tool, #[source] std::io::Error),
 }
 
 /// Child process that gets killed on drop
 #[derive(Debug)]
-pub struct ManagedChild(Option<Child>);
+pub struct ManagedChild {
+    child: Option<Child>,
+    tool: Tool,
+}
 
 impl ManagedChild {
-    fn new(child: Child) -> Self {
-        Self(Some(child))
+    fn new(child: Child, tool: Tool) -> Self {
+        Self {
+            child: Some(child),
+            tool,
+        }
     }
 
     pub fn try_wait(&mut self) -> Result<Option<std::process::ExitStatus>, ProcessError> {
-        self.0
+        self.child
             .as_mut()
             .unwrap()
             .try_wait()
-            .map_err(ProcessError::Wait)
+            .map_err(|e| ProcessError::Wait(self.tool, e))
     }
 
-    pub fn into_inner(mut self) -> Child {
-        self.0.take().unwrap()
+    fn into_inner(mut self) -> Child {
+        self.child.take().unwrap()
     }
 
     pub fn wait_with_output(self) -> Result<std::process::Output, ProcessError> {
+        let tool = self.tool;
         let output = self
             .into_inner()
             .wait_with_output()
-            .map_err(ProcessError::Wait)?;
+            .map_err(|e| ProcessError::Wait(tool, e))?;
         if !output.status.success() {
             let abnormal_exit = match output.stderr.try_into() {
                 Ok(s) => AbnormalExit::StdErr(s),
                 Err(e) => AbnormalExit::InvalidUtf8(e),
             };
-            return Err(ProcessError::AbnormalExit(abnormal_exit));
+            return Err(ProcessError::AbnormalExit(tool, abnormal_exit));
         }
         Ok(output)
     }
@@ -85,7 +103,7 @@ impl ManagedChild {
 
 impl Drop for ManagedChild {
     fn drop(&mut self) {
-        if let Some(child) = self.0.as_mut() {
+        if let Some(child) = self.child.as_mut() {
             trace!("drop {child:?}");
             // ignore errors
             let _ = child.kill();
@@ -97,21 +115,25 @@ impl Drop for ManagedChild {
 pub fn convert_jpeg_to_png(
     input_path: &Path,
     output_path: &Path,
-) -> Result<ManagedChild, SpawnError> {
-    let mut cmd = Command::new("magick");
+) -> Result<ManagedChild, ProcessError> {
+    const TOOL: Tool = Tool::Magick;
+
+    let mut cmd = Command::new(TOOL.name());
     cmd.args([input_path.to_str().unwrap(), output_path.to_str().unwrap()]);
     cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| SpawnError::Magick(format!("{cmd:?}"), e))
-        .map(ManagedChild::new)
+        .map_err(|e| ProcessError::Spawn(TOOL, e))
+        .map(|c| ManagedChild::new(c, TOOL))
 }
 
 pub fn convert_png_to_jpeg(
     input_path: &Path,
     output_path: &Path,
-) -> Result<ManagedChild, SpawnError> {
-    let mut cmd = Command::new("magick");
+) -> Result<ManagedChild, ProcessError> {
+    const TOOL: Tool = Tool::Magick;
+
+    let mut cmd = Command::new(TOOL.name());
     cmd.args([
         input_path.to_str().unwrap(),
         "-quality",
@@ -121,12 +143,14 @@ pub fn convert_png_to_jpeg(
     cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| SpawnError::Magick(format!("{cmd:?}"), e))
-        .map(ManagedChild::new)
+        .map_err(|e| ProcessError::Spawn(TOOL, e))
+        .map(|c| ManagedChild::new(c, TOOL))
 }
 
-pub fn encode_avif(input_path: &Path, output_path: &Path) -> Result<ManagedChild, SpawnError> {
-    let mut cmd = Command::new("cavif");
+pub fn encode_avif(input_path: &Path, output_path: &Path) -> Result<ManagedChild, ProcessError> {
+    const TOOL: Tool = Tool::Cavif;
+
+    let mut cmd = Command::new(TOOL.name());
     cmd.args([
         "--speed=3",
         "--threads=1",
@@ -138,12 +162,14 @@ pub fn encode_avif(input_path: &Path, output_path: &Path) -> Result<ManagedChild
     cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| SpawnError::Cavif(format!("{cmd:?}"), e))
-        .map(ManagedChild::new)
+        .map_err(|e| ProcessError::Spawn(TOOL, e))
+        .map(|c| ManagedChild::new(c, TOOL))
 }
 
-pub fn encode_jxl(input_path: &Path, output_path: &Path) -> Result<ManagedChild, SpawnError> {
-    let mut cmd = Command::new("cjxl");
+pub fn encode_jxl(input_path: &Path, output_path: &Path) -> Result<ManagedChild, ProcessError> {
+    const TOOL: Tool = Tool::Cjxl;
+
+    let mut cmd = Command::new(TOOL.name());
     cmd.args([
         "--effort=9",
         "--num_threads=1",
@@ -154,12 +180,14 @@ pub fn encode_jxl(input_path: &Path, output_path: &Path) -> Result<ManagedChild,
     cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| SpawnError::Cjxl(format!("{cmd:?}"), e))
-        .map(ManagedChild::new)
+        .map_err(|e| ProcessError::Spawn(TOOL, e))
+        .map(|c| ManagedChild::new(c, TOOL))
 }
 
-pub fn encode_webp(input_path: &Path, output_path: &Path) -> Result<ManagedChild, SpawnError> {
-    let mut cmd = Command::new("cwebp");
+pub fn encode_webp(input_path: &Path, output_path: &Path) -> Result<ManagedChild, ProcessError> {
+    const TOOL: Tool = Tool::Cwebp;
+
+    let mut cmd = Command::new(TOOL.name());
     cmd.args([
         "-q",
         "90",
@@ -170,12 +198,14 @@ pub fn encode_webp(input_path: &Path, output_path: &Path) -> Result<ManagedChild
     cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| SpawnError::Cwebp(format!("{cmd:?}"), e))
-        .map(ManagedChild::new)
+        .map_err(|e| ProcessError::Spawn(TOOL, e))
+        .map(|c| ManagedChild::new(c, TOOL))
 }
 
-pub fn decode_webp(input_path: &Path, output_path: &Path) -> Result<ManagedChild, SpawnError> {
-    let mut cmd = Command::new("dwebp");
+pub fn decode_webp(input_path: &Path, output_path: &Path) -> Result<ManagedChild, ProcessError> {
+    const TOOL: Tool = Tool::Dwebp;
+
+    let mut cmd = Command::new(TOOL.name());
     cmd.args([
         input_path.to_str().unwrap(),
         "-o",
@@ -184,15 +214,17 @@ pub fn decode_webp(input_path: &Path, output_path: &Path) -> Result<ManagedChild
     cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| SpawnError::Dwebp(format!("{cmd:?}"), e))
-        .map(ManagedChild::new)
+        .map_err(|e| ProcessError::Spawn(TOOL, e))
+        .map(|c| ManagedChild::new(c, TOOL))
 }
 
 pub fn decode_jxl_to_png(
     input_path: &Path,
     output_path: &Path,
-) -> Result<ManagedChild, SpawnError> {
-    let mut cmd = Command::new("djxl");
+) -> Result<ManagedChild, ProcessError> {
+    const TOOL: Tool = Tool::Djxl;
+
+    let mut cmd = Command::new(TOOL.name());
     cmd.args([
         input_path.to_str().unwrap(),
         output_path.to_str().unwrap(),
@@ -201,15 +233,17 @@ pub fn decode_jxl_to_png(
     cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| SpawnError::Djxl(format!("{cmd:?}"), e))
-        .map(ManagedChild::new)
+        .map_err(|e| ProcessError::Spawn(TOOL, e))
+        .map(|c| ManagedChild::new(c, TOOL))
 }
 
 pub fn decode_jxl_to_jpeg(
     input_path: &Path,
     output_path: &Path,
-) -> Result<ManagedChild, SpawnError> {
-    let mut cmd = Command::new("djxl");
+) -> Result<ManagedChild, ProcessError> {
+    const TOOL: Tool = Tool::Djxl;
+
+    let mut cmd = Command::new(TOOL.name());
     cmd.args([
         input_path.to_str().unwrap(),
         output_path.to_str().unwrap(),
@@ -218,15 +252,17 @@ pub fn decode_jxl_to_jpeg(
     cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| SpawnError::Djxl(format!("{cmd:?}"), e))
-        .map(ManagedChild::new)
+        .map_err(|e| ProcessError::Spawn(TOOL, e))
+        .map(|c| ManagedChild::new(c, TOOL))
 }
 
 pub fn decode_avif_to_png(
     input_path: &Path,
     output_path: &Path,
-) -> Result<ManagedChild, SpawnError> {
-    let mut cmd = Command::new("avifdec");
+) -> Result<ManagedChild, ProcessError> {
+    const TOOL: Tool = Tool::Avifdec;
+
+    let mut cmd = Command::new(TOOL.name());
     cmd.args([
         "--jobs",
         "1",
@@ -236,15 +272,17 @@ pub fn decode_avif_to_png(
     cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| SpawnError::Avifdec(format!("{cmd:?}"), e))
-        .map(ManagedChild::new)
+        .map_err(|e| ProcessError::Spawn(TOOL, e))
+        .map(|c| ManagedChild::new(c, TOOL))
 }
 
 pub fn decode_avif_to_jpeg(
     input_path: &Path,
     output_path: &Path,
-) -> Result<ManagedChild, SpawnError> {
-    let mut cmd = Command::new("avifdec");
+) -> Result<ManagedChild, ProcessError> {
+    const TOOL: Tool = Tool::Avifdec;
+
+    let mut cmd = Command::new(TOOL.name());
     cmd.args([
         "--jobs",
         "1",
@@ -256,22 +294,26 @@ pub fn decode_avif_to_jpeg(
     cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| SpawnError::Avifdec(format!("{cmd:?}"), e))
-        .map(ManagedChild::new)
+        .map_err(|e| ProcessError::Spawn(TOOL, e))
+        .map(|c| ManagedChild::new(c, TOOL))
 }
 
-pub fn run_jxlinfo(image_path: &Path) -> Result<ManagedChild, SpawnError> {
-    let mut cmd = Command::new("jxlinfo");
+pub fn run_jxlinfo(image_path: &Path) -> Result<ManagedChild, ProcessError> {
+    const TOOL: Tool = Tool::Jxlinfo;
+
+    let mut cmd = Command::new(TOOL.name());
     cmd.args(["-v", image_path.to_str().unwrap()]);
     cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| SpawnError::Jxlinfo(format!("{cmd:?}"), e))
-        .map(ManagedChild::new)
+        .map_err(|e| ProcessError::Spawn(TOOL, e))
+        .map(|c| ManagedChild::new(c, TOOL))
 }
 
-pub fn list_archive_files(archive: &Path) -> Result<ManagedChild, SpawnError> {
-    let mut cmd = Command::new("7z");
+pub fn list_archive_files(archive: &Path) -> Result<ManagedChild, ProcessError> {
+    const TOOL: Tool = Tool::_7z;
+
+    let mut cmd = Command::new(TOOL.name());
     cmd.args([
         "l",
         "-ba",  // undocumented switch to remove header lines
@@ -281,12 +323,14 @@ pub fn list_archive_files(archive: &Path) -> Result<ManagedChild, SpawnError> {
     cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| SpawnError::E7z(format!("{cmd:?}"), e))
-        .map(ManagedChild::new)
+        .map_err(|e| ProcessError::Spawn(TOOL, e))
+        .map(|c| ManagedChild::new(c, TOOL))
 }
 
-pub fn extract_zip(archive: &Path, destination: &Path) -> Result<ManagedChild, SpawnError> {
-    let mut cmd = Command::new("7z");
+pub fn extract_zip(archive: &Path, destination: &Path) -> Result<ManagedChild, ProcessError> {
+    const TOOL: Tool = Tool::_7z;
+
+    let mut cmd = Command::new(TOOL.name());
     cmd.args([
         "x",
         "-tzip", // undocumented switch to remove header lines
@@ -297,6 +341,6 @@ pub fn extract_zip(archive: &Path, destination: &Path) -> Result<ManagedChild, S
     cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| SpawnError::E7z(format!("{cmd:?}"), e))
-        .map(ManagedChild::new)
+        .map_err(|e| ProcessError::Spawn(TOOL, e))
+        .map(|c| ManagedChild::new(c, TOOL))
 }
