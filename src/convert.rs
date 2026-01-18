@@ -59,7 +59,7 @@ pub enum InvalidArchivePath {
 impl ArchivePath {
     const ARCHIVE_EXTENSIONS: [&str; 2] = ["zip", "cbz"];
 
-    pub fn try_new(archive_path: PathBuf) -> Result<Self, InvalidArchivePath> {
+    pub fn validate(archive_path: PathBuf) -> Result<Self, InvalidArchivePath> {
         if !archive_path.is_file() {
             return Err(InvalidArchivePath::DoesNotExist(archive_path));
         }
@@ -99,10 +99,8 @@ enum ConversionTask {
 
 #[derive(Debug, Error)]
 pub enum TaskError {
-    #[error("Conversion not supported from {0:?} to {1:?}")]
-    NotSupported(ImageFormat, ImageFormat),
-    #[error("Could not query jxl file")]
-    Jxlinfo(#[from] spawn::ProcessError),
+    #[error("Could not query jxl file '{0}'")]
+    Jxlinfo(PathBuf, #[source] spawn::ProcessError),
 }
 
 impl ConversionTask {
@@ -110,11 +108,12 @@ impl ConversionTask {
         image_path: &Path,
         current: ImageFormat,
         target: ImageFormat,
-    ) -> Result<Self, TaskError> {
+        forced: bool,
+    ) -> Result<Option<Self>, TaskError> {
         use ImageFormat::*;
 
         let out = match (current, target) {
-            (a, b) if a == b => return Err(TaskError::NotSupported(current, target)),
+            (a, b) if a == b => return Ok(None),
             (Avif, Jxl | Webp) => Self::Intermediate(ConversionIntermediate {
                 current,
                 inbetween: Png,
@@ -139,7 +138,8 @@ impl ConversionTask {
             }),
             (_, _) => Self::Direct(ConversionDirect { current, target }),
         };
-        Ok(out)
+        let perform = forced || out.perform_always();
+        Ok(perform.then_some(out))
     }
 
     fn perform_always(&self) -> bool {
@@ -159,8 +159,9 @@ impl ConversionTask {
     }
 
     fn jxl_is_compressed_jpeg(image_path: &Path) -> Result<bool, TaskError> {
-        let has_box = spawn::run_jxlinfo(image_path)?
-            .wait_with_output()?
+        let has_box = spawn::run_jxlinfo(image_path)
+            .and_then(|c| c.wait_with_output())
+            .map_err(|e| TaskError::Jxlinfo(image_path.to_path_buf(), e))?
             .stdout
             .lines()
             .any(|line| line.unwrap().starts_with("box: type: \"jbrd\""));
@@ -189,7 +190,7 @@ enum ImageJob {
 }
 
 impl ImageJobWaiting {
-    fn start_conversion(self) -> Result<ImageJobRunning, spawn::ProcessError> {
+    fn start_conversion(self) -> Result<ImageJobRunning, ImageJobError> {
         let ImageJobWaiting { image_path, task } = self;
         let (current, target, after) = match task {
             ConversionTask::Direct(ConversionDirect { current, target }) => (current, target, None),
@@ -209,18 +210,20 @@ impl ImageJobWaiting {
         let input_path = &image_path;
         let output_path = &image_path.with_extension(target.ext());
 
+        let map = |e| ImageJobError::Process(image_path.to_path_buf(), e);
+
         use ImageFormat::*;
         let child = match (current, target) {
-            (Jpeg, Png) => spawn::convert_jpeg_to_png(input_path, output_path)?,
-            (Png, Jpeg) => spawn::convert_png_to_jpeg(input_path, output_path)?,
-            (Jpeg | Png, Avif) => spawn::encode_avif(input_path, output_path)?,
-            (Jpeg | Png, Jxl) => spawn::encode_jxl(input_path, output_path)?,
-            (Jpeg | Png, Webp) => spawn::encode_webp(input_path, output_path)?,
-            (Avif, Jpeg) => spawn::decode_avif_to_jpeg(input_path, output_path)?,
-            (Avif, Png) => spawn::decode_avif_to_png(input_path, output_path)?,
-            (Jxl, Jpeg) => spawn::decode_jxl_to_jpeg(input_path, output_path)?,
-            (Jxl, Png) => spawn::decode_jxl_to_png(input_path, output_path)?,
-            (Webp, Png) => spawn::decode_webp(input_path, output_path)?,
+            (Jpeg, Png) => spawn::convert_jpeg_to_png(input_path, output_path).map_err(map)?,
+            (Png, Jpeg) => spawn::convert_png_to_jpeg(input_path, output_path).map_err(map)?,
+            (Jpeg | Png, Avif) => spawn::encode_avif(input_path, output_path).map_err(map)?,
+            (Jpeg | Png, Jxl) => spawn::encode_jxl(input_path, output_path).map_err(map)?,
+            (Jpeg | Png, Webp) => spawn::encode_webp(input_path, output_path).map_err(map)?,
+            (Avif, Jpeg) => spawn::decode_avif_to_jpeg(input_path, output_path).map_err(map)?,
+            (Avif, Png) => spawn::decode_avif_to_png(input_path, output_path).map_err(map)?,
+            (Jxl, Jpeg) => spawn::decode_jxl_to_jpeg(input_path, output_path).map_err(map)?,
+            (Jxl, Png) => spawn::decode_jxl_to_png(input_path, output_path).map_err(map)?,
+            (Webp, Png) => spawn::decode_webp(input_path, output_path).map_err(map)?,
             (_, _) => unreachable!(),
         };
 
@@ -234,7 +237,9 @@ impl ImageJobWaiting {
 
 impl ImageJobRunning {
     fn child_done(&mut self) -> Result<bool, ImageJobError> {
-        Ok(self.child.try_wait()?.is_some())
+        self.child
+            .try_wait()
+            .map_err(|e| ImageJobError::Wait(self.image_path.to_path_buf(), e))
     }
 }
 
@@ -247,7 +252,9 @@ impl ImageJobCompleted {
             after,
         }) = self;
 
-        child.wait_with_output()?;
+        child
+            .wait()
+            .map_err(|e| ImageJobError::Process(image_path.to_path_buf(), e))?;
         if let Err(err) = fs::remove_file(&image_path) {
             return Err(ImageJobError::DeleteFile(image_path, err));
         };
@@ -314,8 +321,8 @@ impl ImageJob {
 pub enum ArchiveError {
     #[error("Extract directory already exists at '{0}', delete it and try again")]
     ExtractDirExists(PathBuf),
-    #[error("Could not listen to process signals")]
-    Signals(#[source] std::io::Error),
+    #[error("Could not listen to process signals before processing '{0}'")]
+    Signals(PathBuf, #[source] std::io::Error),
     #[error("Failed to create temporary directory for archive extraction at '{0}'")]
     TempDir(PathBuf, #[source] std::io::Error),
     #[error("Encountered error while walking the temporary directory for archive '{0}'")]
@@ -330,14 +337,16 @@ pub enum ArchiveError {
     ImageJob(PathBuf, #[source] ImageJobError),
     #[error("Error while creating archive '{0}'")]
     Zipping(PathBuf, #[source] zip::result::ZipError),
-    #[error("Got interrupted")]
-    Interrupt,
+    #[error("Got interrupted while converting '{0}'")]
+    Interrupt(PathBuf),
 }
 
 #[derive(Error, Debug)]
 pub enum ImageJobError {
-    #[error("An error occurred in a conversion process")]
-    Process(#[from] spawn::ProcessError),
+    #[error("An error occurred in a conversion process for image '{0}'")]
+    Process(PathBuf, #[source] spawn::ProcessError),
+    #[error("An error occurred while waiting for a conversion process for image '{0}'")]
+    Wait(PathBuf, #[source] spawn::ProcessError),
     #[error("Could not delete the file: '{0}'")]
     DeleteFile(PathBuf, #[source] std::io::Error),
 }
@@ -366,8 +375,7 @@ impl ArchiveJob {
     fn get_extraction_root_dir(cbz_path: &Path) -> Result<PathBuf, ArchiveError> {
         let archive_name = cbz_path.file_stem().unwrap();
         let archive_root_dirs = spawn::list_archive_files(cbz_path)
-            .map_err(|e| ArchiveError::ListingFiles(cbz_path.to_path_buf(), e))?
-            .wait_with_output()
+            .and_then(|c| c.wait_with_output())
             .map_err(|e| ArchiveError::ListingFiles(cbz_path.to_path_buf(), e))?
             .stdout
             .lines()
@@ -378,23 +386,23 @@ impl ArchiveJob {
 
         let has_root_within =
             archive_root_dirs.len() == 1 && *archive_root_dirs[0] == *archive_name;
-        let extract_dir = if has_root_within {
-            let parent_dir = cbz_path.parent().unwrap().to_path_buf();
-            assert_eq!(
-                parent_dir.join(archive_name),
-                Self::get_conversion_root_dir(cbz_path)
-            );
-            parent_dir
-        } else {
-            Self::get_conversion_root_dir(cbz_path)
+        let extract_dir = match has_root_within {
+            true => {
+                let parent_dir = cbz_path.parent().unwrap().to_path_buf();
+                assert_eq!(
+                    parent_dir.join(archive_name),
+                    Self::get_conversion_root_dir(cbz_path)
+                );
+                parent_dir
+            }
+            false => Self::get_conversion_root_dir(cbz_path),
         };
         Ok(extract_dir)
     }
 
     fn images_in_archive(cbz_path: &Path) -> Result<Vec<(PathBuf, ImageFormat)>, ArchiveError> {
         let files = spawn::list_archive_files(cbz_path)
-            .map_err(|e| ArchiveError::ListingFiles(cbz_path.to_path_buf(), e))?
-            .wait_with_output()
+            .and_then(|c| c.wait_with_output())
             .map_err(|e| ArchiveError::ListingFiles(cbz_path.to_path_buf(), e))?
             .stdout
             .lines()
@@ -423,7 +431,7 @@ impl ArchiveJob {
         archive_path: ArchivePath,
         target: ImageFormat,
         n_workers: usize,
-        force: bool,
+        forced: bool,
     ) -> Result<Result<Self, NothingToDo>, ArchiveError> {
         if Self::already_converted(&archive_path, target) {
             return Ok(Err(NothingToDo::AlreadyDone(archive_path.into_inner())));
@@ -439,18 +447,14 @@ impl ArchiveJob {
             .into_iter()
             .filter_map(|(image_path, format)| {
                 let image_path = root_dir.join(image_path);
-                let task = match ConversionTask::new(&image_path, format, target) {
-                    Ok(task) => task,
-                    Err(e) => match e {
-                        TaskError::NotSupported(..) => {
-                            debug!("skip conversion for '{image_path:?}': {e}");
-                            return None;
-                        }
-                        TaskError::Jxlinfo(..) => return Some(Err(e)),
-                    },
-                };
-                let perform = force || task.perform_always();
-                perform.then_some(Ok(ImageJob::new(image_path, task)))
+                match ConversionTask::new(&image_path, format, target, forced) {
+                    Ok(Some(task)) => Some(Ok(ImageJob::new(image_path, task))),
+                    Ok(None) => {
+                        debug!("skip conversion for '{image_path:?}'");
+                        None
+                    }
+                    Err(e) => Some(Err(e)),
+                }
             })
             .collect::<Result<VecDeque<_>, _>>()
             .map_err(|e| ArchiveError::Task(archive_path.to_path_buf(), e))?;
@@ -479,8 +483,7 @@ impl ArchiveJob {
         fs::create_dir_all(&extract_dir)
             .map_err(|e| ArchiveError::TempDir(self.archive_path.to_path_buf(), e))?;
         spawn::extract_zip(&self.archive_path, &extract_dir)
-            .map_err(|e| ArchiveError::Extracting(self.archive_path.to_path_buf(), e))?
-            .wait_with_output()
+            .and_then(|c| c.wait())
             .map_err(|e| ArchiveError::Extracting(self.archive_path.to_path_buf(), e))?;
         Ok(())
     }
@@ -500,11 +503,11 @@ impl ArchiveJob {
             .expect("checked that it is a file, and therefore has a name");
         let zip_path = dir.join(format!(
             "{}.{}.cbz",
-            name.to_str().unwrap(),
+            name.to_str().expect("our file paths are utf8 compliant"),
             self.target.ext()
         ));
 
-        let extract_dir = Self::get_conversion_root_dir(&self.archive_path);
+        let root_dir = Self::get_conversion_root_dir(&self.archive_path);
         let file = File::create(zip_path).map_err(from_io)?;
 
         let mut zipper = ZipWriter::new(file);
@@ -513,27 +516,29 @@ impl ArchiveJob {
             .unix_permissions(0o755);
 
         let mut buffer = Vec::new();
-        for entry in WalkDir::new(&extract_dir).into_iter() {
+        for entry in WalkDir::new(&root_dir).into_iter() {
             let entry =
                 entry.map_err(|e| ArchiveError::WalkTempDir(self.archive_path.to_path_buf(), e))?;
             let entry = entry.path();
-            let file_name = entry.strip_prefix(extract_dir.parent().unwrap()).unwrap();
-            let path_string = file_name
+            let root_parent = root_dir
+                .parent()
+                .expect("root dir is a temporary directory, not root");
+            let inner_path = entry
+                .strip_prefix(root_parent)
+                .expect("all files have the root as prefix")
                 .to_str()
-                .to_owned()
                 .expect("path should be utf8 compliant");
 
             if entry.is_file() {
-                zipper.start_file(path_string, options).map_err(from_zip)?;
+                zipper.start_file(inner_path, options).map_err(from_zip)?;
                 File::open(entry)
-                    .map_err(from_io)?
-                    .read_to_end(&mut buffer)
+                    .and_then(|mut f| f.read_to_end(&mut buffer))
                     .map_err(from_io)?;
                 zipper.write_all(&buffer).map_err(from_io)?;
                 buffer.clear();
-            } else if !file_name.as_os_str().is_empty() {
+            } else if !inner_path.is_empty() {
                 zipper
-                    .add_directory(path_string, options)
+                    .add_directory(inner_path, options)
                     .map_err(from_zip)?;
             }
         }
@@ -546,7 +551,8 @@ impl ArchiveJob {
         assert!(!self.job_queue.is_empty());
 
         // these signals will be catched from here on out until dropped
-        let mut signals = Signals::new([SIGINT, SIGCHLD]).map_err(ArchiveError::Signals)?;
+        let mut signals = Signals::new([SIGINT, SIGCHLD])
+            .map_err(|e| ArchiveError::Signals(self.archive_path.to_path_buf(), e))?;
         self.extract_cbz()?;
 
         // start out as many jobs as allowed
@@ -562,7 +568,7 @@ impl ArchiveJob {
         while self.jobs_pending() {
             for signal in signals.wait() {
                 match signal {
-                    SIGINT => return Err(ArchiveError::Interrupt),
+                    SIGINT => return Err(ArchiveError::Interrupt(self.archive_path.to_path_buf())),
                     SIGCHLD => self
                         .proceed_jobs()
                         .map_err(|e| ArchiveError::ImageJob(self.archive_path.to_path_buf(), e))?,
@@ -605,6 +611,9 @@ impl ArchiveJob {
 
 impl Drop for ArchiveJob {
     fn drop(&mut self) {
+        // kill all remaining running processes before deleting directory
+        self.jobs_in_progress.clear();
+
         let extract_dir = Self::get_conversion_root_dir(&self.archive_path);
         if extract_dir.exists()
             && let Err(e) = fs::remove_dir_all(&extract_dir)

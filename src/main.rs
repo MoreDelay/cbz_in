@@ -54,6 +54,7 @@ fn real_main() -> Result<(), AppError> {
     let matches = Args::parse();
     let format = matches.format;
     let path = matches.path;
+    let forced = matches.force;
 
     let n_workers = match matches.workers {
         Some(Some(value)) => value,
@@ -63,8 +64,6 @@ fn real_main() -> Result<(), AppError> {
             Err(_) => 1,
         },
     };
-
-    let force = matches.force;
 
     if path.is_dir() {
         for cbz_file in path.read_dir().map_err(AppError::ReadingDir)? {
@@ -76,7 +75,7 @@ fn real_main() -> Result<(), AppError> {
                 }
             };
             let cbz_file = cbz_file.path();
-            let conversion_file = match convert::ArchivePath::try_new(cbz_file) {
+            let cbz_file = match convert::ArchivePath::validate(cbz_file) {
                 Ok(f) => f,
                 Err(e) => {
                     debug!("skipping: {e}");
@@ -84,11 +83,11 @@ fn real_main() -> Result<(), AppError> {
                 }
             };
 
-            info!("Converting {:?}", conversion_file.deref());
-            let job = match convert::ArchiveJob::new(conversion_file, format, n_workers, force)? {
+            info!("Converting {:?}", cbz_file.deref());
+            let job = match convert::ArchiveJob::new(cbz_file, format, n_workers, forced)? {
                 Ok(job) => job,
-                Err(e) => {
-                    info!("{e}");
+                Err(nothing_to_do) => {
+                    info!("{nothing_to_do}");
                     continue;
                 }
             };
@@ -96,13 +95,13 @@ fn real_main() -> Result<(), AppError> {
             info!("Done");
         }
     } else {
-        let conversion_file = convert::ArchivePath::try_new(path.clone())?;
+        let cbz_file = convert::ArchivePath::validate(path)?;
 
-        info!("Converting {:?}", conversion_file.deref());
-        let job = match convert::ArchiveJob::new(conversion_file, format, n_workers, force)? {
+        info!("Converting {:?}", cbz_file.deref());
+        let job = match convert::ArchiveJob::new(cbz_file, format, n_workers, forced)? {
             Ok(job) => job,
-            Err(e) => {
-                error!("{e}");
+            Err(nothing_to_do) => {
+                error!("{nothing_to_do}");
                 return Ok(());
             }
         };

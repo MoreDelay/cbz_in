@@ -72,16 +72,23 @@ impl ManagedChild {
         }
     }
 
-    pub fn try_wait(&mut self) -> Result<Option<std::process::ExitStatus>, ProcessError> {
-        self.child
+    pub fn try_wait(&mut self) -> Result<bool, ProcessError> {
+        let waited = self
+            .child
             .as_mut()
             .unwrap()
             .try_wait()
-            .map_err(|e| ProcessError::Wait(self.tool, e))
+            .map_err(|e| ProcessError::Wait(self.tool, e))?;
+        Ok(waited.is_some())
     }
 
-    fn into_inner(mut self) -> Child {
+    pub fn into_inner(mut self) -> Child {
         self.child.take().unwrap()
+    }
+
+    pub fn wait(self) -> Result<(), ProcessError> {
+        self.wait_with_output()?;
+        Ok(())
     }
 
     pub fn wait_with_output(self) -> Result<std::process::Output, ProcessError> {
@@ -112,6 +119,14 @@ impl Drop for ManagedChild {
     }
 }
 
+fn spawn(mut cmd: Command, tool: Tool) -> Result<ManagedChild, ProcessError> {
+    cmd.stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map(|c| ManagedChild::new(c, tool))
+        .map_err(|e| ProcessError::Spawn(tool, e))
+}
+
 pub fn convert_jpeg_to_png(
     input_path: &Path,
     output_path: &Path,
@@ -120,11 +135,7 @@ pub fn convert_jpeg_to_png(
 
     let mut cmd = Command::new(TOOL.name());
     cmd.args([input_path.to_str().unwrap(), output_path.to_str().unwrap()]);
-    cmd.stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| ProcessError::Spawn(TOOL, e))
-        .map(|c| ManagedChild::new(c, TOOL))
+    spawn(cmd, TOOL)
 }
 
 pub fn convert_png_to_jpeg(
@@ -140,11 +151,7 @@ pub fn convert_png_to_jpeg(
         "92",
         output_path.to_str().unwrap(),
     ]);
-    cmd.stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| ProcessError::Spawn(TOOL, e))
-        .map(|c| ManagedChild::new(c, TOOL))
+    spawn(cmd, TOOL)
 }
 
 pub fn encode_avif(input_path: &Path, output_path: &Path) -> Result<ManagedChild, ProcessError> {
@@ -159,11 +166,7 @@ pub fn encode_avif(input_path: &Path, output_path: &Path) -> Result<ManagedChild
         "-o",
         output_path.to_str().unwrap(),
     ]);
-    cmd.stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| ProcessError::Spawn(TOOL, e))
-        .map(|c| ManagedChild::new(c, TOOL))
+    spawn(cmd, TOOL)
 }
 
 pub fn encode_jxl(input_path: &Path, output_path: &Path) -> Result<ManagedChild, ProcessError> {
@@ -177,11 +180,7 @@ pub fn encode_jxl(input_path: &Path, output_path: &Path) -> Result<ManagedChild,
         input_path.to_str().unwrap(),
         output_path.to_str().unwrap(),
     ]);
-    cmd.stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| ProcessError::Spawn(TOOL, e))
-        .map(|c| ManagedChild::new(c, TOOL))
+    spawn(cmd, TOOL)
 }
 
 pub fn encode_webp(input_path: &Path, output_path: &Path) -> Result<ManagedChild, ProcessError> {
@@ -195,11 +194,7 @@ pub fn encode_webp(input_path: &Path, output_path: &Path) -> Result<ManagedChild
         "-o",
         output_path.to_str().unwrap(),
     ]);
-    cmd.stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| ProcessError::Spawn(TOOL, e))
-        .map(|c| ManagedChild::new(c, TOOL))
+    spawn(cmd, TOOL)
 }
 
 pub fn decode_webp(input_path: &Path, output_path: &Path) -> Result<ManagedChild, ProcessError> {
@@ -211,11 +206,7 @@ pub fn decode_webp(input_path: &Path, output_path: &Path) -> Result<ManagedChild
         "-o",
         output_path.to_str().unwrap(),
     ]);
-    cmd.stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| ProcessError::Spawn(TOOL, e))
-        .map(|c| ManagedChild::new(c, TOOL))
+    spawn(cmd, TOOL)
 }
 
 pub fn decode_jxl_to_png(
@@ -230,11 +221,7 @@ pub fn decode_jxl_to_png(
         output_path.to_str().unwrap(),
         "--num_threads=1",
     ]);
-    cmd.stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| ProcessError::Spawn(TOOL, e))
-        .map(|c| ManagedChild::new(c, TOOL))
+    spawn(cmd, TOOL)
 }
 
 pub fn decode_jxl_to_jpeg(
@@ -249,11 +236,7 @@ pub fn decode_jxl_to_jpeg(
         output_path.to_str().unwrap(),
         "--num_threads=1",
     ]);
-    cmd.stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| ProcessError::Spawn(TOOL, e))
-        .map(|c| ManagedChild::new(c, TOOL))
+    spawn(cmd, TOOL)
 }
 
 pub fn decode_avif_to_png(
@@ -269,11 +252,7 @@ pub fn decode_avif_to_png(
         input_path.to_str().unwrap(),
         output_path.to_str().unwrap(),
     ]);
-    cmd.stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| ProcessError::Spawn(TOOL, e))
-        .map(|c| ManagedChild::new(c, TOOL))
+    spawn(cmd, TOOL)
 }
 
 pub fn decode_avif_to_jpeg(
@@ -291,11 +270,7 @@ pub fn decode_avif_to_jpeg(
         input_path.to_str().unwrap(),
         output_path.to_str().unwrap(),
     ]);
-    cmd.stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| ProcessError::Spawn(TOOL, e))
-        .map(|c| ManagedChild::new(c, TOOL))
+    spawn(cmd, TOOL)
 }
 
 pub fn run_jxlinfo(image_path: &Path) -> Result<ManagedChild, ProcessError> {
@@ -303,11 +278,7 @@ pub fn run_jxlinfo(image_path: &Path) -> Result<ManagedChild, ProcessError> {
 
     let mut cmd = Command::new(TOOL.name());
     cmd.args(["-v", image_path.to_str().unwrap()]);
-    cmd.stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| ProcessError::Spawn(TOOL, e))
-        .map(|c| ManagedChild::new(c, TOOL))
+    spawn(cmd, TOOL)
 }
 
 pub fn list_archive_files(archive: &Path) -> Result<ManagedChild, ProcessError> {
@@ -320,11 +291,7 @@ pub fn list_archive_files(archive: &Path) -> Result<ManagedChild, ProcessError> 
         "-slt", // use format that is easier to parse
         archive.to_str().unwrap(),
     ]);
-    cmd.stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| ProcessError::Spawn(TOOL, e))
-        .map(|c| ManagedChild::new(c, TOOL))
+    spawn(cmd, TOOL)
 }
 
 pub fn extract_zip(archive: &Path, destination: &Path) -> Result<ManagedChild, ProcessError> {
@@ -338,9 +305,5 @@ pub fn extract_zip(archive: &Path, destination: &Path) -> Result<ManagedChild, P
         "-spe",
         format!("-o{}", destination.to_str().unwrap()).as_str(),
     ]);
-    cmd.stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| ProcessError::Spawn(TOOL, e))
-        .map(|c| ManagedChild::new(c, TOOL))
+    spawn(cmd, TOOL)
 }
