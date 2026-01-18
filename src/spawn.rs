@@ -2,7 +2,7 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 
 use thiserror::Error;
-use tracing::trace;
+use tracing::debug;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Tool {
@@ -111,7 +111,7 @@ impl ManagedChild {
 impl Drop for ManagedChild {
     fn drop(&mut self) {
         if let Some(child) = self.child.as_mut() {
-            trace!("drop {child:?}");
+            debug!("drop {child:?}");
             // ignore errors
             let _ = child.kill();
             let _ = child.wait(); // is this necessary?
