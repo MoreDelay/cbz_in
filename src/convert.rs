@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::fs::{self, File};
 use std::io::{BufRead, Read, Write};
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
 use signal_hook::{
@@ -8,7 +9,7 @@ use signal_hook::{
     iterator::Signals,
 };
 use thiserror::Error;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 use walkdir::WalkDir;
 use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
@@ -97,6 +98,13 @@ enum ConversionTask {
     Intermediate(ConversionIntermediate),
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct ConversionConfig {
+    pub target: ImageFormat,
+    pub n_workers: usize,
+    pub forced: bool,
+}
+
 #[derive(Debug, Error)]
 pub enum TaskError {
     #[error("Could not query jxl file '{0}'")]
@@ -107,10 +115,11 @@ impl ConversionTask {
     fn new(
         image_path: &Path,
         current: ImageFormat,
-        target: ImageFormat,
-        forced: bool,
+        config: ConversionConfig,
     ) -> Result<Option<Self>, TaskError> {
         use ImageFormat::*;
+
+        let ConversionConfig { target, forced, .. } = config;
 
         let out = match (current, target) {
             (a, b) if a == b => return Ok(None),
@@ -187,6 +196,31 @@ enum ImageJob {
     Waiting(ImageJobWaiting),
     Running(ImageJobRunning),
     Completed(ImageJobCompleted),
+}
+
+#[derive(Debug, Error)]
+pub enum NothingToDo {
+    #[error("No files to convert for '{0}'")]
+    NoFilesToConvert(PathBuf),
+    #[error("Already converted '{0}'")]
+    AlreadyDone(PathBuf),
+}
+
+#[derive(Debug)]
+enum Proceeded {
+    SameAsBefore(ImageJob),
+    Progress(ImageJob),
+    Finished,
+}
+
+#[derive(Error, Debug)]
+pub enum ImageJobError {
+    #[error("An error occurred in a conversion process for image '{0}'")]
+    Process(PathBuf, #[source] spawn::ProcessError),
+    #[error("An error occurred while waiting for a conversion process for image '{0}'")]
+    Wait(PathBuf, #[source] spawn::ProcessError),
+    #[error("Could not delete the file: '{0}'")]
+    DeleteFile(PathBuf, #[source] std::io::Error),
 }
 
 impl ImageJobWaiting {
@@ -267,28 +301,6 @@ impl ImageJobCompleted {
     }
 }
 
-pub struct ArchiveJob {
-    archive_path: ArchivePath,
-    job_queue: VecDeque<ImageJob>,
-    jobs_in_progress: Vec<Option<ImageJob>>,
-    target: ImageFormat,
-}
-
-#[derive(Debug, Error)]
-pub enum NothingToDo {
-    #[error("No files to convert for '{0}'")]
-    NoFilesToConvert(PathBuf),
-    #[error("Already converted '{0}'")]
-    AlreadyDone(PathBuf),
-}
-
-#[derive(Debug)]
-enum Proceeded {
-    SameAsBefore(ImageJob),
-    Progress(ImageJob),
-    Finished,
-}
-
 impl ImageJob {
     fn new(image_path: PathBuf, task: ConversionTask) -> Self {
         let waiting = ImageJobWaiting { image_path, task };
@@ -317,7 +329,14 @@ impl ImageJob {
     }
 }
 
-#[derive(Error, Debug)]
+pub struct ArchiveJob {
+    archive_path: ArchivePath,
+    job_queue: VecDeque<ImageJob>,
+    jobs_in_progress: Vec<Option<ImageJob>>,
+    target: ImageFormat,
+}
+
+#[derive(Debug, Error)]
 pub enum ArchiveError {
     #[error("Extract directory already exists at '{0}', delete it and try again")]
     ExtractDirExists(PathBuf),
@@ -341,18 +360,95 @@ pub enum ArchiveError {
     Interrupt(PathBuf),
 }
 
-#[derive(Error, Debug)]
-pub enum ImageJobError {
-    #[error("An error occurred in a conversion process for image '{0}'")]
-    Process(PathBuf, #[source] spawn::ProcessError),
-    #[error("An error occurred while waiting for a conversion process for image '{0}'")]
-    Wait(PathBuf, #[source] spawn::ProcessError),
-    #[error("Could not delete the file: '{0}'")]
-    DeleteFile(PathBuf, #[source] std::io::Error),
-}
-
-// "static" methods
 impl ArchiveJob {
+    pub fn new(
+        archive_path: ArchivePath,
+        config: ConversionConfig,
+    ) -> Result<Result<Self, NothingToDo>, ArchiveError> {
+        let ConversionConfig {
+            target, n_workers, ..
+        } = config;
+
+        if Self::already_converted(&archive_path, target) {
+            return Ok(Err(NothingToDo::AlreadyDone(archive_path.into_inner())));
+        }
+
+        let extract_dir = Self::get_conversion_root_dir(&archive_path);
+        if extract_dir.exists() {
+            return Err(ArchiveError::ExtractDirExists(extract_dir));
+        }
+
+        let root_dir = Self::get_extraction_root_dir(&archive_path)?;
+        let job_queue = Self::images_in_archive(&archive_path)?
+            .into_iter()
+            .filter_map(|(image_path, format)| {
+                let image_path = root_dir.join(image_path);
+                match ConversionTask::new(&image_path, format, config) {
+                    Ok(Some(task)) => Some(Ok(ImageJob::new(image_path, task))),
+                    Ok(None) => {
+                        debug!("skip conversion for '{image_path:?}'");
+                        None
+                    }
+                    Err(e) => Some(Err(e)),
+                }
+            })
+            .collect::<Result<VecDeque<_>, _>>()
+            .map_err(|e| ArchiveError::Task(archive_path.to_path_buf(), e))?;
+
+        if job_queue.is_empty() {
+            return Ok(Err(NothingToDo::NoFilesToConvert(
+                archive_path.into_inner(),
+            )));
+        }
+
+        let jobs_in_progress = Vec::from_iter((0..n_workers).map(|_| None));
+        Ok(Ok(Self {
+            archive_path,
+            job_queue,
+            jobs_in_progress,
+            target,
+        }))
+    }
+
+    pub fn run(mut self) -> Result<(), ArchiveError> {
+        assert!(!self.job_queue.is_empty());
+
+        // these signals will be catched from here on out until dropped
+        let mut signals = Signals::new([SIGINT, SIGCHLD])
+            .map_err(|e| ArchiveError::Signals(self.archive_path.to_path_buf(), e))?;
+        self.extract_cbz()?;
+
+        // start out as many jobs as allowed
+        for slot in self.jobs_in_progress.iter_mut() {
+            let Some(job) = self.job_queue.pop_front() else {
+                break;
+            };
+            *slot = Some(job);
+        }
+        self.proceed_jobs()
+            .map_err(|e| ArchiveError::ImageJob(self.archive_path.to_path_buf(), e))?;
+
+        while self.jobs_pending() {
+            for signal in signals.wait() {
+                match signal {
+                    SIGINT => return Err(ArchiveError::Interrupt(self.archive_path.to_path_buf())),
+                    SIGCHLD => self
+                        .proceed_jobs()
+                        .map_err(|e| ArchiveError::ImageJob(self.archive_path.to_path_buf(), e))?,
+                    _ => unreachable!(),
+                }
+            }
+        }
+        drop(signals);
+
+        self.compress_cbz()?;
+        Ok(())
+    }
+
+    pub fn archive(&self) -> &Path {
+        &self.archive_path
+    }
+
     fn get_conversion_root_dir(cbz_path: &Path) -> PathBuf {
         let dir = cbz_path.parent().unwrap();
         let name = cbz_path.file_stem().unwrap();
@@ -423,55 +519,6 @@ impl ArchiveJob {
             })
             .collect();
         Ok(files)
-    }
-}
-
-impl ArchiveJob {
-    pub fn new(
-        archive_path: ArchivePath,
-        target: ImageFormat,
-        n_workers: usize,
-        forced: bool,
-    ) -> Result<Result<Self, NothingToDo>, ArchiveError> {
-        if Self::already_converted(&archive_path, target) {
-            return Ok(Err(NothingToDo::AlreadyDone(archive_path.into_inner())));
-        }
-
-        let extract_dir = Self::get_conversion_root_dir(&archive_path);
-        if extract_dir.exists() {
-            return Err(ArchiveError::ExtractDirExists(extract_dir));
-        }
-
-        let root_dir = Self::get_extraction_root_dir(&archive_path)?;
-        let job_queue = Self::images_in_archive(&archive_path)?
-            .into_iter()
-            .filter_map(|(image_path, format)| {
-                let image_path = root_dir.join(image_path);
-                match ConversionTask::new(&image_path, format, target, forced) {
-                    Ok(Some(task)) => Some(Ok(ImageJob::new(image_path, task))),
-                    Ok(None) => {
-                        debug!("skip conversion for '{image_path:?}'");
-                        None
-                    }
-                    Err(e) => Some(Err(e)),
-                }
-            })
-            .collect::<Result<VecDeque<_>, _>>()
-            .map_err(|e| ArchiveError::Task(archive_path.to_path_buf(), e))?;
-
-        if job_queue.is_empty() {
-            return Ok(Err(NothingToDo::NoFilesToConvert(
-                archive_path.into_inner(),
-            )));
-        }
-
-        let jobs_in_progress = Vec::from_iter((0..n_workers).map(|_| None));
-        Ok(Ok(Self {
-            archive_path,
-            job_queue,
-            jobs_in_progress,
-            target,
-        }))
     }
 
     fn extract_cbz(&mut self) -> Result<(), ArchiveError> {
@@ -547,41 +594,6 @@ impl ArchiveJob {
         Ok(())
     }
 
-    pub fn run(mut self) -> Result<(), ArchiveError> {
-        assert!(!self.job_queue.is_empty());
-
-        // these signals will be catched from here on out until dropped
-        let mut signals = Signals::new([SIGINT, SIGCHLD])
-            .map_err(|e| ArchiveError::Signals(self.archive_path.to_path_buf(), e))?;
-        self.extract_cbz()?;
-
-        // start out as many jobs as allowed
-        for slot in self.jobs_in_progress.iter_mut() {
-            let Some(job) = self.job_queue.pop_front() else {
-                break;
-            };
-            *slot = Some(job);
-        }
-        self.proceed_jobs()
-            .map_err(|e| ArchiveError::ImageJob(self.archive_path.to_path_buf(), e))?;
-
-        while self.jobs_pending() {
-            for signal in signals.wait() {
-                match signal {
-                    SIGINT => return Err(ArchiveError::Interrupt(self.archive_path.to_path_buf())),
-                    SIGCHLD => self
-                        .proceed_jobs()
-                        .map_err(|e| ArchiveError::ImageJob(self.archive_path.to_path_buf(), e))?,
-                    _ => unreachable!(),
-                }
-            }
-        }
-        drop(signals);
-
-        self.compress_cbz()?;
-        Ok(())
-    }
-
     fn proceed_jobs(&mut self) -> Result<(), ImageJobError> {
         for slot in self.jobs_in_progress.iter_mut() {
             loop {
@@ -620,6 +632,63 @@ impl Drop for ArchiveJob {
         {
             error!("error on deleting directory {extract_dir:?}: {e}");
         }
+    }
+}
+
+pub struct ArchiveJobs(Vec<ArchiveJob>);
+
+#[derive(Error, Debug)]
+pub enum ArchiveJobsError {
+    #[error("Invalid archive path provided")]
+    InvalidPath(#[from] InvalidArchivePath),
+    #[error("Error while handling an archive")]
+    Archive(#[from] ArchiveError),
+    #[error("Could not walk the filesystem")]
+    ReadingDir(#[source] std::io::Error),
+}
+
+impl ArchiveJobs {
+    pub fn collect(root_dir: &Path, config: ConversionConfig) -> Result<Self, ArchiveJobsError> {
+        let jobs = root_dir
+            .read_dir()
+            .map_err(ArchiveJobsError::ReadingDir)?
+            .filter_map(|cbz_file| {
+                let cbz_file = match cbz_file {
+                    Ok(f) => f,
+                    Err(e) => {
+                        error!("error while walking directory: {e}");
+                        return None;
+                    }
+                };
+                let cbz_file = cbz_file.path();
+                let cbz_file = match ArchivePath::validate(cbz_file) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        debug!("skipping: {e}");
+                        return None;
+                    }
+                };
+
+                info!("Checking {:?}", cbz_file.deref());
+                match ArchiveJob::new(cbz_file, config) {
+                    Ok(Ok(job)) => Some(Ok(job)),
+                    Ok(Err(nothing_to_do)) => {
+                        info!("{nothing_to_do}");
+                        None
+                    }
+                    Err(e) => Some(Err(e)),
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self(jobs))
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn into_iter(self) -> impl IntoIterator<Item = ArchiveJob> {
+        self.0.into_iter()
     }
 }
 
