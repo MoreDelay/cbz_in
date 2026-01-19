@@ -10,6 +10,8 @@ use thiserror::Error;
 use tracing::{error, info};
 use tracing_appender::rolling::RollingFileAppender;
 
+use crate::convert::ConversionConfig;
+
 /// Convert images within comic archives to newer image formats
 ///
 /// Convert images within Zip Comic Book archives, although it also works with normal zip files.
@@ -56,14 +58,54 @@ struct Args {
 enum AppError {
     #[error("Error when trying to log")]
     Logging(#[from] LoggingError),
-    #[error("Error when trying to print the progress")]
-    Printing(#[from] std::io::Error),
-    #[error("Error while collecting archives from root directory '{0}'")]
-    CollectArchives(PathBuf, #[source] convert::ArchiveJobsError),
-    #[error("Invalid archive path provided")]
-    InvalidPath(#[from] convert::InvalidArchivePath),
     #[error("Error while handling an archive")]
-    Archive(#[from] convert::ArchiveError),
+    SingleArchive(#[from] convert::SingleArchiveJobError),
+    #[error("Error while collecting archives from root directory '{0}'")]
+    ArchivesInDir(PathBuf, #[source] convert::ArchivesInDirectoryJobError),
+}
+
+fn single_archive(path: PathBuf, config: ConversionConfig) -> Result<(), AppError> {
+    info!("Converting {:?}", path);
+    let job = match convert::SingleArchiveJob::new(path, config)? {
+        Ok(job) => job,
+        Err(nothing_to_do) => {
+            error!("{nothing_to_do}");
+            println!("{nothing_to_do}");
+            return Ok(());
+        }
+    };
+    let inner_bar = create_progress_bar("Images");
+    inner_bar.tick();
+    job.run(&inner_bar)?;
+    info!("Done");
+    Ok(())
+}
+
+fn archives_in_dir(root: PathBuf, config: ConversionConfig) -> Result<(), AppError> {
+    let jobs = convert::ArchivesInDirectoryJob::collect(&root, config)
+        .map_err(|e| AppError::ArchivesInDir(root.to_path_buf(), e))?;
+
+    let bars = {
+        let multi = indicatif::MultiProgress::new();
+        let archives = multi.add(create_progress_bar("Archives"));
+        let images = multi.add(create_progress_bar("Images"));
+
+        archives.tick();
+        images.tick();
+
+        convert::Bars {
+            multi,
+            archives,
+            images,
+        }
+    };
+
+    jobs.run(&bars)
+        .map_err(|e| AppError::ArchivesInDir(root, e))?;
+
+    bars.images.finish();
+    bars.archives.finish();
+    Ok(())
 }
 
 fn real_main() -> Result<(), AppError> {
@@ -94,52 +136,19 @@ fn real_main() -> Result<(), AppError> {
 
     let path = matches.path;
     if path.is_dir() {
-        let jobs = convert::ArchiveJobs::collect(&path, config)
-            .map_err(|e| AppError::CollectArchives(path.to_path_buf(), e))?;
-        let n = jobs.len();
-
-        let bars = indicatif::MultiProgress::new();
-        let archive_bar = bars.add(create_progress_bar("Archive".to_string(), Some(n as u64)));
-        let inner_bar = bars.add(create_progress_bar("Images".to_string(), None));
-
-        archive_bar.tick();
-        inner_bar.tick();
-
-        for job in jobs.into_iter() {
-            info!("Converting {:?}", job.archive());
-            bars.println(format!("Converting {:?}", job.archive()))?;
-            job.run(&inner_bar)?;
-            archive_bar.inc(1);
-            info!("Done");
-        }
-        inner_bar.finish();
-        archive_bar.finish();
+        archives_in_dir(path, config)
     } else {
-        info!("Converting {:?}", path);
-        let job = match convert::ArchiveJob::new(path, config)? {
-            Ok(job) => job,
-            Err(nothing_to_do) => {
-                error!("{nothing_to_do}");
-                println!("{nothing_to_do}");
-                return Ok(());
-            }
-        };
-        let inner_bar = create_progress_bar("Images".to_string(), None);
-        inner_bar.tick();
-        job.run(&inner_bar)?;
-        info!("Done");
+        single_archive(path, config)
     }
-
-    Ok(())
 }
 
-fn create_progress_bar(msg: String, len: Option<u64>) -> indicatif::ProgressBar {
+fn create_progress_bar(msg: &'static str) -> indicatif::ProgressBar {
     let style = indicatif::ProgressStyle::with_template(
-        "[{elapsed_precise}] {msg:>8}: {wide_bar} {pos:>5}/{len:5}",
+        "[{elapsed_precise}] {msg:>9}: {wide_bar} {pos:>5}/{len:5}",
     )
     .unwrap();
 
-    indicatif::ProgressBar::new(len.unwrap_or(0))
+    indicatif::ProgressBar::new(0)
         .with_style(style)
         .with_message(msg)
 }
