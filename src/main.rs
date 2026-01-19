@@ -1,9 +1,9 @@
 mod convert;
 mod spawn;
 
+use std::path::Path;
 use std::path::PathBuf;
 use std::thread;
-use std::{ops::Deref, path::Path};
 
 use clap::Parser;
 use thiserror::Error;
@@ -56,6 +56,8 @@ struct Args {
 enum AppError {
     #[error("Error when trying to log")]
     Logging(#[from] LoggingError),
+    #[error("Error when trying to print the progress")]
+    Printing(#[from] std::io::Error),
     #[error("Error while collecting archives from root directory '{0}'")]
     CollectArchives(PathBuf, #[source] convert::ArchiveJobsError),
     #[error("Invalid archive path provided")]
@@ -95,31 +97,51 @@ fn real_main() -> Result<(), AppError> {
         let jobs = convert::ArchiveJobs::collect(&path, config)
             .map_err(|e| AppError::CollectArchives(path.to_path_buf(), e))?;
         let n = jobs.len();
-        let bar = indicatif::ProgressBar::new(n as u64);
-        bar.tick();
+
+        let bars = indicatif::MultiProgress::new();
+        let archive_bar = bars.add(create_progress_bar("Archive".to_string(), Some(n as u64)));
+        let inner_bar = bars.add(create_progress_bar("Images".to_string(), None));
+
+        archive_bar.tick();
+        inner_bar.tick();
 
         for job in jobs.into_iter() {
             info!("Converting {:?}", job.archive());
-            job.run()?;
-            bar.inc(1);
+            bars.println(format!("Converting {:?}", job.archive()))?;
+            job.run(&inner_bar)?;
+            archive_bar.inc(1);
             info!("Done");
         }
+        inner_bar.finish();
+        archive_bar.finish();
     } else {
-        let cbz_file = convert::ArchivePath::validate(path)?;
-
-        info!("Converting {:?}", cbz_file.deref());
-        let job = match convert::ArchiveJob::new(cbz_file, config)? {
+        info!("Converting {:?}", path);
+        let job = match convert::ArchiveJob::new(path, config)? {
             Ok(job) => job,
             Err(nothing_to_do) => {
                 error!("{nothing_to_do}");
+                println!("{nothing_to_do}");
                 return Ok(());
             }
         };
-        job.run()?;
+        let inner_bar = create_progress_bar("Images".to_string(), None);
+        inner_bar.tick();
+        job.run(&inner_bar)?;
         info!("Done");
     }
 
     Ok(())
+}
+
+fn create_progress_bar(msg: String, len: Option<u64>) -> indicatif::ProgressBar {
+    let style = indicatif::ProgressStyle::with_template(
+        "[{elapsed_precise}] {msg:>8}: {wide_bar} {pos:>5}/{len:5}",
+    )
+    .unwrap();
+
+    indicatif::ProgressBar::new(len.unwrap_or(0))
+        .with_style(style)
+        .with_message(msg)
 }
 
 #[derive(Debug, Error)]

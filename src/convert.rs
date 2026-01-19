@@ -4,6 +4,7 @@ use std::io::{BufRead, Read, Write};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
+use indicatif::ProgressBar;
 use signal_hook::{
     consts::{SIGCHLD, SIGINT},
     iterator::Signals,
@@ -338,6 +339,8 @@ pub struct ArchiveJob {
 
 #[derive(Debug, Error)]
 pub enum ArchiveError {
+    #[error("Invalid archive")]
+    InvalidArchive(#[from] InvalidArchivePath),
     #[error("Extract directory already exists at '{0}', delete it and try again")]
     ExtractDirExists(PathBuf),
     #[error("Could not listen to process signals before processing '{0}'")]
@@ -362,6 +365,56 @@ pub enum ArchiveError {
 
 impl ArchiveJob {
     pub fn new(
+        archive: PathBuf,
+        config: ConversionConfig,
+    ) -> Result<Result<Self, NothingToDo>, ArchiveError> {
+        let archive = ArchivePath::validate(archive)?;
+        Self::from_validated(archive, config)
+    }
+
+    pub fn run(mut self, bar: &ProgressBar) -> Result<(), ArchiveError> {
+        assert!(!self.job_queue.is_empty());
+        bar.reset();
+        bar.set_length(self.job_queue.len() as u64);
+
+        // these signals will be catched from here on out until dropped
+        let mut signals = Signals::new([SIGINT, SIGCHLD])
+            .map_err(|e| ArchiveError::Signals(self.archive_path.to_path_buf(), e))?;
+        self.extract_cbz()?;
+
+        // start out as many jobs as allowed
+        for slot in self.jobs_in_progress.iter_mut() {
+            let Some(job) = self.job_queue.pop_front() else {
+                break;
+            };
+            *slot = Some(job);
+        }
+        self.proceed_jobs(bar)
+            .map_err(|e| ArchiveError::ImageJob(self.archive_path.to_path_buf(), e))?;
+
+        while self.jobs_pending() {
+            for signal in signals.wait() {
+                match signal {
+                    SIGINT => return Err(ArchiveError::Interrupt(self.archive_path.to_path_buf())),
+                    SIGCHLD => self
+                        .proceed_jobs(bar)
+                        .map_err(|e| ArchiveError::ImageJob(self.archive_path.to_path_buf(), e))?,
+                    _ => unreachable!(),
+                }
+            }
+        }
+        drop(signals);
+
+        self.compress_cbz()?;
+        bar.finish();
+        Ok(())
+    }
+
+    pub fn archive(&self) -> &Path {
+        &self.archive_path
+    }
+
+    fn from_validated(
         archive_path: ArchivePath,
         config: ConversionConfig,
     ) -> Result<Result<Self, NothingToDo>, ArchiveError> {
@@ -408,45 +461,6 @@ impl ArchiveJob {
             jobs_in_progress,
             target,
         }))
-    }
-
-    pub fn run(mut self) -> Result<(), ArchiveError> {
-        assert!(!self.job_queue.is_empty());
-
-        // these signals will be catched from here on out until dropped
-        let mut signals = Signals::new([SIGINT, SIGCHLD])
-            .map_err(|e| ArchiveError::Signals(self.archive_path.to_path_buf(), e))?;
-        self.extract_cbz()?;
-
-        // start out as many jobs as allowed
-        for slot in self.jobs_in_progress.iter_mut() {
-            let Some(job) = self.job_queue.pop_front() else {
-                break;
-            };
-            *slot = Some(job);
-        }
-        self.proceed_jobs()
-            .map_err(|e| ArchiveError::ImageJob(self.archive_path.to_path_buf(), e))?;
-
-        while self.jobs_pending() {
-            for signal in signals.wait() {
-                match signal {
-                    SIGINT => return Err(ArchiveError::Interrupt(self.archive_path.to_path_buf())),
-                    SIGCHLD => self
-                        .proceed_jobs()
-                        .map_err(|e| ArchiveError::ImageJob(self.archive_path.to_path_buf(), e))?,
-                    _ => unreachable!(),
-                }
-            }
-        }
-        drop(signals);
-
-        self.compress_cbz()?;
-        Ok(())
-    }
-
-    pub fn archive(&self) -> &Path {
-        &self.archive_path
     }
 
     fn get_conversion_root_dir(cbz_path: &Path) -> PathBuf {
@@ -594,7 +608,7 @@ impl ArchiveJob {
         Ok(())
     }
 
-    fn proceed_jobs(&mut self) -> Result<(), ImageJobError> {
+    fn proceed_jobs(&mut self, bar: &ProgressBar) -> Result<(), ImageJobError> {
         for slot in self.jobs_in_progress.iter_mut() {
             loop {
                 match slot.take() {
@@ -604,7 +618,7 @@ impl ArchiveJob {
                             break;
                         }
                         Proceeded::Progress(job) => *slot = Some(job),
-                        Proceeded::Finished => (),
+                        Proceeded::Finished => bar.inc(1),
                     },
                     None => match self.job_queue.pop_front() {
                         Some(job) => *slot = Some(job),
@@ -639,29 +653,22 @@ pub struct ArchiveJobs(Vec<ArchiveJob>);
 
 #[derive(Error, Debug)]
 pub enum ArchiveJobsError {
-    #[error("Invalid archive path provided")]
-    InvalidPath(#[from] InvalidArchivePath),
     #[error("Error while handling an archive")]
     Archive(#[from] ArchiveError),
     #[error("Could not walk the filesystem")]
-    ReadingDir(#[source] std::io::Error),
+    ReadingDir(#[from] std::io::Error),
 }
 
 impl ArchiveJobs {
     pub fn collect(root_dir: &Path, config: ConversionConfig) -> Result<Self, ArchiveJobsError> {
         let jobs = root_dir
-            .read_dir()
-            .map_err(ArchiveJobsError::ReadingDir)?
-            .filter_map(|cbz_file| {
-                let cbz_file = match cbz_file {
-                    Ok(f) => f,
-                    Err(e) => {
-                        error!("error while walking directory: {e}");
-                        return None;
-                    }
+            .read_dir()?
+            .filter_map(|dir_entry| {
+                let path = match dir_entry {
+                    Ok(dir_entry) => dir_entry.path(),
+                    Err(e) => return Some(Err(e.into())),
                 };
-                let cbz_file = cbz_file.path();
-                let cbz_file = match ArchivePath::validate(cbz_file) {
+                let archive = match ArchivePath::validate(path) {
                     Ok(f) => f,
                     Err(e) => {
                         debug!("skipping: {e}");
@@ -669,17 +676,17 @@ impl ArchiveJobs {
                     }
                 };
 
-                info!("Checking {:?}", cbz_file.deref());
-                match ArchiveJob::new(cbz_file, config) {
+                info!("Checking {:?}", archive.deref());
+                match ArchiveJob::from_validated(archive, config) {
                     Ok(Ok(job)) => Some(Ok(job)),
                     Ok(Err(nothing_to_do)) => {
                         info!("{nothing_to_do}");
                         None
                     }
-                    Err(e) => Some(Err(e)),
+                    Err(e) => Some(Err(e.into())),
                 }
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, ArchiveJobsError>>()?;
         Ok(Self(jobs))
     }
 
