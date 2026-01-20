@@ -12,48 +12,54 @@ use tracing_appender::rolling::RollingFileAppender;
 
 use crate::convert::ConversionConfig;
 
-/// Convert images within comic archives to newer image formats
+/// Convert images within comic archives to newer image formats.
 ///
-/// Convert images within Zip Comic Book archives, although it also works with normal zip files.
-/// By default only converts Jpeg and Png to the target format or decode any formats to Png and
-/// Jpeg.
+/// Convert images within Comic Book Zip (CBZ) archives, although it also works with normal zip
+/// files. By default only converts Jpeg and Png to the target format or decode any formats to
+/// Png and Jpeg. The new archive with converted images is placed adjacent to the original, so this
+/// operation is non-destructive.
 #[derive(Parser)]
 #[command(version, verbatim_doc_comment)]
 struct Args {
-    #[arg(
-        required = true,
-        help = "All images within the archive(s) are converted to this format"
-    )]
+    /// All images within the archive(s) are converted to this format.
+    #[arg(required = true, verbatim_doc_comment)]
     format: convert::ImageFormat,
 
-    #[arg(
-        default_value = ".",
-        help = "Path to a cbz file or a directory containing cbz files"
-    )]
+    /// Path to a cbz file or a directory containing cbz files.
+    #[arg(default_value = ".", verbatim_doc_comment)]
     path: PathBuf,
 
-    /// Number of processes spawned
+    /// Number of processes spawned.
     ///
-    /// Uses as many processes as you have cores by default.
-    /// When used as a flag only spawns a single process at a time.
+    /// Uses as many processes as you have cores by default. When used as a flag only spawns a
+    /// single process at a time.
     #[arg(short = 'j', long, verbatim_doc_comment)]
     workers: Option<Option<usize>>,
 
-    #[arg(short, long, help = "Convert all images of all formats")]
+    /// Convert all images of all formats.
+    #[arg(short, long, verbatim_doc_comment)]
     force: bool,
 
-    #[arg(long, help = "Convert images in the directory directly (recursively)")]
+    /// Convert images in the directory directly (recursively).
+    ///
+    /// This will create a copy of your directory structure using hard links. This means your data
+    /// is not copied as both structures point to the same underlying files. The only difference
+    /// between both directory structures are the converted images found in a recursive search.
+    #[arg(long, verbatim_doc_comment)]
     no_archive: bool,
 
+    /// Write a log file.
     #[arg(
-        long,
+        long ,
+        value_name = "LOG_FILE",
         num_args(0..=1),
         default_missing_value = "./cbz_in.log",
-        help = "Write a log file"
+        verbatim_doc_comment
     )]
     log: Option<PathBuf>,
 
-    #[arg(long, default_value = "info", help = "Level of logging")]
+    /// Detail level of logging.
+    #[arg(long, default_value = "info", verbatim_doc_comment)]
     level: tracing::Level,
 }
 
@@ -209,9 +215,10 @@ fn create_logger(path: &Path) -> Result<RollingFileAppender, LoggingError> {
 fn log_error(error: &dyn std::error::Error) {
     error!("{error}");
     let mut source = error.source();
-    if source.is_some() {
-        error!("Caused by:");
+    if source.is_none() {
+        return;
     }
+    error!("Caused by:");
     let mut counter = 0;
     while let Some(error) = source {
         error!("    {counter}: {error}");
