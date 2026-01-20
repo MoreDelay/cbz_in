@@ -42,6 +42,9 @@ struct Args {
     #[arg(short, long, help = "Convert all images of all formats")]
     force: bool,
 
+    #[arg(long, help = "Convert images in the directory directly (recursively)")]
+    no_archive: bool,
+
     #[arg(
         long,
         num_args(0..=1),
@@ -60,8 +63,10 @@ enum AppError {
     Logging(#[from] LoggingError),
     #[error("Error while handling an archive")]
     SingleArchive(#[from] convert::SingleArchiveJobError),
-    #[error("Error while collecting archives from root directory '{0}'")]
+    #[error("Error while converting archives in '{0}'")]
     ArchivesInDir(PathBuf, #[source] convert::ArchivesInDirectoryJobError),
+    #[error("Error converting images recursively")]
+    RecursiveDir(#[from] convert::RecursiveDirJobError),
 }
 
 fn single_archive(path: PathBuf, config: ConversionConfig) -> Result<(), AppError> {
@@ -108,6 +113,22 @@ fn archives_in_dir(root: PathBuf, config: ConversionConfig) -> Result<(), AppErr
     Ok(())
 }
 
+fn images_in_dir_recursively(root: PathBuf, config: ConversionConfig) -> Result<(), AppError> {
+    let job = match convert::RecursiveDirJob::new(root, config)? {
+        Ok(job) => job,
+        Err(nothing_to_do) => {
+            error!("{nothing_to_do}");
+            println!("{nothing_to_do}");
+            return Ok(());
+        }
+    };
+    let inner_bar = create_progress_bar("Images");
+    inner_bar.tick();
+    job.run(&inner_bar)?;
+    info!("Done");
+    Ok(())
+}
+
 fn real_main() -> Result<(), AppError> {
     let matches = Args::parse();
 
@@ -136,7 +157,10 @@ fn real_main() -> Result<(), AppError> {
 
     let path = matches.path;
     if path.is_dir() {
-        archives_in_dir(path, config)
+        match matches.no_archive {
+            true => images_in_dir_recursively(path, config),
+            false => archives_in_dir(path, config),
+        }
     } else {
         single_archive(path, config)
     }

@@ -204,7 +204,7 @@ enum ConversionJob {
 
 #[derive(Debug, Error)]
 pub enum NothingToDo {
-    #[error("No files to convert for '{0}'")]
+    #[error("No files to convert in '{0}'")]
     NoFilesToConvert(PathBuf),
     #[error("Already converted '{0}'")]
     AlreadyDone(PathBuf),
@@ -354,18 +354,48 @@ pub enum ExtractionError {
 }
 
 impl ExtractionJob {
-    fn run(self) -> Result<(), ExtractionError> {
+    fn run(self) -> Result<TempDirGuard, ExtractionError> {
         assert!(self.archive_path.is_file());
 
         let extract_dir = ArchiveJob::get_conversion_root_dir(&self.archive_path);
         assert!(!extract_dir.exists());
 
+        let guard = TempDirGuard::new(extract_dir.to_path_buf());
         fs::create_dir_all(&extract_dir)
             .map_err(|e| ExtractionError::TempDir(extract_dir.to_path_buf(), e))?;
         spawn::extract_zip(&self.archive_path, &extract_dir)
             .and_then(|c| c.wait())
             .map_err(|e| ExtractionError::Process(self.archive_path.to_path_buf(), e))?;
-        Ok(())
+        Ok(guard)
+    }
+}
+
+/// Deletes the temporary directory when dropped
+///
+/// To keep the directory, use `guard.keep()`
+struct TempDirGuard {
+    temp_root: Option<PathBuf>,
+}
+
+impl TempDirGuard {
+    fn new(temp_root: PathBuf) -> Self {
+        let temp_root = Some(temp_root);
+        Self { temp_root }
+    }
+
+    fn keep(mut self) {
+        self.temp_root.take();
+    }
+}
+
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        if let Some(root) = &self.temp_root
+            && root.exists()
+            && let Err(e) = fs::remove_dir_all(root)
+        {
+            error!("error on deleting directory {root:?}: {e}");
+        }
     }
 }
 
@@ -515,15 +545,11 @@ impl ConversionJobs {
     }
 }
 
-struct ArchiveJobInner {
+struct ArchiveJob {
+    archive_path: ArchivePath,
     extraction: ExtractionJob,
     conversion: ConversionJobs,
     compression: CompressionJob,
-}
-
-struct ArchiveJob {
-    archive_path: ArchivePath,
-    inner: Option<ArchiveJobInner>,
 }
 
 #[derive(Debug, Error)]
@@ -534,6 +560,8 @@ pub enum ArchiveJobCreateError {
     ExtractDirExists(PathBuf),
     #[error("An error occurred while reading archive files for '{0}'")]
     ListingFiles(PathBuf, #[source] spawn::ProcessError),
+    #[error("An error occurred while reading archive files for '{0}'")]
+    ListingFile(PathBuf, #[source] std::io::Error),
     #[error("Error while creating conversion tasks for archive '{0}'")]
     Task(PathBuf, #[source] TaskError),
 }
@@ -557,22 +585,23 @@ impl ArchiveJob {
         Self::from_validated(archive, config)
     }
 
-    pub fn run(mut self, bar: &ProgressBar) -> Result<(), ArchiveJobRunError> {
-        let ArchiveJobInner {
+    pub fn run(self, bar: &ProgressBar) -> Result<(), ArchiveJobRunError> {
+        let Self {
+            archive_path,
             extraction,
             conversion,
             compression,
-        } = self.inner.take().unwrap();
+        } = self;
 
-        extraction
+        let _guard = extraction
             .run()
-            .map_err(|e| ArchiveJobRunError::Extraction(self.archive_path.to_path_buf(), e))?;
+            .map_err(|e| ArchiveJobRunError::Extraction(archive_path.to_path_buf(), e))?;
         conversion
             .run(bar)
-            .map_err(|e| ArchiveJobRunError::Conversion(self.archive_path.to_path_buf(), e))?;
+            .map_err(|e| ArchiveJobRunError::Conversion(archive_path.to_path_buf(), e))?;
         compression
             .run()
-            .map_err(|e| ArchiveJobRunError::Compression(self.archive_path.to_path_buf(), e))?;
+            .map_err(|e| ArchiveJobRunError::Compression(archive_path.to_path_buf(), e))?;
 
         Ok(())
     }
@@ -634,14 +663,11 @@ impl ArchiveJob {
             root: Self::get_conversion_root_dir(&archive_path),
             target,
         };
-        let inner = Some(ArchiveJobInner {
+        Ok(Ok(Self {
+            archive_path,
             extraction,
             conversion,
             compression,
-        });
-        Ok(Ok(Self {
-            archive_path,
-            inner,
         }))
     }
 
@@ -695,17 +721,23 @@ impl ArchiveJob {
     fn images_in_archive(
         cbz_path: &Path,
     ) -> Result<Vec<(PathBuf, ImageFormat)>, ArchiveJobCreateError> {
-        let files = spawn::list_archive_files(cbz_path)
+        spawn::list_archive_files(cbz_path)
             .and_then(|c| c.wait_with_output())
             .map_err(|e| ArchiveJobCreateError::ListingFiles(cbz_path.to_path_buf(), e))?
             .stdout
             .lines()
             .filter_map(|line| {
-                let file = line.ok()?.strip_prefix("Path = ").map(PathBuf::from)?;
+                let line =
+                    line.map_err(|e| ArchiveJobCreateError::ListingFile(cbz_path.to_path_buf(), e));
+                let line = match line {
+                    Ok(line) => line,
+                    Err(e) => return Some(Err(e)),
+                };
+                let file = line.strip_prefix("Path = ").map(PathBuf::from)?;
                 let ext = file.extension()?.to_string_lossy().to_lowercase();
 
                 use ImageFormat::*;
-                match ext.as_str() {
+                let file = match ext.as_str() {
                     "jpg" => Some((file, Jpeg)),
                     "jpeg" => Some((file, Jpeg)),
                     "png" => Some((file, Png)),
@@ -713,24 +745,10 @@ impl ArchiveJob {
                     "jxl" => Some((file, Jxl)),
                     "webp" => Some((file, Webp)),
                     _ => None,
-                }
+                };
+                Ok(file).transpose()
             })
-            .collect();
-        Ok(files)
-    }
-}
-
-impl Drop for ArchiveJob {
-    fn drop(&mut self) {
-        // kill all running processes before deleting directory
-        let _ = self.inner.take();
-
-        let extract_dir = Self::get_conversion_root_dir(&self.archive_path);
-        if extract_dir.exists()
-            && let Err(e) = fs::remove_dir_all(&extract_dir)
-        {
-            error!("error on deleting directory {extract_dir:?}: {e}");
-        }
+            .collect()
     }
 }
 
@@ -822,9 +840,211 @@ impl ArchivesInDirectoryJob {
             info!("Done");
         }
 
-        bars.images.finish();
-        bars.archives.finish();
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Directory(PathBuf);
+
+impl Directory {
+    fn new(path: PathBuf) -> Result<Self, PathBuf> {
+        match path.is_dir() {
+            true => Ok(Self(path)),
+            false => Err(path),
+        }
+    }
+
+    fn into_inner(self) -> PathBuf {
+        self.0
+    }
+}
+
+impl std::ops::Deref for Directory {
+    type Target = Path;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::convert::AsRef<Path> for Directory {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+struct RecursiveHardLinkJob {
+    root: Directory,
+    target: ImageFormat,
+}
+
+#[derive(Debug, Error)]
+pub enum RecursiveHardLinkJobError {
+    #[error("Encountered error while walking the directory '{0}'")]
+    WalkDir(PathBuf, #[source] walkdir::Error),
+    #[error("Could not create a hardlink for file '{0}'")]
+    Hardlink(PathBuf, #[source] std::io::Error),
+    #[error("Could not create the mirrored directory '{0}'")]
+    CreateDir(PathBuf, #[source] std::io::Error),
+}
+
+impl RecursiveHardLinkJob {
+    fn run(self) -> Result<TempDirGuard, RecursiveHardLinkJobError> {
+        let copy_root = RecursiveDirJob::get_hardlink_dir(&self.root, self.target)
+            .expect("checked by construction that dir is not root");
+
+        let guard = TempDirGuard::new(copy_root.to_path_buf());
+
+        for entry in WalkDir::new(&self.root).same_file_system(true) {
+            let entry = entry
+                .map_err(|e| RecursiveHardLinkJobError::WalkDir(self.root.to_path_buf(), e))?;
+            let path = entry.path();
+            let rel_path = path
+                .strip_prefix(&self.root)
+                .expect("all files have the root as prefix");
+            let copy_path = copy_root.join(rel_path);
+
+            if path.is_file() {
+                fs::hard_link(path, &copy_path)
+                    .map_err(|e| RecursiveHardLinkJobError::Hardlink(copy_path.to_path_buf(), e))?;
+            } else if path.is_dir() {
+                fs::create_dir(&copy_path).map_err(|e| {
+                    RecursiveHardLinkJobError::CreateDir(copy_path.to_path_buf(), e)
+                })?;
+            }
+        }
+
+        Ok(guard)
+    }
+}
+
+pub struct RecursiveDirJob {
+    root: Directory,
+    hardlink: RecursiveHardLinkJob,
+    conversion: ConversionJobs,
+}
+
+#[derive(Debug, Error)]
+pub enum RecursiveDirJobError {
+    #[error("Provided root path is not a directory: '{0}'")]
+    NotDir(PathBuf),
+    #[error("Can not create a hardlink copy of root")]
+    Root,
+    #[error("Encountered error while walking the directory '{0}'")]
+    WalkDir(PathBuf, #[source] walkdir::Error),
+    #[error("Error while creating conversion tasks for archive '{0}'")]
+    Task(PathBuf, #[source] TaskError),
+    #[error("Could not create a copied directory structure with hardlinks for '{0}'")]
+    Hardlink(PathBuf, #[source] RecursiveHardLinkJobError),
+    #[error("Error while performing conversions within root directory '{0}'")]
+    Conversion(PathBuf, #[source] ConversionJobsError),
+}
+
+impl RecursiveDirJob {
+    pub fn new(
+        root: PathBuf,
+        config: ConversionConfig,
+    ) -> Result<Result<Self, NothingToDo>, RecursiveDirJobError> {
+        let ConversionConfig {
+            target, n_workers, ..
+        } = config;
+
+        let root = Directory::new(root).map_err(|root| RecursiveDirJobError::NotDir(root))?;
+        let copy_root =
+            Self::get_hardlink_dir(&root, config.target).ok_or(RecursiveDirJobError::Root)?;
+        let job_queue = Self::images_in_dir(&root)?
+            .into_iter()
+            .filter_map(|(image_path, format)| {
+                let rel_path = image_path
+                    .strip_prefix(&root)
+                    .expect("image path is within root by construction");
+                let copy_path = copy_root.join(rel_path);
+                match ConversionJobDetails::new(&copy_path, format, config) {
+                    Ok(Some(task)) => Some(Ok(ConversionJob::new(copy_path, task))),
+                    Ok(None) => {
+                        debug!("skip conversion for '{copy_path:?}'");
+                        None
+                    }
+                    Err(e) => Some(Err(e)),
+                }
+            })
+            .collect::<Result<VecDeque<_>, _>>()
+            .map_err(|e| RecursiveDirJobError::Task(root.to_path_buf(), e))?;
+        if job_queue.is_empty() {
+            return Ok(Err(NothingToDo::NoFilesToConvert(root.into_inner())));
+        }
+
+        let jobs_in_progress = Vec::from_iter((0..n_workers).map(|_| None));
+
+        let hardlink = RecursiveHardLinkJob {
+            root: root.clone(),
+            target,
+        };
+        let conversion = ConversionJobs {
+            job_queue,
+            jobs_in_progress,
+        };
+        Ok(Ok(Self {
+            root,
+            hardlink,
+            conversion,
+        }))
+    }
+
+    pub fn run(self, bar: &ProgressBar) -> Result<(), RecursiveDirJobError> {
+        let Self {
+            root,
+            hardlink,
+            conversion,
+        } = self;
+
+        let guard = hardlink
+            .run()
+            .map_err(|e| RecursiveDirJobError::Hardlink(root.to_path_buf(), e))?;
+        conversion
+            .run(bar)
+            .map_err(|e| RecursiveDirJobError::Conversion(root.to_path_buf(), e))?;
+
+        guard.keep();
+        Ok(())
+    }
+
+    fn images_in_dir(
+        root: &Directory,
+    ) -> Result<Vec<(PathBuf, ImageFormat)>, RecursiveDirJobError> {
+        WalkDir::new(root)
+            .into_iter()
+            .filter_map(|entry| {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(e) => {
+                        return Some(Err(RecursiveDirJobError::WalkDir(root.to_path_buf(), e)));
+                    }
+                };
+                let file = entry.path().to_path_buf();
+                let ext = file.extension()?.to_string_lossy().to_lowercase();
+
+                use ImageFormat::*;
+                let file = match ext.as_str() {
+                    "jpg" => Some((file, Jpeg)),
+                    "jpeg" => Some((file, Jpeg)),
+                    "png" => Some((file, Png)),
+                    "avif" => Some((file, Avif)),
+                    "jxl" => Some((file, Jxl)),
+                    "webp" => Some((file, Webp)),
+                    _ => None,
+                };
+                Ok(file).transpose()
+            })
+            .collect()
+    }
+
+    fn get_hardlink_dir(root: &Directory, target: ImageFormat) -> Option<PathBuf> {
+        let parent = root.parent()?;
+        let name = root.file_stem().unwrap().to_string_lossy();
+        let new_name = format!("{}-{}", name, target.ext());
+        Some(parent.join(new_name))
     }
 }
 
