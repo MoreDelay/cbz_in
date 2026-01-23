@@ -88,6 +88,7 @@ fn single_archive(path: PathBuf, config: ConversionConfig) -> Result<(), AppErro
     let inner_bar = create_progress_bar("Images");
     inner_bar.tick();
     job.run(&inner_bar)?;
+    inner_bar.finish();
     info!("Done");
     Ok(())
 }
@@ -131,6 +132,7 @@ fn images_in_dir_recursively(root: PathBuf, config: ConversionConfig) -> Result<
     let inner_bar = create_progress_bar("Images");
     inner_bar.tick();
     job.run(&inner_bar)?;
+    inner_bar.finish();
     info!("Done");
     Ok(())
 }
