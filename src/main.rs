@@ -67,6 +67,8 @@ struct Args {
 enum AppError {
     #[error("Error when trying to log")]
     Logging(#[from] LoggingError),
+    #[error("Got a file path when expecting a directory: '{0}'")]
+    ExpectDir(PathBuf),
     #[error("Error while handling an archive")]
     SingleArchive(#[from] convert::SingleArchiveJobError),
     #[error("Error while converting archives in '{0}'")]
@@ -170,7 +172,10 @@ fn real_main() -> Result<(), AppError> {
             false => archives_in_dir(path, config),
         }
     } else {
-        single_archive(path, config)
+        match matches.no_archive {
+            true => Err(AppError::ExpectDir(path.to_path_buf())),
+            false => single_archive(path, config),
+        }
     }
 }
 
