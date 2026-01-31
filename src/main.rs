@@ -105,9 +105,6 @@ fn archives_in_dir(root: PathBuf, config: ConversionConfig) -> exn::Result<(), A
         let archives = multi.add(create_progress_bar("Archives"));
         let images = multi.add(create_progress_bar("Images"));
 
-        archives.tick();
-        images.tick();
-
         convert::Bars {
             multi,
             archives,
@@ -193,9 +190,11 @@ fn create_progress_bar(msg: &'static str) -> indicatif::ProgressBar {
     )
     .unwrap();
 
-    indicatif::ProgressBar::new(0)
+    let bar = indicatif::ProgressBar::new(0)
         .with_style(style)
-        .with_message(msg)
+        .with_message(msg);
+    bar.enable_responsive_tick(std::time::Duration::from_millis(250));
+    bar
 }
 
 fn create_logger(path: &Path) -> exn::Result<RollingFileAppender, AppError> {
