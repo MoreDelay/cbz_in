@@ -463,8 +463,7 @@ dependencies = [
 [[package]]
 name = "indicatif"
 version = "0.18.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9375e112e4b463ec1b1c6c011953545c65a30164fbab5b581df32b3abf0dcb88"
+source = "git+https://github.com/MoreDelay/indicatif?branch=responsive-steady-tick#1e3cb633e45e98521f4dc3369fc4b3bdf301d6f9"
 dependencies = [
  "console",
  "portable-atomic",
