@@ -1,6 +1,8 @@
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 
+use derive_more::Display;
+use exn::{ErrorExt, ResultExt, bail};
 use thiserror::Error;
 use tracing::debug;
 
@@ -39,23 +41,8 @@ impl std::fmt::Display for Tool {
     }
 }
 
-#[derive(Debug, Error)]
-pub enum AbnormalExit {
-    #[error("Could not parse error output")]
-    InvalidUtf8(#[from] std::string::FromUtf8Error),
-    #[error("Process printed error output:\n{0}")]
-    StdErr(String),
-}
-
-#[derive(Debug, Error)]
-pub enum ProcessError {
-    #[error("Could not spawn a process for the tool '{0}'")]
-    Spawn(Tool, #[source] std::io::Error),
-    #[error("A process for the tool '{0}' exited abnormally")]
-    AbnormalExit(Tool, #[source] AbnormalExit),
-    #[error("Could not wait on a child process for the tool '{0}'")]
-    Wait(Tool, #[source] std::io::Error),
-}
+#[derive(Debug, Display, Error)]
+pub struct ProcessError(String);
 
 /// Child process that gets killed on drop
 #[derive(Debug)]
@@ -72,13 +59,16 @@ impl ManagedChild {
         }
     }
 
-    pub fn try_wait(&mut self) -> Result<bool, ProcessError> {
-        let waited = self
-            .child
-            .as_mut()
-            .unwrap()
-            .try_wait()
-            .map_err(|e| ProcessError::Wait(self.tool, e))?;
+    pub fn try_wait(&mut self) -> exn::Result<bool, ProcessError> {
+        let err = || {
+            let msg = format!(
+                "Could not wait on a child process for the tool '{}'",
+                self.tool
+            );
+            ProcessError(msg)
+        };
+
+        let waited = self.child.as_mut().unwrap().try_wait().or_raise(err)?;
         Ok(waited.is_some())
     }
 
@@ -86,23 +76,33 @@ impl ManagedChild {
         self.child.take().unwrap()
     }
 
-    pub fn wait(self) -> Result<(), ProcessError> {
+    pub fn wait(self) -> exn::Result<(), ProcessError> {
         self.wait_with_output()?;
         Ok(())
     }
 
-    pub fn wait_with_output(self) -> Result<std::process::Output, ProcessError> {
+    pub fn wait_with_output(self) -> exn::Result<std::process::Output, ProcessError> {
         let tool = self.tool;
-        let output = self
-            .into_inner()
-            .wait_with_output()
-            .map_err(|e| ProcessError::Wait(tool, e))?;
+        let err = || {
+            let msg = format!("Could not wait on a child process for the tool '{tool}'");
+            ProcessError(msg)
+        };
+
+        let output = self.into_inner().wait_with_output().or_raise(err)?;
         if !output.status.success() {
             let abnormal_exit = match output.stderr.try_into() {
-                Ok(s) => AbnormalExit::StdErr(s),
-                Err(e) => AbnormalExit::InvalidUtf8(e),
+                Ok(s) => {
+                    let s: String = s;
+                    let msg =
+                        format!("Process exited with an error and the following stderr:\n{s}");
+                    ProcessError(msg).raise()
+                }
+                Err(e) => {
+                    let msg = "Process had an error, but stderr can not be parsed".to_string();
+                    e.raise().raise(ProcessError(msg))
+                }
             };
-            return Err(ProcessError::AbnormalExit(tool, abnormal_exit));
+            bail!(abnormal_exit.raise(err()));
         }
         Ok(output)
     }
@@ -119,18 +119,23 @@ impl Drop for ManagedChild {
     }
 }
 
-fn spawn(mut cmd: Command, tool: Tool) -> Result<ManagedChild, ProcessError> {
+fn spawn(mut cmd: Command, tool: Tool) -> exn::Result<ManagedChild, ProcessError> {
+    let err = || {
+        let msg = format!("Failed to spawn a process for the tool '{tool}'");
+        ProcessError(msg)
+    };
+
     cmd.stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map(|c| ManagedChild::new(c, tool))
-        .map_err(|e| ProcessError::Spawn(tool, e))
+        .or_raise(err)
 }
 
 pub fn convert_jpeg_to_png(
     input_path: &Path,
     output_path: &Path,
-) -> Result<ManagedChild, ProcessError> {
+) -> exn::Result<ManagedChild, ProcessError> {
     const TOOL: Tool = Tool::Magick;
 
     let mut cmd = Command::new(TOOL.name());
@@ -141,7 +146,7 @@ pub fn convert_jpeg_to_png(
 pub fn convert_png_to_jpeg(
     input_path: &Path,
     output_path: &Path,
-) -> Result<ManagedChild, ProcessError> {
+) -> exn::Result<ManagedChild, ProcessError> {
     const TOOL: Tool = Tool::Magick;
 
     let mut cmd = Command::new(TOOL.name());
@@ -154,7 +159,10 @@ pub fn convert_png_to_jpeg(
     spawn(cmd, TOOL)
 }
 
-pub fn encode_avif(input_path: &Path, output_path: &Path) -> Result<ManagedChild, ProcessError> {
+pub fn encode_avif(
+    input_path: &Path,
+    output_path: &Path,
+) -> exn::Result<ManagedChild, ProcessError> {
     const TOOL: Tool = Tool::Cavif;
 
     let mut cmd = Command::new(TOOL.name());
@@ -169,7 +177,10 @@ pub fn encode_avif(input_path: &Path, output_path: &Path) -> Result<ManagedChild
     spawn(cmd, TOOL)
 }
 
-pub fn encode_jxl(input_path: &Path, output_path: &Path) -> Result<ManagedChild, ProcessError> {
+pub fn encode_jxl(
+    input_path: &Path,
+    output_path: &Path,
+) -> exn::Result<ManagedChild, ProcessError> {
     const TOOL: Tool = Tool::Cjxl;
 
     let mut cmd = Command::new(TOOL.name());
@@ -183,7 +194,10 @@ pub fn encode_jxl(input_path: &Path, output_path: &Path) -> Result<ManagedChild,
     spawn(cmd, TOOL)
 }
 
-pub fn encode_webp(input_path: &Path, output_path: &Path) -> Result<ManagedChild, ProcessError> {
+pub fn encode_webp(
+    input_path: &Path,
+    output_path: &Path,
+) -> exn::Result<ManagedChild, ProcessError> {
     const TOOL: Tool = Tool::Cwebp;
 
     let mut cmd = Command::new(TOOL.name());
@@ -197,7 +211,10 @@ pub fn encode_webp(input_path: &Path, output_path: &Path) -> Result<ManagedChild
     spawn(cmd, TOOL)
 }
 
-pub fn decode_webp(input_path: &Path, output_path: &Path) -> Result<ManagedChild, ProcessError> {
+pub fn decode_webp(
+    input_path: &Path,
+    output_path: &Path,
+) -> exn::Result<ManagedChild, ProcessError> {
     const TOOL: Tool = Tool::Dwebp;
 
     let mut cmd = Command::new(TOOL.name());
@@ -212,7 +229,7 @@ pub fn decode_webp(input_path: &Path, output_path: &Path) -> Result<ManagedChild
 pub fn decode_jxl_to_png(
     input_path: &Path,
     output_path: &Path,
-) -> Result<ManagedChild, ProcessError> {
+) -> exn::Result<ManagedChild, ProcessError> {
     const TOOL: Tool = Tool::Djxl;
 
     let mut cmd = Command::new(TOOL.name());
@@ -227,7 +244,7 @@ pub fn decode_jxl_to_png(
 pub fn decode_jxl_to_jpeg(
     input_path: &Path,
     output_path: &Path,
-) -> Result<ManagedChild, ProcessError> {
+) -> exn::Result<ManagedChild, ProcessError> {
     const TOOL: Tool = Tool::Djxl;
 
     let mut cmd = Command::new(TOOL.name());
@@ -242,7 +259,7 @@ pub fn decode_jxl_to_jpeg(
 pub fn decode_avif_to_png(
     input_path: &Path,
     output_path: &Path,
-) -> Result<ManagedChild, ProcessError> {
+) -> exn::Result<ManagedChild, ProcessError> {
     const TOOL: Tool = Tool::Avifdec;
 
     let mut cmd = Command::new(TOOL.name());
@@ -258,7 +275,7 @@ pub fn decode_avif_to_png(
 pub fn decode_avif_to_jpeg(
     input_path: &Path,
     output_path: &Path,
-) -> Result<ManagedChild, ProcessError> {
+) -> exn::Result<ManagedChild, ProcessError> {
     const TOOL: Tool = Tool::Avifdec;
 
     let mut cmd = Command::new(TOOL.name());
@@ -273,7 +290,7 @@ pub fn decode_avif_to_jpeg(
     spawn(cmd, TOOL)
 }
 
-pub fn run_jxlinfo(image_path: &Path) -> Result<ManagedChild, ProcessError> {
+pub fn run_jxlinfo(image_path: &Path) -> exn::Result<ManagedChild, ProcessError> {
     const TOOL: Tool = Tool::Jxlinfo;
 
     let mut cmd = Command::new(TOOL.name());
@@ -281,7 +298,7 @@ pub fn run_jxlinfo(image_path: &Path) -> Result<ManagedChild, ProcessError> {
     spawn(cmd, TOOL)
 }
 
-pub fn list_archive_files(archive: &Path) -> Result<ManagedChild, ProcessError> {
+pub fn list_archive_files(archive: &Path) -> exn::Result<ManagedChild, ProcessError> {
     const TOOL: Tool = Tool::_7z;
 
     let mut cmd = Command::new(TOOL.name());
@@ -294,7 +311,7 @@ pub fn list_archive_files(archive: &Path) -> Result<ManagedChild, ProcessError> 
     spawn(cmd, TOOL)
 }
 
-pub fn extract_zip(archive: &Path, destination: &Path) -> Result<ManagedChild, ProcessError> {
+pub fn extract_zip(archive: &Path, destination: &Path) -> exn::Result<ManagedChild, ProcessError> {
     const TOOL: Tool = Tool::_7z;
 
     let mut cmd = Command::new(TOOL.name());
