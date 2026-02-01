@@ -4,6 +4,8 @@ use std::io::{BufRead, Read, Write};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
+use derive_more::Display;
+use exn::{ErrorExt, OptionExt, ResultExt, bail};
 use indicatif::{MultiProgress, ProgressBar};
 use signal_hook::{
     consts::{SIGCHLD, SIGINT},
@@ -15,6 +17,9 @@ use walkdir::WalkDir;
 use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
 use crate::spawn;
+
+#[derive(Debug, Display, Error)]
+pub struct ConversionError(String);
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug, Default, PartialEq)]
 pub enum ImageFormat {
@@ -51,20 +56,16 @@ impl std::ops::Deref for ArchivePath {
     }
 }
 
-#[derive(Error, Debug)]
-pub enum InvalidArchivePath {
-    #[error("The provided path does not exist: '{0}'")]
-    DoesNotExist(PathBuf),
-    #[error("This is not an archive: '{0}'")]
-    WrongExtension(PathBuf),
-}
+#[derive(Debug, Display, Error)]
+pub struct InvalidArchivePath(String);
 
 impl ArchivePath {
     const ARCHIVE_EXTENSIONS: [&str; 2] = ["zip", "cbz"];
 
-    pub fn validate(archive_path: PathBuf) -> Result<Self, InvalidArchivePath> {
+    pub fn validate(archive_path: PathBuf) -> exn::Result<Self, InvalidArchivePath> {
         if !archive_path.is_file() {
-            return Err(InvalidArchivePath::DoesNotExist(archive_path));
+            let msg = format!("Archive does not exist: {archive_path:?}");
+            bail!(InvalidArchivePath(msg));
         }
 
         let correct_extension = archive_path.extension().is_some_and(|ext| {
@@ -73,7 +74,8 @@ impl ArchivePath {
                 .any(|valid_ext| ext.eq_ignore_ascii_case(valid_ext))
         });
         if !correct_extension {
-            return Err(InvalidArchivePath::WrongExtension(archive_path));
+            let msg = format!("Archive has an unsupported extension: {archive_path:?}");
+            bail!(InvalidArchivePath(msg));
         }
         Ok(ArchivePath(archive_path))
     }
@@ -107,19 +109,22 @@ pub struct ConversionConfig {
     pub forced: bool,
 }
 
-#[derive(Debug, Error)]
-pub enum TaskError {
-    #[error("Could not query jxl file '{0}'")]
-    Jxlinfo(PathBuf, #[source] spawn::ProcessError),
-}
-
 impl ConversionJobDetails {
     fn new(
         image_path: &Path,
         current: ImageFormat,
         config: ConversionConfig,
-    ) -> Result<Option<Self>, TaskError> {
+    ) -> exn::Result<Option<Self>, ConversionError> {
         use ImageFormat::*;
+
+        let err = || {
+            let msg = format!(
+                "Failed to create the conversion job from {:?} to {:?} for {image_path:?}",
+                current.ext(),
+                config.target.ext()
+            );
+            ConversionError(msg)
+        };
 
         let ConversionConfig { target, forced, .. } = config;
 
@@ -130,7 +135,7 @@ impl ConversionJobDetails {
                 inbetween: Png,
                 target,
             }),
-            (Jxl, Avif | Webp) => match Self::jxl_is_compressed_jpeg(image_path)? {
+            (Jxl, Avif | Webp) => match Self::jxl_is_compressed_jpeg(image_path).or_raise(err)? {
                 true => Self::Intermediate(ConversionIntermediate {
                     current,
                     inbetween: Jpeg,
@@ -171,10 +176,15 @@ impl ConversionJobDetails {
         }
     }
 
-    fn jxl_is_compressed_jpeg(image_path: &Path) -> Result<bool, TaskError> {
+    fn jxl_is_compressed_jpeg(image_path: &Path) -> exn::Result<bool, ConversionError> {
+        let err = || {
+            let msg = format!("Could not query jxl file {image_path:?}");
+            ConversionError(msg)
+        };
+
         let has_box = spawn::run_jxlinfo(image_path)
             .and_then(|c| c.wait_with_output())
-            .map_err(|e| TaskError::Jxlinfo(image_path.to_path_buf(), e))?
+            .or_raise(err)?
             .stdout
             .lines()
             .any(|line| line.unwrap().starts_with("box: type: \"jbrd\""));
@@ -217,22 +227,18 @@ enum Proceeded {
     Finished,
 }
 
-#[derive(Error, Debug)]
-pub enum ConversionJobError {
-    #[error("An error occurred in a conversion process for image '{0}'")]
-    Process(PathBuf, #[source] spawn::ProcessError),
-    #[error("An error occurred while waiting for a conversion process for image '{0}'")]
-    Wait(PathBuf, #[source] spawn::ProcessError),
-    #[error("Could not delete the file: '{0}'")]
-    DeleteFile(PathBuf, #[source] std::io::Error),
-}
-
 impl ConversionJobWaiting {
-    fn start_conversion(self) -> Result<ConversionJobRunning, ConversionJobError> {
+    fn start_conversion(self) -> exn::Result<ConversionJobRunning, ConversionError> {
         let ConversionJobWaiting {
             image_path,
             details: task,
         } = self;
+
+        let err = || {
+            let msg = format!("Failed image conversion for {image_path:?}");
+            ConversionError(msg)
+        };
+
         let (current, target, after) = match task {
             ConversionJobDetails::Direct(ConversionDirect { current, target }) => {
                 (current, target, None)
@@ -253,20 +259,18 @@ impl ConversionJobWaiting {
         let input_path = &image_path;
         let output_path = &image_path.with_extension(target.ext());
 
-        let map = |e| ConversionJobError::Process(image_path.to_path_buf(), e);
-
         use ImageFormat::*;
         let child = match (current, target) {
-            (Jpeg, Png) => spawn::convert_jpeg_to_png(input_path, output_path).map_err(map)?,
-            (Png, Jpeg) => spawn::convert_png_to_jpeg(input_path, output_path).map_err(map)?,
-            (Jpeg | Png, Avif) => spawn::encode_avif(input_path, output_path).map_err(map)?,
-            (Jpeg | Png, Jxl) => spawn::encode_jxl(input_path, output_path).map_err(map)?,
-            (Jpeg | Png, Webp) => spawn::encode_webp(input_path, output_path).map_err(map)?,
-            (Avif, Jpeg) => spawn::decode_avif_to_jpeg(input_path, output_path).map_err(map)?,
-            (Avif, Png) => spawn::decode_avif_to_png(input_path, output_path).map_err(map)?,
-            (Jxl, Jpeg) => spawn::decode_jxl_to_jpeg(input_path, output_path).map_err(map)?,
-            (Jxl, Png) => spawn::decode_jxl_to_png(input_path, output_path).map_err(map)?,
-            (Webp, Png) => spawn::decode_webp(input_path, output_path).map_err(map)?,
+            (Jpeg, Png) => spawn::convert_jpeg_to_png(input_path, output_path).or_raise(err)?,
+            (Png, Jpeg) => spawn::convert_png_to_jpeg(input_path, output_path).or_raise(err)?,
+            (Jpeg | Png, Avif) => spawn::encode_avif(input_path, output_path).or_raise(err)?,
+            (Jpeg | Png, Jxl) => spawn::encode_jxl(input_path, output_path).or_raise(err)?,
+            (Jpeg | Png, Webp) => spawn::encode_webp(input_path, output_path).or_raise(err)?,
+            (Avif, Jpeg) => spawn::decode_avif_to_jpeg(input_path, output_path).or_raise(err)?,
+            (Avif, Png) => spawn::decode_avif_to_png(input_path, output_path).or_raise(err)?,
+            (Jxl, Jpeg) => spawn::decode_jxl_to_jpeg(input_path, output_path).or_raise(err)?,
+            (Jxl, Png) => spawn::decode_jxl_to_png(input_path, output_path).or_raise(err)?,
+            (Webp, Png) => spawn::decode_webp(input_path, output_path).or_raise(err)?,
             (_, _) => unreachable!(),
         };
 
@@ -279,28 +283,34 @@ impl ConversionJobWaiting {
 }
 
 impl ConversionJobRunning {
-    fn child_done(&mut self) -> Result<bool, ConversionJobError> {
-        self.child
-            .try_wait()
-            .map_err(|e| ConversionJobError::Wait(self.image_path.to_path_buf(), e))
+    fn child_done(&mut self) -> exn::Result<bool, ConversionError> {
+        let err = || {
+            let msg = format!(
+                "Could not check if a process finished for {:?}",
+                self.image_path
+            );
+            ConversionError(msg)
+        };
+        self.child.try_wait().or_raise(err)
     }
 }
 
 impl ConversionJobCompleted {
     /// wait on child process and delete original image file
-    fn complete(self) -> Result<Option<ConversionJobWaiting>, ConversionJobError> {
+    fn complete(self) -> exn::Result<Option<ConversionJobWaiting>, ConversionError> {
         let Self(ConversionJobRunning {
             child,
             image_path,
             after,
         }) = self;
 
-        child
-            .wait()
-            .map_err(|e| ConversionJobError::Process(image_path.to_path_buf(), e))?;
-        if let Err(err) = fs::remove_file(&image_path) {
-            return Err(ConversionJobError::DeleteFile(image_path, err));
+        let err = || {
+            let msg = format!("Could not complete the conversion for {image_path:?}");
+            ConversionError(msg)
         };
+
+        child.wait().or_raise(err)?;
+        fs::remove_file(&image_path).or_raise(err)?;
 
         let after = after.map(|direct| ConversionJobWaiting {
             image_path: image_path.with_extension(direct.current.ext()),
@@ -319,7 +329,7 @@ impl ConversionJob {
         Self::Waiting(waiting)
     }
 
-    fn proceed(self) -> Result<Proceeded, ConversionJobError> {
+    fn proceed(self) -> exn::Result<Proceeded, ConversionError> {
         let proceeded = match self {
             ConversionJob::Waiting(waiting) => {
                 let running = waiting.start_conversion()?;
@@ -345,16 +355,13 @@ struct ExtractionJob {
     archive_path: ArchivePath,
 }
 
-#[derive(Debug, Error)]
-pub enum ExtractionError {
-    #[error("Failed to create temporary directory for archive extraction at '{0}'")]
-    TempDir(PathBuf, #[source] std::io::Error),
-    #[error("An error occurred while extracting archive '{0}'")]
-    Process(PathBuf, #[source] spawn::ProcessError),
-}
-
 impl ExtractionJob {
-    fn run(self) -> Result<TempDirGuard, ExtractionError> {
+    fn run(self) -> exn::Result<TempDirGuard, ConversionError> {
+        let err = || {
+            let msg = format!("Failed to extract the archive {:?}", self.archive_path);
+            ConversionError(msg)
+        };
+
         assert!(self.archive_path.is_file());
 
         let extract_dir = ArchiveJob::get_conversion_root_dir(&self.archive_path);
@@ -362,10 +369,14 @@ impl ExtractionJob {
 
         let guard = TempDirGuard::new(extract_dir.to_path_buf());
         fs::create_dir_all(&extract_dir)
-            .map_err(|e| ExtractionError::TempDir(extract_dir.to_path_buf(), e))?;
+            .or_raise(|| {
+                let msg = format!("Could not create the target directory at {extract_dir:?}");
+                ConversionError(msg)
+            })
+            .or_raise(err)?;
         spawn::extract_zip(&self.archive_path, &extract_dir)
             .and_then(|c| c.wait())
-            .map_err(|e| ExtractionError::Process(self.archive_path.to_path_buf(), e))?;
+            .or_raise(err)?;
         Ok(guard)
     }
 }
@@ -404,19 +415,12 @@ struct CompressionJob {
     target: ImageFormat,
 }
 
-#[derive(Debug, Error)]
-pub enum CompressionError {
-    #[error("Error while creating archive '{0}'")]
-    Zipping(PathBuf, #[source] zip::result::ZipError),
-    #[error("Encountered error while walking the temporary directory for archive '{0}'")]
-    WalkTempDir(PathBuf, #[source] walkdir::Error),
-}
-
 impl CompressionJob {
-    fn run(self) -> Result<(), CompressionError> {
-        // error mapping helpers
-        let from_zip = |e| CompressionError::Zipping(self.root.to_path_buf(), e);
-        let from_io = |e| from_zip(zip::result::ZipError::Io(e));
+    fn run(self) -> exn::Result<(), ConversionError> {
+        let err = || {
+            let msg = format!("Failed to compress the directory {:?}", self.root);
+            ConversionError(msg)
+        };
 
         let dir = self
             .root
@@ -432,7 +436,7 @@ impl CompressionJob {
             self.target.ext()
         ));
 
-        let file = File::create(zip_path).map_err(from_io)?;
+        let file = File::create(zip_path).or_raise(err)?;
 
         let mut zipper = ZipWriter::new(file);
         let options = SimpleFileOptions::default()
@@ -441,8 +445,7 @@ impl CompressionJob {
 
         let mut buffer = Vec::new();
         for entry in WalkDir::new(&self.root).into_iter() {
-            let entry =
-                entry.map_err(|e| CompressionError::WalkTempDir(self.root.to_path_buf(), e))?;
+            let entry = entry.or_raise(err)?;
             let entry = entry.path();
             let root_parent = self
                 .root
@@ -455,20 +458,18 @@ impl CompressionJob {
                 .expect("path should be utf8 compliant");
 
             if entry.is_file() {
-                zipper.start_file(inner_path, options).map_err(from_zip)?;
+                zipper.start_file(inner_path, options).or_raise(err)?;
                 File::open(entry)
                     .and_then(|mut f| f.read_to_end(&mut buffer))
-                    .map_err(from_io)?;
-                zipper.write_all(&buffer).map_err(from_io)?;
+                    .or_raise(err)?;
+                zipper.write_all(&buffer).or_raise(err)?;
                 buffer.clear();
             } else if !inner_path.is_empty() {
-                zipper
-                    .add_directory(inner_path, options)
-                    .map_err(from_zip)?;
+                zipper.add_directory(inner_path, options).or_raise(err)?;
             }
         }
 
-        zipper.finish().map_err(from_zip)?;
+        zipper.finish().or_raise(err)?;
         Ok(())
     }
 }
@@ -478,24 +479,17 @@ struct ConversionJobs {
     jobs_in_progress: Vec<Option<ConversionJob>>,
 }
 
-#[derive(Debug, Error)]
-pub enum ConversionJobsError {
-    #[error("Could not listen to process signals")]
-    Signals(#[from] std::io::Error),
-    #[error("Error during conversion of an image")]
-    ConversionJob(#[from] ConversionJobError),
-    #[error("Got interrupted")]
-    Interrupt,
-}
-
 impl ConversionJobs {
-    fn run(mut self, bar: &ProgressBar) -> Result<(), ConversionJobsError> {
+    fn run(mut self, bar: &ProgressBar) -> exn::Result<(), ConversionError> {
         assert!(!self.job_queue.is_empty());
         bar.reset();
         bar.set_length(self.job_queue.len() as u64);
 
         // these signals will be catched from here on out until dropped
-        let mut signals = Signals::new([SIGINT, SIGCHLD])?;
+        let mut signals = Signals::new([SIGINT, SIGCHLD]).or_raise(|| {
+            let msg = "Could not listen to process signals".to_string();
+            ConversionError(msg)
+        })?;
 
         // start out as many jobs as allowed
         for slot in self.jobs_in_progress.iter_mut() {
@@ -509,7 +503,7 @@ impl ConversionJobs {
         while self.jobs_pending() {
             for signal in signals.wait() {
                 match signal {
-                    SIGINT => return Err(ConversionJobsError::Interrupt),
+                    SIGINT => return Err(ConversionError("Got interrupted".to_string()).raise()),
                     SIGCHLD => self.proceed_jobs(bar)?,
                     _ => unreachable!(),
                 }
@@ -518,7 +512,7 @@ impl ConversionJobs {
         Ok(())
     }
 
-    fn proceed_jobs(&mut self, bar: &ProgressBar) -> Result<(), ConversionJobError> {
+    fn proceed_jobs(&mut self, bar: &ProgressBar) -> exn::Result<(), ConversionError> {
         for slot in self.jobs_in_progress.iter_mut() {
             loop {
                 match slot.take() {
@@ -552,40 +546,21 @@ struct ArchiveJob {
     compression: CompressionJob,
 }
 
-#[derive(Debug, Error)]
-pub enum ArchiveJobCreateError {
-    #[error("Invalid archive")]
-    InvalidArchive(#[from] InvalidArchivePath),
-    #[error("Extract directory already exists at '{0}', delete it and try again")]
-    ExtractDirExists(PathBuf),
-    #[error("An error occurred while reading archive files for '{0}'")]
-    ListingFiles(PathBuf, #[source] spawn::ProcessError),
-    #[error("An error occurred while reading archive files for '{0}'")]
-    ListingFile(PathBuf, #[source] std::io::Error),
-    #[error("Error while creating conversion tasks for archive '{0}'")]
-    Task(PathBuf, #[source] TaskError),
-}
-
-#[derive(Debug, Error)]
-pub enum ArchiveJobRunError {
-    #[error("Error while extracting for archive '{0}'")]
-    Extraction(PathBuf, #[source] ExtractionError),
-    #[error("Error while performing conversions for archive '{0}'")]
-    Conversion(PathBuf, #[source] ConversionJobsError),
-    #[error("Error while compressing for archive '{0}'")]
-    Compression(PathBuf, #[source] CompressionError),
-}
-
 impl ArchiveJob {
     pub fn new(
         archive: PathBuf,
         config: ConversionConfig,
-    ) -> Result<Result<Self, NothingToDo>, ArchiveJobCreateError> {
-        let archive = ArchivePath::validate(archive)?;
-        Self::from_validated(archive, config)
+    ) -> exn::Result<Result<Self, NothingToDo>, ConversionError> {
+        let err = || {
+            let msg = "Could not create an archive job".to_string();
+            ConversionError(msg)
+        };
+
+        let archive = ArchivePath::validate(archive).or_raise(err)?;
+        Self::from_validated(archive, config).or_raise(err)
     }
 
-    pub fn run(self, bar: &ProgressBar) -> Result<(), ArchiveJobRunError> {
+    pub fn run(self, bar: &ProgressBar) -> exn::Result<(), ConversionError> {
         let Self {
             archive_path,
             extraction,
@@ -593,15 +568,17 @@ impl ArchiveJob {
             compression,
         } = self;
 
-        let _guard = extraction
-            .run()
-            .map_err(|e| ArchiveJobRunError::Extraction(archive_path.to_path_buf(), e))?;
-        conversion
-            .run(bar)
-            .map_err(|e| ArchiveJobRunError::Conversion(archive_path.to_path_buf(), e))?;
-        compression
-            .run()
-            .map_err(|e| ArchiveJobRunError::Compression(archive_path.to_path_buf(), e))?;
+        let err = || {
+            let msg = format!(
+                "Error during conversion of the archive {:?}",
+                archive_path.deref()
+            );
+            ConversionError(msg)
+        };
+
+        let _guard = extraction.run().or_raise(err)?;
+        conversion.run(bar).or_raise(err)?;
+        compression.run().or_raise(err)?;
 
         Ok(())
     }
@@ -613,7 +590,7 @@ impl ArchiveJob {
     fn from_validated(
         archive_path: ArchivePath,
         config: ConversionConfig,
-    ) -> Result<Result<Self, NothingToDo>, ArchiveJobCreateError> {
+    ) -> exn::Result<Result<Self, NothingToDo>, ConversionError> {
         let ConversionConfig {
             target, n_workers, ..
         } = config;
@@ -624,7 +601,8 @@ impl ArchiveJob {
 
         let extract_dir = Self::get_conversion_root_dir(&archive_path);
         if extract_dir.exists() {
-            return Err(ArchiveJobCreateError::ExtractDirExists(extract_dir));
+            let msg = format!("Extract directory already exists at {archive_path:?}");
+            bail!(ConversionError(msg));
         }
 
         let root_dir = Self::get_extraction_root_dir(&archive_path)?;
@@ -635,14 +613,17 @@ impl ArchiveJob {
                 match ConversionJobDetails::new(&image_path, format, config) {
                     Ok(Some(task)) => Some(Ok(ConversionJob::new(image_path, task))),
                     Ok(None) => {
-                        debug!("skip conversion for '{image_path:?}'");
+                        debug!("skip conversion for {image_path:?}");
                         None
                     }
                     Err(e) => Some(Err(e)),
                 }
             })
             .collect::<Result<VecDeque<_>, _>>()
-            .map_err(|e| ArchiveJobCreateError::Task(archive_path.to_path_buf(), e))?;
+            .or_raise(|| {
+                let msg = format!("Error while preparing all conversion job");
+                ConversionError(msg)
+            })?;
 
         if job_queue.is_empty() {
             return Ok(Err(NothingToDo::NoFilesToConvert(
@@ -690,11 +671,16 @@ impl ArchiveJob {
         is_converted_archive || has_converted_archive
     }
 
-    fn get_extraction_root_dir(cbz_path: &Path) -> Result<PathBuf, ArchiveJobCreateError> {
+    fn get_extraction_root_dir(cbz_path: &Path) -> exn::Result<PathBuf, ConversionError> {
+        let err = || {
+            let msg = format!("Could not determine the extraction root dir for {cbz_path:?}");
+            ConversionError(msg)
+        };
+
         let archive_name = cbz_path.file_stem().unwrap();
         let archive_root_dirs = spawn::list_archive_files(cbz_path)
             .and_then(|c| c.wait_with_output())
-            .map_err(|e| ArchiveJobCreateError::ListingFiles(cbz_path.to_path_buf(), e))?
+            .or_raise(err)?
             .stdout
             .lines()
             .filter(|v| v.as_ref().is_ok_and(|line| line.starts_with("Path = ")))
@@ -720,15 +706,19 @@ impl ArchiveJob {
 
     fn images_in_archive(
         cbz_path: &Path,
-    ) -> Result<Vec<(PathBuf, ImageFormat)>, ArchiveJobCreateError> {
+    ) -> exn::Result<Vec<(PathBuf, ImageFormat)>, ConversionError> {
+        let err = || {
+            let msg = format!("Could not list files within archive {cbz_path:?}");
+            ConversionError(msg)
+        };
+
         spawn::list_archive_files(cbz_path)
             .and_then(|c| c.wait_with_output())
-            .map_err(|e| ArchiveJobCreateError::ListingFiles(cbz_path.to_path_buf(), e))?
+            .or_raise(err)?
             .stdout
             .lines()
             .filter_map(|line| {
-                let line =
-                    line.map_err(|e| ArchiveJobCreateError::ListingFile(cbz_path.to_path_buf(), e));
+                let line = line.or_raise(err);
                 let line = match line {
                     Ok(line) => line,
                     Err(e) => return Some(Err(e)),
@@ -754,37 +744,22 @@ impl ArchiveJob {
 
 pub struct SingleArchiveJob(ArchiveJob);
 
-#[derive(Error, Debug)]
-pub enum SingleArchiveJobError {
-    #[error("Could not create an archive conversion job")]
-    Create(#[from] ArchiveJobCreateError),
-    #[error("Could not run an archive conversion job")]
-    Run(#[from] ArchiveJobRunError),
-}
-
 impl SingleArchiveJob {
     pub fn new(
         archive: PathBuf,
         config: ConversionConfig,
-    ) -> Result<Result<Self, NothingToDo>, SingleArchiveJobError> {
+    ) -> exn::Result<Result<Self, NothingToDo>, ConversionError> {
         Ok(ArchiveJob::new(archive, config)?.map(Self))
     }
 
-    pub fn run(self, bar: &ProgressBar) -> Result<(), SingleArchiveJobError> {
+    pub fn run(self, bar: &ProgressBar) -> exn::Result<(), ConversionError> {
         Ok(self.0.run(bar)?)
     }
 }
 
-pub struct ArchivesInDirectoryJob(Vec<ArchiveJob>);
-
-#[derive(Error, Debug)]
-pub enum ArchivesInDirectoryJobError {
-    #[error("Could not create an archive conversion job")]
-    ArchiveJobCreate(#[from] ArchiveJobCreateError),
-    #[error("Could not run an archive conversion job")]
-    ArchiveJobRun(#[from] ArchiveJobRunError),
-    #[error("Could not walk the filesystem")]
-    ReadingDir(#[from] std::io::Error),
+pub struct ArchivesInDirectoryJob {
+    root_dir: PathBuf,
+    jobs: Vec<ArchiveJob>,
 }
 
 pub struct Bars {
@@ -795,15 +770,23 @@ pub struct Bars {
 
 impl ArchivesInDirectoryJob {
     pub fn collect(
-        root_dir: &Path,
+        root_dir: PathBuf,
         config: ConversionConfig,
-    ) -> Result<Self, ArchivesInDirectoryJobError> {
+    ) -> exn::Result<Self, ConversionError> {
+        let err = || {
+            let msg = format!(
+                "Error while looking for archives needing conversion from root {root_dir:?}"
+            );
+            ConversionError(msg)
+        };
+
         let jobs = root_dir
-            .read_dir()?
+            .read_dir()
+            .or_raise(err)?
             .filter_map(|dir_entry| {
-                let path = match dir_entry {
+                let path = match dir_entry.or_raise(err) {
                     Ok(dir_entry) => dir_entry.path(),
-                    Err(e) => return Some(Err(e.into())),
+                    Err(e) => return Some(Err(e)),
                 };
                 let archive = match ArchivePath::validate(path) {
                     Ok(f) => f,
@@ -823,19 +806,26 @@ impl ArchivesInDirectoryJob {
                     Err(e) => Some(Err(e.into())),
                 }
             })
-            .collect::<Result<Vec<_>, ArchivesInDirectoryJobError>>()?;
-        Ok(Self(jobs))
+            .collect::<exn::Result<Vec<_>, ConversionError>>()?;
+        Ok(Self { root_dir, jobs })
     }
 
-    pub fn run(self, bars: &Bars) -> Result<(), ArchivesInDirectoryJobError> {
-        bars.archives.reset();
-        bars.archives.set_length(self.0.len() as u64);
+    pub fn run(self, bars: &Bars) -> exn::Result<(), ConversionError> {
+        let err = || {
+            let msg = format!("Failed for some archive inside {:?}", self.root_dir);
+            ConversionError(msg)
+        };
 
-        for job in self.0.into_iter() {
+        bars.archives.reset();
+        bars.archives.set_length(self.jobs.len() as u64);
+
+        for job in self.jobs.into_iter() {
             info!("Converting {:?}", job.archive());
-            bars.multi
-                .println(format!("Converting {:?}", job.archive()))?;
-            job.run(&bars.images)?;
+            // ignore error that may happen when writing to stdout
+            let _ = bars
+                .multi
+                .println(format!("Converting {:?}", job.archive()));
+            job.run(&bars.images).or_raise(err)?;
             bars.archives.inc(1);
             info!("Done");
         }
@@ -848,10 +838,14 @@ impl ArchivesInDirectoryJob {
 struct Directory(PathBuf);
 
 impl Directory {
-    fn new(path: PathBuf) -> Result<Self, PathBuf> {
+    fn new(path: PathBuf) -> Result<Self, exn::Exn<ConversionError, PathBuf>> {
         match path.is_dir() {
             true => Ok(Self(path)),
-            false => Err(path),
+            false => {
+                let msg = format!("Provided path is not a directory: {path:?}");
+                let err = exn::Exn::with_recovery(ConversionError(msg), path);
+                Err(err)
+            }
         }
     }
 
@@ -879,26 +873,23 @@ struct RecursiveHardLinkJob {
     target: ImageFormat,
 }
 
-#[derive(Debug, Error)]
-pub enum RecursiveHardLinkJobError {
-    #[error("Encountered error while walking the directory '{0}'")]
-    WalkDir(PathBuf, #[source] walkdir::Error),
-    #[error("Could not create a hardlink for file '{0}'")]
-    Hardlink(PathBuf, #[source] std::io::Error),
-    #[error("Could not create the mirrored directory '{0}'")]
-    CreateDir(PathBuf, #[source] std::io::Error),
-}
-
 impl RecursiveHardLinkJob {
-    fn run(self) -> Result<TempDirGuard, RecursiveHardLinkJobError> {
+    fn run(self) -> exn::Result<TempDirGuard, ConversionError> {
+        let err = || {
+            let msg = format!(
+                "Error while creating hard links from {:?} to {:?}",
+                self.root, self.target
+            );
+            ConversionError(msg)
+        };
+
         let copy_root = RecursiveDirJob::get_hardlink_dir(&self.root, self.target)
             .expect("checked by construction that dir is not root");
 
         let guard = TempDirGuard::new(copy_root.to_path_buf());
 
         for entry in WalkDir::new(&self.root).same_file_system(true) {
-            let entry = entry
-                .map_err(|e| RecursiveHardLinkJobError::WalkDir(self.root.to_path_buf(), e))?;
+            let entry = entry.or_raise(err)?;
             let path = entry.path();
             let rel_path = path
                 .strip_prefix(&self.root)
@@ -906,12 +897,9 @@ impl RecursiveHardLinkJob {
             let copy_path = copy_root.join(rel_path);
 
             if path.is_file() {
-                fs::hard_link(path, &copy_path)
-                    .map_err(|e| RecursiveHardLinkJobError::Hardlink(copy_path.to_path_buf(), e))?;
+                fs::hard_link(path, &copy_path).or_raise(err)?;
             } else if path.is_dir() {
-                fs::create_dir(&copy_path).map_err(|e| {
-                    RecursiveHardLinkJobError::CreateDir(copy_path.to_path_buf(), e)
-                })?;
+                fs::create_dir(&copy_path).or_raise(err)?;
             }
         }
 
@@ -925,34 +913,24 @@ pub struct RecursiveDirJob {
     conversion: ConversionJobs,
 }
 
-#[derive(Debug, Error)]
-pub enum RecursiveDirJobError {
-    #[error("Provided root path is not a directory: '{0}'")]
-    NotDir(PathBuf),
-    #[error("Can not create a hardlink copy of root")]
-    Root,
-    #[error("Encountered error while walking the directory '{0}'")]
-    WalkDir(PathBuf, #[source] walkdir::Error),
-    #[error("Error while creating conversion tasks for archive '{0}'")]
-    Task(PathBuf, #[source] TaskError),
-    #[error("Could not create a copied directory structure with hardlinks for '{0}'")]
-    Hardlink(PathBuf, #[source] RecursiveHardLinkJobError),
-    #[error("Error while performing conversions within root directory '{0}'")]
-    Conversion(PathBuf, #[source] ConversionJobsError),
-}
-
 impl RecursiveDirJob {
     pub fn new(
         root: PathBuf,
         config: ConversionConfig,
-    ) -> Result<Result<Self, NothingToDo>, RecursiveDirJobError> {
+    ) -> exn::Result<Result<Self, NothingToDo>, ConversionError> {
+        let err = || {
+            let msg = format!(
+                "Failed to prepare job for recursive image conversion starting at {root:?}"
+            );
+            ConversionError(msg)
+        };
+
         let ConversionConfig {
             target, n_workers, ..
         } = config;
 
-        let root = Directory::new(root).map_err(|root| RecursiveDirJobError::NotDir(root))?;
-        let copy_root =
-            Self::get_hardlink_dir(&root, config.target).ok_or(RecursiveDirJobError::Root)?;
+        let root = Directory::new(root.clone()).or_raise(err)?;
+        let copy_root = Self::get_hardlink_dir(&root, config.target).or_raise(err)?;
         let job_queue = Self::images_in_dir(&root)?
             .into_iter()
             .filter_map(|(image_path, format)| {
@@ -963,14 +941,14 @@ impl RecursiveDirJob {
                 match ConversionJobDetails::new(&copy_path, format, config) {
                     Ok(Some(task)) => Some(Ok(ConversionJob::new(copy_path, task))),
                     Ok(None) => {
-                        debug!("skip conversion for '{copy_path:?}'");
+                        debug!("skip conversion for {copy_path:?}");
                         None
                     }
                     Err(e) => Some(Err(e)),
                 }
             })
             .collect::<Result<VecDeque<_>, _>>()
-            .map_err(|e| RecursiveDirJobError::Task(root.to_path_buf(), e))?;
+            .or_raise(err)?;
         if job_queue.is_empty() {
             return Ok(Err(NothingToDo::NoFilesToConvert(root.into_inner())));
         }
@@ -992,19 +970,20 @@ impl RecursiveDirJob {
         }))
     }
 
-    pub fn run(self, bar: &ProgressBar) -> Result<(), RecursiveDirJobError> {
+    pub fn run(self, bar: &ProgressBar) -> exn::Result<(), ConversionError> {
         let Self {
             root,
             hardlink,
             conversion,
         } = self;
 
-        let guard = hardlink
-            .run()
-            .map_err(|e| RecursiveDirJobError::Hardlink(root.to_path_buf(), e))?;
-        conversion
-            .run(bar)
-            .map_err(|e| RecursiveDirJobError::Conversion(root.to_path_buf(), e))?;
+        let err = || {
+            let msg = format!("Failed to convert all images recursively in {root:?}");
+            ConversionError(msg)
+        };
+
+        let guard = hardlink.run().or_raise(err)?;
+        conversion.run(bar).or_raise(err)?;
 
         guard.keep();
         Ok(())
@@ -1012,14 +991,20 @@ impl RecursiveDirJob {
 
     fn images_in_dir(
         root: &Directory,
-    ) -> Result<Vec<(PathBuf, ImageFormat)>, RecursiveDirJobError> {
+    ) -> exn::Result<Vec<(PathBuf, ImageFormat)>, ConversionError> {
+        let err = || {
+            let msg = format!("Could not list images recursively in the directory {root:?}");
+            ConversionError(msg)
+        };
+
         WalkDir::new(root)
             .into_iter()
             .filter_map(|entry| {
                 let entry = match entry {
                     Ok(entry) => entry,
-                    Err(e) => {
-                        return Some(Err(RecursiveDirJobError::WalkDir(root.to_path_buf(), e)));
+                    Err(inner) => {
+                        let outer = err();
+                        return Some(Err(inner.raise().raise(outer)));
                     }
                 };
                 let file = entry.path().to_path_buf();
@@ -1035,16 +1020,24 @@ impl RecursiveDirJob {
                     "webp" => Some((file, Webp)),
                     _ => None,
                 };
-                Ok(file).transpose()
+                let a = Ok(file).transpose();
+                a
             })
             .collect()
     }
 
-    fn get_hardlink_dir(root: &Directory, target: ImageFormat) -> Option<PathBuf> {
-        let parent = root.parent()?;
+    fn get_hardlink_dir(
+        root: &Directory,
+        target: ImageFormat,
+    ) -> exn::Result<PathBuf, ConversionError> {
+        let err = || {
+            let msg = format!("Directory has no parent: {root:?}");
+            ConversionError(msg)
+        };
+        let parent = root.parent().ok_or_raise(err)?;
         let name = root.file_stem().unwrap().to_string_lossy();
         let new_name = format!("{}-{}", name, target.ext());
-        Some(parent.join(new_name))
+        Ok(parent.join(new_name))
     }
 }
 
