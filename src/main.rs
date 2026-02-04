@@ -1,20 +1,16 @@
 mod convert;
 mod spawn;
 
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::thread;
 
 use clap::Parser;
 use derive_more::Display;
-use exn::ResultExt;
+use exn::{Exn, OptionExt, ResultExt, bail};
 use thiserror::Error;
-use tracing::{error, info};
-use tracing_appender::rolling::RollingFileAppender;
+use tracing::{debug, error, info};
 
-use crate::convert::ArchivePath;
-use crate::convert::ConversionConfig;
-use crate::convert::Directory;
+use crate::convert::{ArchivePath, ConversionConfig, Directory};
 
 /// Convert images within comic archives to newer image formats.
 ///
@@ -68,16 +64,17 @@ struct Args {
 }
 
 #[derive(Debug, Display, Error)]
-struct AppError(String);
+struct ErrorMessage(String);
 
-fn single_archive(path: ArchivePath, config: ConversionConfig) -> exn::Result<(), AppError> {
+fn single_archive(archive: ArchivePath, config: ConversionConfig) -> exn::Result<(), ErrorMessage> {
     let err = || {
-        let msg = "Failed to run conversion on a single archive".to_string();
-        AppError(msg)
+        let msg = "Failed to create conversion job on a single archive".to_string();
+        debug!("{msg}");
+        ErrorMessage(msg)
     };
 
-    info!("Converting {:?}", path);
-    let job = match convert::SingleArchiveJob::new(path, config).or_raise(err)? {
+    info!("Checking {archive:?}");
+    let job = match convert::SingleArchiveJob::new(archive, config).or_raise(err)? {
         Ok(job) => job,
         Err(nothing_to_do) => {
             error!("{nothing_to_do}");
@@ -93,10 +90,11 @@ fn single_archive(path: ArchivePath, config: ConversionConfig) -> exn::Result<()
     Ok(())
 }
 
-fn archives_in_dir(root: Directory, config: ConversionConfig) -> exn::Result<(), AppError> {
+fn archives_in_dir(root: Directory, config: ConversionConfig) -> exn::Result<(), ErrorMessage> {
     let err = || {
         let msg = "Failed to convert all archives in a directory".to_string();
-        AppError(msg)
+        debug!("{msg}");
+        ErrorMessage(msg)
     };
 
     let jobs = convert::ArchivesInDirectoryJob::collect(root, config).or_raise(err)?;
@@ -123,10 +121,11 @@ fn archives_in_dir(root: Directory, config: ConversionConfig) -> exn::Result<(),
 fn images_in_dir_recursively(
     root: Directory,
     config: ConversionConfig,
-) -> exn::Result<(), AppError> {
+) -> exn::Result<(), ErrorMessage> {
     let err = || {
         let msg = "Failed to convert all images in a directory".to_string();
-        AppError(msg)
+        debug!("{msg}");
+        ErrorMessage(msg)
     };
 
     let job = match convert::RecursiveDirJob::new(root, config).or_raise(err)? {
@@ -145,16 +144,21 @@ fn images_in_dir_recursively(
     Ok(())
 }
 
-fn real_main() -> exn::Result<(), AppError> {
+fn real_main() -> exn::Result<(), ErrorMessage> {
     let matches = Args::parse();
 
     if let Some(log_path) = matches.log {
-        let writer = create_logger(&log_path)?;
-        tracing_subscriber::fmt()
-            .with_writer(writer)
-            .with_ansi(false)
-            .init();
+        init_logger(&log_path, matches.level)?;
     }
+
+    let cmd = std::env::args_os()
+        .map(|s| s.to_string_lossy().to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    info!("starting new execution as {cmd:?}");
+    let cwd = std::env::current_dir().unwrap_or_default();
+    info!("working directory: {:?}", cwd);
 
     let n_workers = match matches.workers {
         Some(Some(value)) => value,
@@ -173,7 +177,7 @@ fn real_main() -> exn::Result<(), AppError> {
 
     let path = matches.path;
 
-    let (path, exn) = match crate::convert::Directory::new(path) {
+    let (path, dir_exn) = match crate::convert::Directory::new(path) {
         Ok(root) => match matches.no_archive {
             true => return images_in_dir_recursively(root, config),
             false => return archives_in_dir(root, config),
@@ -181,12 +185,13 @@ fn real_main() -> exn::Result<(), AppError> {
         Err(exn) => exn.recover(),
     };
 
-    let (path, exn) = match ArchivePath::new(path) {
+    let (path, archive_exn) = match ArchivePath::new(path) {
         Ok(archive) => match matches.no_archive {
             true => {
-                let (path, exn) = exn.recover();
+                let (path, exn) = dir_exn.recover();
                 let msg = format!("Got a file path when expecting a directory: {path:?}");
-                return Err(exn.raise(AppError(msg)));
+                debug!("{msg}");
+                return Err(exn.raise(ErrorMessage(msg)));
             }
             false => return single_archive(archive, config),
         },
@@ -194,7 +199,8 @@ fn real_main() -> exn::Result<(), AppError> {
     };
 
     let msg = format!("Neither an archive nor a directory: {path:?}");
-    Err(exn.raise(AppError(msg)))
+    debug!("{msg}");
+    Err(Exn::raise_all(ErrorMessage(msg), [archive_exn, dir_exn]))
 }
 
 fn create_progress_bar(msg: &'static str) -> indicatif::ProgressBar {
@@ -210,44 +216,58 @@ fn create_progress_bar(msg: &'static str) -> indicatif::ProgressBar {
     bar
 }
 
-fn create_logger(path: &Path) -> exn::Result<RollingFileAppender, AppError> {
+fn init_logger(path: &Path, level: tracing::Level) -> exn::Result<(), ErrorMessage> {
     let err = || {
         let msg = "Failed to initialize logging to file {path:?}".to_string();
-        AppError(msg)
+        debug!("{msg}");
+        ErrorMessage(msg)
     };
 
-    let path = PathBuf::from(".").join(path);
-    let directory = match path.parent() {
-        Some(parent) => parent,
-        None => Path::new("."),
+    let path = match path.is_absolute() {
+        true => path,
+        false => &PathBuf::from(".").join(path),
     };
+
+    let directory = path.parent().ok_or_raise(err)?;
+
     if !directory.is_dir() {
         let msg = format!("Directory does not exist: {directory:?}");
-        return Err(AppError(msg)).or_raise(err);
+        debug!("{msg}");
+        let exn = Exn::from(ErrorMessage(msg)).raise(err());
+        bail!(exn);
     }
     if path.exists() && !path.is_file() {
         let msg = format!("The path to the log file is not a regular file: {path:?}");
-        return Err(AppError(msg)).or_raise(err);
+        debug!("{msg}");
+        return Err(ErrorMessage(msg)).or_raise(err);
     }
     let Some(file_name) = path.file_name() else {
         let msg = format!("The filename is empty");
-        return Err(AppError(msg)).or_raise(err);
+        debug!("{msg}");
+        return Err(ErrorMessage(msg)).or_raise(err);
     };
 
     let writer = tracing_appender::rolling::never(directory, file_name);
-    Ok(writer)
+
+    tracing_subscriber::fmt()
+        .with_max_level(level)
+        .with_writer(writer)
+        .with_ansi(false)
+        .init();
+
+    Ok(())
 }
 
-fn log_error(error: &exn::Exn<AppError>) {
+fn log_error(error: &Exn<ErrorMessage>) {
     fn walk(prefix: &str, frame: &exn::Frame) {
         let children = frame.children();
         if children.is_empty() {
             return;
         }
 
-        let child_prefix = format!("{prefix}    ");
+        let child_prefix = format!("{prefix}|   ");
         for (idx, frame) in children.iter().enumerate() {
-            error!("{prefix}--> {idx}: {}", frame.error());
+            error!("{prefix}|-> {idx}: {}", frame.error());
             walk(&child_prefix, frame);
         }
     }
@@ -258,7 +278,7 @@ fn log_error(error: &exn::Exn<AppError>) {
     walk("", error.frame());
 }
 
-fn main() -> exn::Result<(), AppError> {
+fn main() -> exn::Result<(), ErrorMessage> {
     let ret = real_main();
     if let Err(e) = &ret {
         log_error(e);
