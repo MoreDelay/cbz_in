@@ -5,7 +5,7 @@ use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
 use derive_more::Display;
-use exn::{ErrorExt, OptionExt, ResultExt, bail};
+use exn::{ErrorExt, Exn, OptionExt, ResultExt, bail};
 use indicatif::{MultiProgress, ProgressBar};
 use signal_hook::{
     consts::{SIGCHLD, SIGINT},
@@ -62,12 +62,7 @@ pub struct InvalidArchivePath(String);
 impl ArchivePath {
     const ARCHIVE_EXTENSIONS: [&str; 2] = ["zip", "cbz"];
 
-    pub fn validate(archive_path: PathBuf) -> exn::Result<Self, InvalidArchivePath> {
-        if !archive_path.is_file() {
-            let msg = format!("Archive does not exist: {archive_path:?}");
-            bail!(InvalidArchivePath(msg));
-        }
-
+    pub fn new(archive_path: PathBuf) -> Result<Self, Exn<InvalidArchivePath, PathBuf>> {
         let correct_extension = archive_path.extension().is_some_and(|ext| {
             Self::ARCHIVE_EXTENSIONS
                 .iter()
@@ -75,8 +70,16 @@ impl ArchivePath {
         });
         if !correct_extension {
             let msg = format!("Archive has an unsupported extension: {archive_path:?}");
-            bail!(InvalidArchivePath(msg));
+            let exn = Exn::with_recovery(InvalidArchivePath(msg), archive_path);
+            return Err(exn);
         }
+
+        if !archive_path.is_file() {
+            let msg = format!("Archive does not exist: {archive_path:?}");
+            let exn = Exn::with_recovery(InvalidArchivePath(msg), archive_path);
+            return Err(exn);
+        }
+
         Ok(ArchivePath(archive_path))
     }
 
@@ -547,47 +550,7 @@ struct ArchiveJob {
 }
 
 impl ArchiveJob {
-    pub fn new(
-        archive: PathBuf,
-        config: ConversionConfig,
-    ) -> exn::Result<Result<Self, NothingToDo>, ConversionError> {
-        let err = || {
-            let msg = "Could not create an archive job".to_string();
-            ConversionError(msg)
-        };
-
-        let archive = ArchivePath::validate(archive).or_raise(err)?;
-        Self::from_validated(archive, config).or_raise(err)
-    }
-
-    pub fn run(self, bar: &ProgressBar) -> exn::Result<(), ConversionError> {
-        let Self {
-            archive_path,
-            extraction,
-            conversion,
-            compression,
-        } = self;
-
-        let err = || {
-            let msg = format!(
-                "Error during conversion of the archive {:?}",
-                archive_path.deref()
-            );
-            ConversionError(msg)
-        };
-
-        let _guard = extraction.run().or_raise(err)?;
-        conversion.run(bar).or_raise(err)?;
-        compression.run().or_raise(err)?;
-
-        Ok(())
-    }
-
-    pub fn archive(&self) -> &Path {
-        &self.archive_path
-    }
-
-    fn from_validated(
+    fn new(
         archive_path: ArchivePath,
         config: ConversionConfig,
     ) -> exn::Result<Result<Self, NothingToDo>, ConversionError> {
@@ -650,6 +613,33 @@ impl ArchiveJob {
             conversion,
             compression,
         }))
+    }
+
+    pub fn run(self, bar: &ProgressBar) -> exn::Result<(), ConversionError> {
+        let Self {
+            archive_path,
+            extraction,
+            conversion,
+            compression,
+        } = self;
+
+        let err = || {
+            let msg = format!(
+                "Error during conversion of the archive {:?}",
+                archive_path.deref()
+            );
+            ConversionError(msg)
+        };
+
+        let _guard = extraction.run().or_raise(err)?;
+        conversion.run(bar).or_raise(err)?;
+        compression.run().or_raise(err)?;
+
+        Ok(())
+    }
+
+    pub fn archive(&self) -> &Path {
+        &self.archive_path
     }
 
     fn get_conversion_root_dir(cbz_path: &Path) -> PathBuf {
@@ -746,7 +736,7 @@ pub struct SingleArchiveJob(ArchiveJob);
 
 impl SingleArchiveJob {
     pub fn new(
-        archive: PathBuf,
+        archive: ArchivePath,
         config: ConversionConfig,
     ) -> exn::Result<Result<Self, NothingToDo>, ConversionError> {
         Ok(ArchiveJob::new(archive, config)?.map(Self))
@@ -758,7 +748,7 @@ impl SingleArchiveJob {
 }
 
 pub struct ArchivesInDirectoryJob {
-    root_dir: PathBuf,
+    root_dir: Directory,
     jobs: Vec<ArchiveJob>,
 }
 
@@ -770,7 +760,7 @@ pub struct Bars {
 
 impl ArchivesInDirectoryJob {
     pub fn collect(
-        root_dir: PathBuf,
+        root_dir: Directory,
         config: ConversionConfig,
     ) -> exn::Result<Self, ConversionError> {
         let err = || {
@@ -788,16 +778,17 @@ impl ArchivesInDirectoryJob {
                     Ok(dir_entry) => dir_entry.path(),
                     Err(e) => return Some(Err(e)),
                 };
-                let archive = match ArchivePath::validate(path) {
-                    Ok(f) => f,
-                    Err(e) => {
-                        debug!("skipping: {e}");
+                let archive = match ArchivePath::new(path) {
+                    Ok(archive) => archive,
+                    Err(exn) => {
+                        let (path, exn) = exn.recover();
+                        debug!("skipping {path:?}: {exn:?}");
                         return None;
                     }
                 };
 
                 info!("Checking {:?}", archive.deref());
-                match ArchiveJob::from_validated(archive, config) {
+                match ArchiveJob::new(archive, config) {
                     Ok(Ok(job)) => Some(Ok(job)),
                     Ok(Err(nothing_to_do)) => {
                         info!("{nothing_to_do}");
@@ -835,15 +826,15 @@ impl ArchivesInDirectoryJob {
 }
 
 #[derive(Debug, Clone)]
-struct Directory(PathBuf);
+pub struct Directory(PathBuf);
 
 impl Directory {
-    fn new(path: PathBuf) -> Result<Self, exn::Exn<ConversionError, PathBuf>> {
+    pub fn new(path: PathBuf) -> Result<Self, Exn<ConversionError, PathBuf>> {
         match path.is_dir() {
             true => Ok(Self(path)),
             false => {
                 let msg = format!("Provided path is not a directory: {path:?}");
-                let err = exn::Exn::with_recovery(ConversionError(msg), path);
+                let err = Exn::with_recovery(ConversionError(msg), path);
                 Err(err)
             }
         }
@@ -915,7 +906,7 @@ pub struct RecursiveDirJob {
 
 impl RecursiveDirJob {
     pub fn new(
-        root: PathBuf,
+        root: Directory,
         config: ConversionConfig,
     ) -> exn::Result<Result<Self, NothingToDo>, ConversionError> {
         let err = || {
@@ -929,7 +920,6 @@ impl RecursiveDirJob {
             target, n_workers, ..
         } = config;
 
-        let root = Directory::new(root.clone()).or_raise(err)?;
         let copy_root = Self::get_hardlink_dir(&root, config.target).or_raise(err)?;
         let job_queue = Self::images_in_dir(&root)?
             .into_iter()

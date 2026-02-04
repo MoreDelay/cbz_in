@@ -8,12 +8,13 @@ use std::thread;
 use clap::Parser;
 use derive_more::Display;
 use exn::ResultExt;
-use exn::bail;
 use thiserror::Error;
 use tracing::{error, info};
 use tracing_appender::rolling::RollingFileAppender;
 
+use crate::convert::ArchivePath;
 use crate::convert::ConversionConfig;
+use crate::convert::Directory;
 
 /// Convert images within comic archives to newer image formats.
 ///
@@ -69,7 +70,7 @@ struct Args {
 #[derive(Debug, Display, Error)]
 struct AppError(String);
 
-fn single_archive(path: PathBuf, config: ConversionConfig) -> exn::Result<(), AppError> {
+fn single_archive(path: ArchivePath, config: ConversionConfig) -> exn::Result<(), AppError> {
     let err = || {
         let msg = "Failed to run conversion on a single archive".to_string();
         AppError(msg)
@@ -92,7 +93,7 @@ fn single_archive(path: PathBuf, config: ConversionConfig) -> exn::Result<(), Ap
     Ok(())
 }
 
-fn archives_in_dir(root: PathBuf, config: ConversionConfig) -> exn::Result<(), AppError> {
+fn archives_in_dir(root: Directory, config: ConversionConfig) -> exn::Result<(), AppError> {
     let err = || {
         let msg = "Failed to convert all archives in a directory".to_string();
         AppError(msg)
@@ -119,7 +120,10 @@ fn archives_in_dir(root: PathBuf, config: ConversionConfig) -> exn::Result<(), A
     Ok(())
 }
 
-fn images_in_dir_recursively(root: PathBuf, config: ConversionConfig) -> exn::Result<(), AppError> {
+fn images_in_dir_recursively(
+    root: Directory,
+    config: ConversionConfig,
+) -> exn::Result<(), AppError> {
     let err = || {
         let msg = "Failed to convert all images in a directory".to_string();
         AppError(msg)
@@ -168,20 +172,29 @@ fn real_main() -> exn::Result<(), AppError> {
     };
 
     let path = matches.path;
-    if path.is_dir() {
-        match matches.no_archive {
-            true => images_in_dir_recursively(path, config),
-            false => archives_in_dir(path, config),
-        }
-    } else {
-        match matches.no_archive {
+
+    let (path, exn) = match crate::convert::Directory::new(path) {
+        Ok(root) => match matches.no_archive {
+            true => return images_in_dir_recursively(root, config),
+            false => return archives_in_dir(root, config),
+        },
+        Err(exn) => exn.recover(),
+    };
+
+    let (path, exn) = match ArchivePath::new(path) {
+        Ok(archive) => match matches.no_archive {
             true => {
+                let (path, exn) = exn.recover();
                 let msg = format!("Got a file path when expecting a directory: {path:?}");
-                bail!(AppError(msg));
+                return Err(exn.raise(AppError(msg)));
             }
-            false => single_archive(path, config),
-        }
-    }
+            false => return single_archive(archive, config),
+        },
+        Err(exn) => exn.recover(),
+    };
+
+    let msg = format!("Neither an archive nor a directory: {path:?}");
+    Err(exn.raise(AppError(msg)))
 }
 
 fn create_progress_bar(msg: &'static str) -> indicatif::ProgressBar {
