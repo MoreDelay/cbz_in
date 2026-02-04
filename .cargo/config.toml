@@ -1,4 +1,0 @@
-
-[env]
-RUST_LOG = { value = "debug" }
-
