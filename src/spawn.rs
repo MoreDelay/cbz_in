@@ -44,24 +44,21 @@ impl std::fmt::Display for Tool {
 /// Child process that gets killed on drop
 #[derive(Debug)]
 pub struct ManagedChild {
+    cmd: String,
     child: Option<Child>,
-    tool: Tool,
 }
 
 impl ManagedChild {
-    fn new(child: Child, tool: Tool) -> Self {
+    fn new(cmd: String, child: Child) -> Self {
         Self {
+            cmd,
             child: Some(child),
-            tool,
         }
     }
 
     pub fn try_wait(&mut self) -> exn::Result<bool, ErrorMessage> {
         let err = || {
-            let msg = format!(
-                "Could not wait on a child process for the tool '{}'",
-                self.tool
-            );
+            let msg = format!("Error when waiting on a child process: '{}'", self.cmd);
             debug!("{msg}");
             ErrorMessage(msg)
         };
@@ -70,24 +67,24 @@ impl ManagedChild {
         Ok(waited.is_some())
     }
 
-    pub fn into_inner(mut self) -> Child {
-        self.child.take().unwrap()
-    }
-
     pub fn wait(self) -> exn::Result<(), ErrorMessage> {
         self.wait_with_output()?;
         Ok(())
     }
 
-    pub fn wait_with_output(self) -> exn::Result<std::process::Output, ErrorMessage> {
-        let tool = self.tool;
+    pub fn wait_with_output(mut self) -> exn::Result<std::process::Output, ErrorMessage> {
+        let child = self.child.take().unwrap();
+
         let err = || {
-            let msg = format!("Could not wait on a child process for the tool '{tool}'");
+            let msg = format!(
+                "Error when waiting on a child process for the tool '{}'",
+                self.cmd
+            );
             debug!("{msg}");
             ErrorMessage(msg)
         };
 
-        let output = self.into_inner().wait_with_output().or_raise(err)?;
+        let output = child.wait_with_output().or_raise(err)?;
         if !output.status.success() {
             let abnormal_exit = match output.stderr.try_into() {
                 Ok(s) => {
@@ -111,7 +108,7 @@ impl ManagedChild {
 impl Drop for ManagedChild {
     fn drop(&mut self) {
         if let Some(child) = self.child.as_mut() {
-            debug!("drop child process running {:?}", self.tool);
+            debug!("drop child process running: {}", self.cmd);
             // ignore errors
             if let Err(e) = child.kill() {
                 error!("error killing child process: {e}");
@@ -125,21 +122,25 @@ impl Drop for ManagedChild {
     }
 }
 
-fn spawn(mut cmd: Command, tool: Tool) -> exn::Result<ManagedChild, ErrorMessage> {
+fn spawn(mut cmd: Command) -> exn::Result<ManagedChild, ErrorMessage> {
+    let cmd_str = format!("{cmd:?}");
+
     let err = || {
-        let msg = format!("Failed to spawn a process for the tool '{tool}'");
+        let msg = format!("Failed to spawn the process: {cmd_str}");
         debug!("{msg}");
         ErrorMessage(msg)
     };
 
-    cmd.stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map(|c| ManagedChild::new(c, tool))
-        .or_raise(err)
+    debug!("spawn process: {cmd_str}");
+
+    let spawned = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn();
+    match spawned {
+        Ok(child) => Ok(ManagedChild::new(cmd_str, child)),
+        Err(e) => Err(exn::Exn::new(e).raise(err())),
+    }
 }
 
-pub fn convert_jpeg_to_png(
+pub fn convert_with_magick(
     input_path: &Path,
     output_path: &Path,
 ) -> exn::Result<ManagedChild, ErrorMessage> {
@@ -147,7 +148,14 @@ pub fn convert_jpeg_to_png(
 
     let mut cmd = Command::new(TOOL.name());
     cmd.args([input_path.to_str().unwrap(), output_path.to_str().unwrap()]);
-    spawn(cmd, TOOL)
+    spawn(cmd)
+}
+
+pub fn convert_jpeg_to_png(
+    input_path: &Path,
+    output_path: &Path,
+) -> exn::Result<ManagedChild, ErrorMessage> {
+    convert_with_magick(input_path, output_path)
 }
 
 pub fn convert_png_to_jpeg(
@@ -163,7 +171,7 @@ pub fn convert_png_to_jpeg(
         "92",
         output_path.to_str().unwrap(),
     ]);
-    spawn(cmd, TOOL)
+    spawn(cmd)
 }
 
 pub fn encode_avif(
@@ -181,7 +189,7 @@ pub fn encode_avif(
         "-o",
         output_path.to_str().unwrap(),
     ]);
-    spawn(cmd, TOOL)
+    spawn(cmd)
 }
 
 pub fn encode_jxl(
@@ -198,7 +206,7 @@ pub fn encode_jxl(
         input_path.to_str().unwrap(),
         output_path.to_str().unwrap(),
     ]);
-    spawn(cmd, TOOL)
+    spawn(cmd)
 }
 
 pub fn encode_webp(
@@ -215,7 +223,7 @@ pub fn encode_webp(
         "-o",
         output_path.to_str().unwrap(),
     ]);
-    spawn(cmd, TOOL)
+    spawn(cmd)
 }
 
 pub fn decode_webp(
@@ -230,7 +238,7 @@ pub fn decode_webp(
         "-o",
         output_path.to_str().unwrap(),
     ]);
-    spawn(cmd, TOOL)
+    spawn(cmd)
 }
 
 pub fn decode_jxl_to_png(
@@ -245,7 +253,7 @@ pub fn decode_jxl_to_png(
         output_path.to_str().unwrap(),
         "--num_threads=1",
     ]);
-    spawn(cmd, TOOL)
+    spawn(cmd)
 }
 
 pub fn decode_jxl_to_jpeg(
@@ -260,7 +268,7 @@ pub fn decode_jxl_to_jpeg(
         output_path.to_str().unwrap(),
         "--num_threads=1",
     ]);
-    spawn(cmd, TOOL)
+    spawn(cmd)
 }
 
 pub fn decode_avif_to_png(
@@ -276,7 +284,7 @@ pub fn decode_avif_to_png(
         input_path.to_str().unwrap(),
         output_path.to_str().unwrap(),
     ]);
-    spawn(cmd, TOOL)
+    spawn(cmd)
 }
 
 pub fn decode_avif_to_jpeg(
@@ -294,7 +302,7 @@ pub fn decode_avif_to_jpeg(
         input_path.to_str().unwrap(),
         output_path.to_str().unwrap(),
     ]);
-    spawn(cmd, TOOL)
+    spawn(cmd)
 }
 
 pub fn run_jxlinfo(image_path: &Path) -> exn::Result<ManagedChild, ErrorMessage> {
@@ -302,7 +310,7 @@ pub fn run_jxlinfo(image_path: &Path) -> exn::Result<ManagedChild, ErrorMessage>
 
     let mut cmd = Command::new(TOOL.name());
     cmd.args(["-v", image_path.to_str().unwrap()]);
-    spawn(cmd, TOOL)
+    spawn(cmd)
 }
 
 pub fn list_archive_files(archive: &Path) -> exn::Result<ManagedChild, ErrorMessage> {
@@ -315,7 +323,7 @@ pub fn list_archive_files(archive: &Path) -> exn::Result<ManagedChild, ErrorMess
         "-slt", // use format that is easier to parse
         archive.to_str().unwrap(),
     ]);
-    spawn(cmd, TOOL)
+    spawn(cmd)
 }
 
 pub fn extract_zip(archive: &Path, destination: &Path) -> exn::Result<ManagedChild, ErrorMessage> {
@@ -329,5 +337,5 @@ pub fn extract_zip(archive: &Path, destination: &Path) -> exn::Result<ManagedChi
         "-spe",
         format!("-o{}", destination.to_str().unwrap()).as_str(),
     ]);
-    spawn(cmd, TOOL)
+    spawn(cmd)
 }

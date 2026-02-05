@@ -84,20 +84,20 @@ impl ArchivePath {
 }
 
 #[derive(Debug)]
-struct ConversionDirect {
-    current: ImageFormat,
-    target: ImageFormat,
-}
-#[derive(Debug)]
-struct ConversionIntermediate {
-    current: ImageFormat,
-    inbetween: ImageFormat,
-    target: ImageFormat,
-}
-#[derive(Debug)]
 enum ConversionJobDetails {
-    Direct(ConversionDirect),
-    Intermediate(ConversionIntermediate),
+    OneStep {
+        from: ImageFormat,
+        to: ImageFormat,
+    },
+    TwoStep {
+        from: ImageFormat,
+        over: ImageFormat,
+        to: ImageFormat,
+    },
+    Finish {
+        from: ImageFormat,
+        to: ImageFormat,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -129,29 +129,32 @@ impl ConversionJobDetails {
 
         let out = match (current, target) {
             (a, b) if a == b => return Ok(None),
-            (Avif, Jxl | Webp) => Self::Intermediate(ConversionIntermediate {
-                current,
-                inbetween: Png,
-                target,
-            }),
-            (Jxl, Avif | Webp) => match Self::jxl_is_compressed_jpeg(image_path).or_raise(err)? {
-                true => Self::Intermediate(ConversionIntermediate {
-                    current,
-                    inbetween: Jpeg,
-                    target,
-                }),
-                false => Self::Intermediate(ConversionIntermediate {
-                    current,
-                    inbetween: Png,
-                    target,
-                }),
+            (Avif, Jxl | Webp) => Self::TwoStep {
+                from: current,
+                over: Png,
+                to: target,
             },
-            (Webp, Jpeg | Avif | Jxl) => Self::Intermediate(ConversionIntermediate {
-                current,
-                inbetween: Png,
-                target,
-            }),
-            (_, _) => Self::Direct(ConversionDirect { current, target }),
+            (Jxl, Avif | Webp) => match Self::jxl_is_compressed_jpeg(image_path).or_raise(err)? {
+                true => Self::TwoStep {
+                    from: current,
+                    over: Jpeg,
+                    to: target,
+                },
+                false => Self::TwoStep {
+                    from: current,
+                    over: Png,
+                    to: target,
+                },
+            },
+            (Webp, Jpeg | Avif | Jxl) => Self::TwoStep {
+                from: current,
+                over: Png,
+                to: target,
+            },
+            (_, _) => Self::OneStep {
+                from: current,
+                to: target,
+            },
         };
         let perform = forced || out.perform_always();
         Ok(perform.then_some(out))
@@ -159,12 +162,9 @@ impl ConversionJobDetails {
 
     fn perform_always(&self) -> bool {
         let tuple = match self {
-            ConversionJobDetails::Direct(ConversionDirect { current, target }) => {
-                (*current, *target)
-            }
-            ConversionJobDetails::Intermediate(ConversionIntermediate {
-                current, target, ..
-            }) => (*current, *target),
+            ConversionJobDetails::OneStep { from, to, .. } => (*from, *to),
+            ConversionJobDetails::TwoStep { from, to, .. } => (*from, *to),
+            ConversionJobDetails::Finish { .. } => return true,
         };
 
         use ImageFormat::*;
@@ -172,6 +172,14 @@ impl ConversionJobDetails {
             (Jpeg | Png, _) => true,
             (_, Jpeg | Png) => true,
             (_, _) => false,
+        }
+    }
+
+    fn next_step(&self) -> (ImageFormat, ImageFormat) {
+        match *self {
+            ConversionJobDetails::OneStep { from, to } => (from, to),
+            ConversionJobDetails::TwoStep { from, over, .. } => (from, over),
+            ConversionJobDetails::Finish { from, to } => (from, to),
         }
     }
 
@@ -193,15 +201,32 @@ impl ConversionJobDetails {
 }
 
 #[derive(Debug)]
+enum ToolUse {
+    Best,
+    Backup(Exn<ErrorMessage>),
+}
+
+impl ToolUse {
+    fn get_exn(self) -> Option<Exn<ErrorMessage>> {
+        match self {
+            ToolUse::Best => None,
+            ToolUse::Backup(exn) => Some(exn),
+        }
+    }
+}
+
+#[derive(Debug)]
 struct ConversionJobWaiting {
     image_path: PathBuf,
     details: ConversionJobDetails,
+    tool_use: ToolUse,
 }
 #[derive(Debug)]
 struct ConversionJobRunning {
     child: spawn::ManagedChild,
     image_path: PathBuf,
-    after: Option<ConversionDirect>,
+    details: ConversionJobDetails,
+    tool_use: ToolUse,
 }
 #[derive(Debug)]
 struct ConversionJobCompleted(ConversionJobRunning);
@@ -231,54 +256,55 @@ impl ConversionJobWaiting {
     fn start_conversion(self) -> exn::Result<ConversionJobRunning, ErrorMessage> {
         let ConversionJobWaiting {
             image_path,
-            details: task,
+            details,
+            tool_use,
         } = self;
-
         let err = || {
             let msg = format!("Failed image conversion for {image_path:?}");
             debug!("{msg}");
             ErrorMessage(msg)
         };
 
-        let (current, target, after) = match task {
-            ConversionJobDetails::Direct(ConversionDirect { current, target }) => {
-                (current, target, None)
-            }
-            ConversionJobDetails::Intermediate(ConversionIntermediate {
-                current,
-                inbetween,
-                target,
-            }) => (
-                current,
-                inbetween,
-                Some(ConversionDirect {
-                    current: inbetween,
-                    target,
-                }),
-            ),
-        };
+        debug!("start conversion for {image_path:?}: {details:?}");
+
+        let (current, target) = details.next_step();
         let input_path = &image_path;
         let output_path = &image_path.with_extension(target.ext());
 
         use ImageFormat::*;
-        let child = match (current, target) {
-            (Jpeg, Png) => spawn::convert_jpeg_to_png(input_path, output_path).or_raise(err)?,
-            (Png, Jpeg) => spawn::convert_png_to_jpeg(input_path, output_path).or_raise(err)?,
-            (Jpeg | Png, Avif) => spawn::encode_avif(input_path, output_path).or_raise(err)?,
-            (Jpeg | Png, Jxl) => spawn::encode_jxl(input_path, output_path).or_raise(err)?,
-            (Jpeg | Png, Webp) => spawn::encode_webp(input_path, output_path).or_raise(err)?,
-            (Avif, Jpeg) => spawn::decode_avif_to_jpeg(input_path, output_path).or_raise(err)?,
-            (Avif, Png) => spawn::decode_avif_to_png(input_path, output_path).or_raise(err)?,
-            (Jxl, Jpeg) => spawn::decode_jxl_to_jpeg(input_path, output_path).or_raise(err)?,
-            (Jxl, Png) => spawn::decode_jxl_to_png(input_path, output_path).or_raise(err)?,
-            (Webp, Png) => spawn::decode_webp(input_path, output_path).or_raise(err)?,
-            (_, _) => unreachable!(),
+        let child = match tool_use {
+            ToolUse::Best => match (current, target) {
+                (Jpeg, Png) => spawn::convert_jpeg_to_png(input_path, output_path).or_raise(err)?,
+                (Png, Jpeg) => spawn::convert_png_to_jpeg(input_path, output_path).or_raise(err)?,
+                (Jpeg | Png, Avif) => spawn::encode_avif(input_path, output_path).or_raise(err)?,
+                (Jpeg | Png, Jxl) => spawn::encode_jxl(input_path, output_path).or_raise(err)?,
+                (Jpeg | Png, Webp) => spawn::encode_webp(input_path, output_path).or_raise(err)?,
+                (Avif, Jpeg) => {
+                    spawn::decode_avif_to_jpeg(input_path, output_path).or_raise(err)?
+                }
+                (Avif, Png) => spawn::decode_avif_to_png(input_path, output_path).or_raise(err)?,
+                (Jxl, Jpeg) => spawn::decode_jxl_to_jpeg(input_path, output_path).or_raise(err)?,
+                (Jxl, Png) => spawn::decode_jxl_to_png(input_path, output_path).or_raise(err)?,
+                (Webp, Png) => spawn::decode_webp(input_path, output_path).or_raise(err)?,
+                (_, _) => unreachable!(),
+            },
+            ToolUse::Backup(_) => match spawn::convert_with_magick(input_path, output_path) {
+                Ok(child) => child,
+                Err(exn) => {
+                    let last_exn = tool_use
+                        .get_exn()
+                        .expect("checked by match that we can get exn");
+                    let exn = Exn::raise_all(err(), [last_exn, exn]);
+                    return Err(exn);
+                }
+            },
         };
 
         Ok(ConversionJobRunning {
             child,
             image_path,
-            after,
+            details,
+            tool_use,
         })
     }
 }
@@ -299,12 +325,17 @@ impl ConversionJobRunning {
 
 impl ConversionJobCompleted {
     /// wait on child process and delete original image file
-    fn complete(self) -> exn::Result<Option<ConversionJobWaiting>, ErrorMessage> {
+    fn complete(
+        self,
+    ) -> Result<Option<ConversionJobWaiting>, Exn<ErrorMessage, Option<ConversionJobWaiting>>> {
         let Self(ConversionJobRunning {
             child,
             image_path,
-            after,
+            details,
+            tool_use,
         }) = self;
+
+        debug!("completed conversion for {image_path:?}: {details:?}");
 
         let err = || {
             let msg = format!("Could not complete the conversion for {image_path:?}");
@@ -312,22 +343,72 @@ impl ConversionJobCompleted {
             ErrorMessage(msg)
         };
 
-        child.wait().or_raise(err)?;
-        fs::remove_file(&image_path).or_raise(err)?;
+        if let Err(exn) = child.wait() {
+            match tool_use {
+                ToolUse::Best => {
+                    let details = match details {
+                        ConversionJobDetails::OneStep { from, to }
+                        | ConversionJobDetails::TwoStep { from, to, .. } => {
+                            ConversionJobDetails::TwoStep {
+                                from,
+                                over: ImageFormat::Png,
+                                to,
+                            }
+                        }
+                        ConversionJobDetails::Finish { .. } => {
+                            let msg = "image from a previous pass could not be formatted further, something is gravely wrong".to_string();
+                            debug!("{msg}");
+                            let exn = exn.raise_with_recovery(ErrorMessage(msg), None);
+                            return Err(exn);
+                        }
+                    };
 
-        let after = after.map(|direct| ConversionJobWaiting {
-            image_path: image_path.with_extension(direct.current.ext()),
-            details: ConversionJobDetails::Direct(direct),
-        });
+                    let msg = format!(
+                        "Could not complete the conversion for {image_path:?}, try to recover"
+                    );
+                    debug!("{msg}");
+
+                    let waiting = ConversionJobWaiting {
+                        image_path,
+                        details,
+                        tool_use: ToolUse::Backup(exn),
+                    };
+
+                    let exn = Exn::with_recovery(ErrorMessage(msg), Some(waiting));
+                    return Err(exn);
+                }
+                ToolUse::Backup(last_exn) => {
+                    let exn = Exn::raise_all_with_recovery(err(), [last_exn, exn], None);
+                    return Err(exn);
+                }
+            }
+        }
+        // at this point we have successfully converted the image and prepare the next conversion
+        drop(tool_use);
+
+        fs::remove_file(&image_path).or_raise_with_recovery(err, None)?;
+
+        let after = match details {
+            ConversionJobDetails::OneStep { .. } | ConversionJobDetails::Finish { .. } => None,
+            ConversionJobDetails::TwoStep { over: from, to, .. } => {
+                let waiting = ConversionJobWaiting {
+                    image_path: image_path.with_extension(from.ext()),
+                    details: ConversionJobDetails::Finish { from, to },
+                    tool_use: ToolUse::Best,
+                };
+                Some(waiting)
+            }
+        };
         Ok(after)
     }
 }
 
 impl ConversionJob {
-    fn new(image_path: PathBuf, task: ConversionJobDetails) -> Self {
+    fn new(image_path: PathBuf, details: ConversionJobDetails) -> Self {
         let waiting = ConversionJobWaiting {
             image_path,
-            details: task,
+            details,
+            tool_use: ToolUse::Best,
         };
         Self::Waiting(waiting)
     }
@@ -345,9 +426,16 @@ impl ConversionJob {
                     Proceeded::Progress(Self::Completed(completed))
                 }
             },
-            ConversionJob::Completed(completed) => match completed.complete()? {
-                Some(waiting) => Proceeded::Progress(Self::Waiting(waiting)),
-                None => Proceeded::Finished,
+            ConversionJob::Completed(completed) => match completed.complete() {
+                Ok(Some(waiting)) => Proceeded::Progress(Self::Waiting(waiting)),
+                Ok(None) => Proceeded::Finished,
+                Err(exn) => {
+                    let (waiting, exn) = exn.recover();
+                    match waiting {
+                        Some(waiting) => Proceeded::Progress(Self::Waiting(waiting)),
+                        None => bail!(exn),
+                    }
+                }
             },
         };
         Ok(proceeded)
@@ -406,10 +494,12 @@ impl TempDirGuard {
 
 impl Drop for TempDirGuard {
     fn drop(&mut self) {
-        debug!("drop temporary directory {:?}", self.temp_root);
-        if let Some(root) = &self.temp_root
-            && root.exists()
-            && let Err(e) = fs::remove_dir_all(root)
+        let Some(root) = self.temp_root.take() else {
+            return;
+        };
+        debug!("drop temporary directory {root:?}");
+        if root.exists()
+            && let Err(e) = fs::remove_dir_all(&root)
         {
             error!("error on deleting directory {root:?}: {e}");
         }
@@ -583,7 +673,10 @@ impl ArchiveJob {
             .filter_map(|(image_path, format)| {
                 let image_path = root_dir.join(image_path);
                 match ConversionJobDetails::new(&image_path, format, config) {
-                    Ok(Some(task)) => Some(Ok(ConversionJob::new(image_path, task))),
+                    Ok(Some(task)) => {
+                        debug!("create job for {image_path:?}: {task:?}");
+                        Some(Ok(ConversionJob::new(image_path, task)))
+                    }
                     Ok(None) => {
                         debug!("skip conversion for {image_path:?}");
                         None
@@ -593,7 +686,7 @@ impl ArchiveJob {
             })
             .collect::<Result<VecDeque<_>, _>>()
             .or_raise(|| {
-                let msg = format!("Error while preparing all conversion job");
+                let msg = "Error while preparing all conversion job".to_string();
                 debug!("{msg}");
                 ErrorMessage(msg)
             })?;
@@ -756,7 +849,7 @@ impl SingleArchiveJob {
     }
 
     pub fn run(self, bar: &ProgressBar) -> exn::Result<(), ErrorMessage> {
-        Ok(self.0.run(bar)?)
+        self.0.run(bar)
     }
 }
 
@@ -808,7 +901,7 @@ impl ArchivesInDirectoryJob {
                         info!("{nothing_to_do}");
                         None
                     }
-                    Err(e) => Some(Err(e.into())),
+                    Err(e) => Some(Err(e)),
                 }
             })
             .collect::<exn::Result<Vec<_>, ErrorMessage>>()?;
@@ -947,7 +1040,10 @@ impl RecursiveDirJob {
                     .expect("image path is within root by construction");
                 let copy_path = copy_root.join(rel_path);
                 match ConversionJobDetails::new(&copy_path, format, config) {
-                    Ok(Some(task)) => Some(Ok(ConversionJob::new(copy_path, task))),
+                    Ok(Some(task)) => {
+                        debug!("create job for {copy_path:?}: {task:?}");
+                        Some(Ok(ConversionJob::new(copy_path, task)))
+                    }
                     Ok(None) => {
                         debug!("skip conversion for {copy_path:?}");
                         None
@@ -1028,8 +1124,7 @@ impl RecursiveDirJob {
                     "webp" => Some((file, Webp)),
                     _ => None,
                 };
-                let a = Ok(file).transpose();
-                a
+                Ok(file).transpose()
             })
             .collect()
     }
