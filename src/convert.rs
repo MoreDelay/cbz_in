@@ -243,28 +243,26 @@ impl ConversionJobWaiting {
 
         debug!("start conversion for {image_path:?}: {details:?}");
 
-        let (current, target) = details.next_step();
-        let input_path = &image_path;
-        let output_path = &image_path.with_extension(target.ext());
+        let (from, to) = details.next_step();
+        let input = &image_path;
+        let output = &image_path.with_extension(to.ext());
 
         use ImageFormat::*;
         let child = match tool_use {
-            ToolUse::Best => match (current, target) {
-                (Jpeg, Png) => spawn::convert_jpeg_to_png(input_path, output_path).or_raise(err)?,
-                (Png, Jpeg) => spawn::convert_png_to_jpeg(input_path, output_path).or_raise(err)?,
-                (Jpeg | Png, Avif) => spawn::encode_avif(input_path, output_path).or_raise(err)?,
-                (Jpeg | Png, Jxl) => spawn::encode_jxl(input_path, output_path).or_raise(err)?,
-                (Jpeg | Png, Webp) => spawn::encode_webp(input_path, output_path).or_raise(err)?,
-                (Avif, Jpeg) => {
-                    spawn::decode_avif_to_jpeg(input_path, output_path).or_raise(err)?
-                }
-                (Avif, Png) => spawn::decode_avif_to_png(input_path, output_path).or_raise(err)?,
-                (Jxl, Jpeg) => spawn::decode_jxl_to_jpeg(input_path, output_path).or_raise(err)?,
-                (Jxl, Png) => spawn::decode_jxl_to_png(input_path, output_path).or_raise(err)?,
-                (Webp, Png) => spawn::decode_webp(input_path, output_path).or_raise(err)?,
+            ToolUse::Best => match (from, to) {
+                (Jpeg, Png) => spawn::convert_jpeg_to_png(input, output).or_raise(err)?,
+                (Png, Jpeg) => spawn::convert_png_to_jpeg(input, output).or_raise(err)?,
+                (Jpeg | Png, Avif) => spawn::encode_avif(input, output).or_raise(err)?,
+                (Jpeg | Png, Jxl) => spawn::encode_jxl(input, output).or_raise(err)?,
+                (Jpeg | Png, Webp) => spawn::encode_webp(input, output).or_raise(err)?,
+                (Avif, Jpeg) => spawn::decode_avif_to_jpeg(input, output).or_raise(err)?,
+                (Avif, Png) => spawn::decode_avif_to_png(input, output).or_raise(err)?,
+                (Jxl, Jpeg) => spawn::decode_jxl_to_jpeg(input, output).or_raise(err)?,
+                (Jxl, Png) => spawn::decode_jxl_to_png(input, output).or_raise(err)?,
+                (Webp, Png) => spawn::decode_webp(input, output).or_raise(err)?,
                 (_, _) => unreachable!(),
             },
-            ToolUse::Backup(_) => match spawn::convert_with_magick(input_path, output_path) {
+            ToolUse::Backup(_) => match spawn::convert_with_magick(input, output) {
                 Ok(child) => child,
                 Err(exn) => {
                     let last_exn = tool_use
@@ -311,53 +309,20 @@ impl ConversionJobCompleted {
 
         debug!("completed conversion for {image_path:?}: {details:?}");
 
-        let err = || {
-            ErrorMessage::new(format!(
-                "Could not complete the conversion for {image_path:?}"
-            ))
-        };
-
         if let Err(exn) = child.wait() {
-            match tool_use {
-                ToolUse::Best => {
-                    let details = match details {
-                        ConversionJobDetails::OneStep { from, to }
-                        | ConversionJobDetails::TwoStep { from, to, .. } => {
-                            ConversionJobDetails::TwoStep {
-                                from,
-                                over: ImageFormat::Png,
-                                to,
-                            }
-                        }
-                        ConversionJobDetails::Finish { .. } => {
-                            let msg = "image from a previous pass could not be formatted further, \
-                                something is gravely wrong";
-                            let exn = exn.raise_with_recovery(ErrorMessage::new(msg), None);
-                            return Err(exn);
-                        }
-                    };
-
-                    let msg = format!(
-                        "Could not complete the conversion for {image_path:?}, try to recover"
-                    );
-
-                    let waiting = ConversionJobWaiting {
-                        image_path,
-                        details,
-                        tool_use: ToolUse::Backup(exn),
-                    };
-
-                    let exn = Exn::with_recovery(ErrorMessage::new(msg), Some(waiting));
-                    return Err(exn);
-                }
-                ToolUse::Backup(last_exn) => {
-                    let exn = Exn::raise_all_with_recovery(err(), [last_exn, exn], None);
-                    return Err(exn);
-                }
-            }
+            let exn = match Self::try_to_recover(exn, image_path, details, tool_use) {
+                Ok(exn) => exn.map(Some),
+                Err(exn) => exn.attach(None),
+            };
+            return Err(exn);
         }
         // at this point we have successfully converted the image and prepare the next conversion
         drop(tool_use);
+
+        let err = || {
+            let path = &image_path;
+            ErrorMessage::new(format!("Could not complete a conversion for {path:?}"))
+        };
 
         fs::remove_file(&image_path).or_raise_with_recovery(err, None)?;
 
@@ -373,6 +338,43 @@ impl ConversionJobCompleted {
             }
         };
         Ok(after)
+    }
+
+    fn try_to_recover(
+        exn: Exn<ErrorMessage>,
+        image_path: PathBuf,
+        details: ConversionJobDetails,
+        tool_use: ToolUse,
+    ) -> Result<Exn<ErrorMessage, ConversionJobWaiting>, Exn<ErrorMessage>> {
+        if let ToolUse::Backup(last_exn) = tool_use {
+            let msg = format!("Give up trying to convert {image_path:?}");
+            let err = ErrorMessage::new(msg);
+            return Err(Exn::raise_all(err, [last_exn, exn]));
+        }
+
+        let details = match details {
+            ConversionJobDetails::OneStep { from, to }
+            | ConversionJobDetails::TwoStep { from, to, .. } => ConversionJobDetails::TwoStep {
+                from,
+                over: ImageFormat::Png,
+                to,
+            },
+            ConversionJobDetails::Finish { .. } => {
+                let msg = "image from a previous pass could not be formatted further, \
+                                something is gravely wrong";
+                return Err(exn.raise(ErrorMessage::new(msg)));
+            }
+        };
+
+        let msg = format!("Could not complete the conversion for {image_path:?}, try to recover");
+
+        let waiting = ConversionJobWaiting {
+            image_path,
+            details,
+            tool_use: ToolUse::Backup(exn),
+        };
+
+        Ok(Exn::with_recovery(ErrorMessage::new(msg), waiting))
     }
 }
 
