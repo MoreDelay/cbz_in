@@ -4,7 +4,7 @@ use std::process::{Child, Command, Stdio};
 use exn::{ErrorExt, ResultExt, bail};
 use tracing::{debug, error};
 
-use crate::ErrorMessage;
+use crate::error::ErrorMessage;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Tool {
@@ -58,9 +58,8 @@ impl ManagedChild {
 
     pub fn try_wait(&mut self) -> exn::Result<bool, ErrorMessage> {
         let err = || {
-            let msg = format!("Error when waiting on a child process: '{}'", self.cmd);
-            debug!("{msg}");
-            ErrorMessage(msg)
+            let cmd = &self.cmd;
+            ErrorMessage::new(format!("Error when waiting on a child process: '{cmd}'",))
         };
 
         let waited = self.child.as_mut().unwrap().try_wait().or_raise(err)?;
@@ -76,12 +75,8 @@ impl ManagedChild {
         let child = self.child.take().unwrap();
 
         let err = || {
-            let msg = format!(
-                "Error when waiting on a child process running '{}'",
-                self.cmd
-            );
-            debug!("{msg}");
-            ErrorMessage(msg)
+            let cmd = &self.cmd;
+            ErrorMessage::new(format!("Error when waiting on a child process: '{cmd}'",))
         };
 
         let output = child.wait_with_output().or_raise(err)?;
@@ -91,15 +86,16 @@ impl ManagedChild {
                     let s: String = s;
                     let msg =
                         format!("Process exited with an error and the following stderr:\n{s}");
-                    ErrorMessage(msg).raise()
+                    ErrorMessage::new(msg).raise()
                 }
                 Err(e) => {
-                    let msg = "Process had an error, but stderr can not be parsed".to_string();
-                    debug!("{msg}");
-                    e.raise().raise(ErrorMessage(msg))
+                    let e = e.raise();
+                    let msg = "Process had an error, but stderr can not be parsed";
+                    e.raise(ErrorMessage::new(msg))
                 }
             };
-            bail!(abnormal_exit.raise(err()));
+            let exn = abnormal_exit.raise(err());
+            return Err(exn);
         }
         Ok(output)
     }
@@ -125,11 +121,7 @@ impl Drop for ManagedChild {
 fn spawn(mut cmd: Command) -> exn::Result<ManagedChild, ErrorMessage> {
     let cmd_str = format!("{cmd:?}");
 
-    let err = || {
-        let msg = format!("Failed to spawn the process: {cmd_str}");
-        debug!("{msg}");
-        ErrorMessage(msg)
-    };
+    let err = || ErrorMessage::new(format!("Failed to spawn the process: {cmd_str}"));
 
     debug!("spawn process: {cmd_str}");
 

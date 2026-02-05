@@ -1,4 +1,5 @@
 mod convert;
+mod error;
 mod spawn;
 
 use std::collections::VecDeque;
@@ -6,14 +7,13 @@ use std::path::{Path, PathBuf};
 use std::thread;
 
 use clap::Parser;
-use derive_more::Display;
-use exn::{Exn, OptionExt, ResultExt, bail};
-use thiserror::Error;
+use exn::{ErrorExt, Exn, OptionExt, ResultExt, bail};
 use tracing::{debug, error, info};
 
 use crate::convert::{
     ArchiveJobs, ArchivePath, ConversionConfig, Directory, JobCollection, RecursiveDirJobs,
 };
+use crate::error::ErrorMessage;
 
 /// Convert images within comic archives to newer image formats.
 ///
@@ -66,18 +66,11 @@ struct Args {
     level: tracing::Level,
 }
 
-#[derive(Debug, Display, Error)]
-struct ErrorMessage(String);
-
 fn single_archive(
     archive: ArchivePath,
     config: ConversionConfig,
 ) -> exn::Result<Option<ArchiveJobs>, ErrorMessage> {
-    let err = || {
-        let msg = "Failed to create conversion job on a single archive".to_string();
-        debug!("{msg}");
-        ErrorMessage(msg)
-    };
+    let err = || ErrorMessage::new("Failed to create conversion job on a single archive");
 
     info!("Checking {archive:?}");
     convert::ArchiveJobs::single(archive, config).or_raise(err)
@@ -87,11 +80,7 @@ fn archives_in_dir(
     root: Directory,
     config: ConversionConfig,
 ) -> exn::Result<convert::ArchiveJobs, ErrorMessage> {
-    let err = || {
-        let msg = "Failed to convert all archives in a directory".to_string();
-        debug!("{msg}");
-        ErrorMessage(msg)
-    };
+    let err = || ErrorMessage::new("Failed to convert all archives in a directory");
 
     convert::ArchiveJobs::collect(root, config).or_raise(err)
 }
@@ -100,11 +89,7 @@ fn images_in_dir_recursively(
     root: Directory,
     config: ConversionConfig,
 ) -> exn::Result<Option<RecursiveDirJobs>, ErrorMessage> {
-    let err = || {
-        let msg = "Failed to convert all images in a directory".to_string();
-        debug!("{msg}");
-        ErrorMessage(msg)
-    };
+    let err = || ErrorMessage::new("Failed to convert all images in a directory");
 
     RecursiveDirJobs::single(root, config).or_raise(err)
 }
@@ -131,16 +116,11 @@ impl MainJob {
             };
 
             let msg = format!("Neither an archive nor a directory: {path:?}");
-            debug!("{msg}");
-            let exn = Exn::raise_all(ErrorMessage(msg), [dir_exn, archive_exn]);
+            let exn = Exn::raise_all(ErrorMessage::new(msg), [dir_exn, archive_exn]);
             Err(exn)
         };
 
-        let err = || {
-            let msg = "Failed to collect all archives".to_string();
-            debug!("{msg}");
-            ErrorMessage(msg)
-        };
+        let err = || ErrorMessage::new("Failed to collect all archives");
 
         let jobs = paths
             .into_iter()
@@ -158,15 +138,11 @@ impl MainJob {
         paths: VecDeque<PathBuf>,
         config: ConversionConfig,
     ) -> exn::Result<Option<Self>, ErrorMessage> {
+        let err = || ErrorMessage::new("Failed to collect all directories");
+
         let collect_single = |path| {
             let root = Directory::new(path).map_err(|e| e.discard_recovery())?;
             images_in_dir_recursively(root, config)
-        };
-
-        let err = || {
-            let msg = "Failed to collect all directories".to_string();
-            debug!("{msg}");
-            ErrorMessage(msg)
         };
 
         let jobs = paths
@@ -210,11 +186,7 @@ impl MainJob {
 }
 
 fn real_main() -> exn::Result<(), ErrorMessage> {
-    let err = || {
-        let msg = "failed to run conversion jobs".to_string();
-        debug!("{msg}");
-        ErrorMessage(msg)
-    };
+    let err = || ErrorMessage::new("Failed to run conversion jobs");
 
     let matches = Args::parse();
 
@@ -260,23 +232,22 @@ fn real_main() -> exn::Result<(), ErrorMessage> {
 }
 
 fn create_progress_bar(msg: &'static str) -> indicatif::ProgressBar {
+    const MSG_SPACE: usize = 9;
+
+    assert!(msg.len() < MSG_SPACE);
+
     let style = indicatif::ProgressStyle::with_template(
         "[{elapsed_precise}] {msg:>9}: {wide_bar} {pos:>5}/{len:5}",
     )
     .unwrap();
 
-    let bar = indicatif::ProgressBar::new(0)
+    indicatif::ProgressBar::new(0)
         .with_style(style)
-        .with_message(msg);
-    bar
+        .with_message(msg)
 }
 
 fn init_logger(path: &Path, level: tracing::Level) -> exn::Result<(), ErrorMessage> {
-    let err = || {
-        let msg = "Failed to initialize logging to file {path:?}".to_string();
-        debug!("{msg}");
-        ErrorMessage(msg)
-    };
+    let err = || ErrorMessage::new("Failed to initialize logging to file {path:?}");
 
     let path = match path.is_absolute() {
         true => path,
@@ -285,21 +256,23 @@ fn init_logger(path: &Path, level: tracing::Level) -> exn::Result<(), ErrorMessa
 
     let directory = path.parent().ok_or_raise(err)?;
 
+    // add another layer for error context
+    let err = |msg| {
+        let exn = ErrorMessage::new(msg).raise();
+        let exn = exn.raise(err());
+        return exn;
+    };
     if !directory.is_dir() {
         let msg = format!("Directory does not exist: {directory:?}");
-        debug!("{msg}");
-        let exn = Exn::from(ErrorMessage(msg)).raise(err());
-        bail!(exn);
+        return Err(err(msg));
     }
     if path.exists() && !path.is_file() {
         let msg = format!("The path to the log file is not a regular file: {path:?}");
-        debug!("{msg}");
-        return Err(ErrorMessage(msg)).or_raise(err);
+        return Err(err(msg));
     }
     let Some(file_name) = path.file_name() else {
         let msg = "The filename is empty".to_string();
-        debug!("{msg}");
-        return Err(ErrorMessage(msg)).or_raise(err);
+        return Err(err(msg));
     };
 
     let writer = tracing_appender::rolling::never(directory, file_name);
@@ -313,39 +286,10 @@ fn init_logger(path: &Path, level: tracing::Level) -> exn::Result<(), ErrorMessa
     Ok(())
 }
 
-fn log_error(error: &Exn<ErrorMessage>) {
-    fn walk(prefix: &str, frame: &exn::Frame) {
-        let children = frame.children();
-        if children.is_empty() {
-            return;
-        }
-
-        let child_prefix = format!("|   {prefix}");
-        for (idx, frame) in children.iter().enumerate() {
-            error!("{prefix}{idx}: {}", frame.error());
-            walk(&child_prefix, frame);
-        }
-    }
-
-    error!("{error}");
-    error!("Caused by:");
-
-    let children = error.frame().children();
-    if children.is_empty() {
-        return;
-    }
-
-    let child_prefix = "|-- ";
-    for (idx, frame) in children.iter().enumerate() {
-        error!("{idx}: {}", frame.error());
-        walk(child_prefix, frame);
-    }
-}
-
 fn main() -> exn::Result<(), ErrorMessage> {
     let ret = real_main();
     if let Err(e) = &ret {
-        log_error(e);
+        error!("Application error:\n{e:?}");
     }
     ret
 }
