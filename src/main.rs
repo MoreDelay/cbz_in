@@ -8,12 +8,66 @@ use std::thread;
 
 use clap::Parser;
 use exn::{ErrorExt, Exn, OptionExt, ResultExt};
-use tracing::{debug, error, info};
+use tracing::{error, info};
 
-use crate::convert::{
-    ArchiveJobs, ArchivePath, ConversionConfig, Directory, JobCollection, RecursiveDirJobs,
-};
+use crate::convert::archive::ArchivePath;
+use crate::convert::dir::Directory;
+use crate::convert::{ImageFormat, JobCollection};
 use crate::error::ErrorMessage;
+
+fn main() -> Result<(), Exn<ErrorMessage>> {
+    let ret = real_main();
+    if let Err(e) = &ret {
+        error!("Application error:\n{e:?}");
+    }
+    ret
+}
+
+fn real_main() -> Result<(), Exn<ErrorMessage>> {
+    let err = || ErrorMessage::new("Failed to run conversion jobs");
+
+    let matches = Args::parse();
+
+    if let Some(log_path) = matches.log {
+        init_logger(&log_path, matches.level).or_raise(err)?;
+    }
+
+    let cmd = std::env::args_os()
+        .map(|s| s.to_string_lossy().to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    info!("starting new execution as {cmd:?}");
+    let cwd = std::env::current_dir().unwrap_or_default();
+    info!("working directory: {:?}", cwd);
+
+    let n_workers = match matches.workers {
+        Some(Some(value)) => value,
+        Some(None) => 1,
+        None => match thread::available_parallelism() {
+            Ok(value) => value.get(),
+            Err(_) => 1,
+        },
+    };
+
+    let config = convert::Configuration {
+        target: matches.format,
+        n_workers,
+        forced: matches.force,
+    };
+
+    let paths = VecDeque::from(matches.paths);
+
+    let main_job = match matches.no_archive {
+        true => MainJob::collect_directory_jobs(paths, config).or_raise(err)?,
+        false => MainJob::collect_archive_jobs(paths, config).or_raise(err)?,
+    };
+    let Some(main_job) = main_job else {
+        eprintln!("Nothing to do");
+        return Ok(());
+    };
+    main_job.run().or_raise(err)
+}
 
 /// Convert images within comic archives to newer image formats.
 ///
@@ -26,7 +80,7 @@ use crate::error::ErrorMessage;
 struct Args {
     /// All images within the archive(s) are converted to this format.
     #[arg(required = true, verbatim_doc_comment)]
-    format: convert::ImageFormat,
+    format: ImageFormat,
 
     /// Path to a cbz file or a directory containing cbz files.
     #[arg(default_value = ".", num_args = 1.., verbatim_doc_comment)]
@@ -66,34 +120,6 @@ struct Args {
     level: tracing::Level,
 }
 
-fn single_archive(
-    archive: ArchivePath,
-    config: ConversionConfig,
-) -> exn::Result<Option<ArchiveJobs>, ErrorMessage> {
-    let err = || ErrorMessage::new("Failed to create conversion job on a single archive");
-
-    info!("Checking {archive:?}");
-    convert::ArchiveJobs::single(archive, config).or_raise(err)
-}
-
-fn archives_in_dir(
-    root: Directory,
-    config: ConversionConfig,
-) -> exn::Result<convert::ArchiveJobs, ErrorMessage> {
-    let err = || ErrorMessage::new("Failed to convert all archives in a directory");
-
-    convert::ArchiveJobs::collect(root, config).or_raise(err)
-}
-
-fn images_in_dir_recursively(
-    root: Directory,
-    config: ConversionConfig,
-) -> exn::Result<Option<RecursiveDirJobs>, ErrorMessage> {
-    let err = || ErrorMessage::new("Failed to convert all images in a directory");
-
-    RecursiveDirJobs::single(root, config).or_raise(err)
-}
-
 enum MainJob {
     Archives(convert::ArchiveJobs),
     Directories(convert::RecursiveDirJobs),
@@ -102,10 +128,10 @@ enum MainJob {
 impl MainJob {
     fn collect_archive_jobs(
         paths: VecDeque<PathBuf>,
-        config: ConversionConfig,
-    ) -> exn::Result<Option<Self>, ErrorMessage> {
+        config: convert::Configuration,
+    ) -> Result<Option<Self>, Exn<ErrorMessage>> {
         let collect_single = |path| {
-            let (path, dir_exn) = match crate::convert::Directory::new(path) {
+            let (path, dir_exn) = match Directory::new(path) {
                 Ok(root) => return Ok(Some(archives_in_dir(root, config)?)),
                 Err(exn) => exn.recover(),
             };
@@ -125,19 +151,19 @@ impl MainJob {
         let jobs = paths
             .into_iter()
             .map(collect_single)
-            .collect::<exn::Result<Vec<_>, _>>()
+            .collect::<Result<Vec<_>, Exn<_>>>()
             .or_raise(err)?
             .into_iter()
             .flatten()
             .flatten();
-        let jobs = ArchiveJobs::new(jobs).map(Self::Archives);
+        let jobs = convert::ArchiveJobs::new(jobs).map(Self::Archives);
         Ok(jobs)
     }
 
     fn collect_directory_jobs(
         paths: VecDeque<PathBuf>,
-        config: ConversionConfig,
-    ) -> exn::Result<Option<Self>, ErrorMessage> {
+        config: convert::Configuration,
+    ) -> Result<Option<Self>, Exn<ErrorMessage>> {
         let err = || ErrorMessage::new("Failed to collect all directories");
 
         let collect_single = |path| {
@@ -148,105 +174,64 @@ impl MainJob {
         let jobs = paths
             .into_iter()
             .map(collect_single)
-            .collect::<exn::Result<Vec<_>, _>>()
+            .collect::<Result<Vec<_>, Exn<_>>>()
             .or_raise(err)?
             .into_iter()
             .flatten()
             .flatten();
-        let jobs = RecursiveDirJobs::new(jobs).map(Self::Directories);
+        let jobs = convert::RecursiveDirJobs::new(jobs).map(Self::Directories);
         Ok(jobs)
     }
 
-    fn run(self) -> exn::Result<(), ErrorMessage> {
-        let bars = {
-            let multi = indicatif::MultiProgress::new();
-            let archives = multi.add(create_progress_bar("Archives"));
-            let images = multi.add(create_progress_bar("Images"));
-
-            archives.enable_responsive_tick(std::time::Duration::from_millis(250));
-            images.enable_responsive_tick(std::time::Duration::from_millis(250));
-
-            convert::Bars {
-                multi,
-                jobs: archives,
-                images,
-            }
+    fn run(self) -> Result<(), Exn<ErrorMessage>> {
+        let collection_type = match self {
+            MainJob::Archives(_) => convert::CollectionType::Archives,
+            MainJob::Directories(_) => convert::CollectionType::Directories,
         };
+        let bars = convert::Bars::new(collection_type);
 
         let res = match self {
             MainJob::Archives(jobs) => jobs.run(&bars),
             MainJob::Directories(jobs) => jobs.run(&bars),
         };
 
-        debug!("finish bars");
-        bars.jobs.finish();
-        bars.images.finish();
+        bars.jobs().finish();
+        bars.images().finish();
         res
     }
 }
 
-fn real_main() -> exn::Result<(), ErrorMessage> {
-    let err = || ErrorMessage::new("Failed to run conversion jobs");
+fn single_archive(
+    archive: ArchivePath,
+    config: convert::Configuration,
+) -> Result<Option<convert::ArchiveJobs>, Exn<ErrorMessage>> {
+    let err = || ErrorMessage::new("Failed to create conversion job on a single archive");
 
-    let matches = Args::parse();
-
-    if let Some(log_path) = matches.log {
-        init_logger(&log_path, matches.level).or_raise(err)?;
-    }
-
-    let cmd = std::env::args_os()
-        .map(|s| s.to_string_lossy().to_string())
-        .collect::<Vec<_>>()
-        .join(" ");
-
-    info!("starting new execution as {cmd:?}");
-    let cwd = std::env::current_dir().unwrap_or_default();
-    info!("working directory: {:?}", cwd);
-
-    let n_workers = match matches.workers {
-        Some(Some(value)) => value,
-        Some(None) => 1,
-        None => match thread::available_parallelism() {
-            Ok(value) => value.get(),
-            Err(_) => 1,
-        },
-    };
-
-    let config = convert::ConversionConfig {
-        target: matches.format,
-        n_workers,
-        forced: matches.force,
-    };
-
-    let paths = VecDeque::from(matches.paths);
-
-    let main_job = match matches.no_archive {
-        true => MainJob::collect_directory_jobs(paths, config).or_raise(err)?,
-        false => MainJob::collect_archive_jobs(paths, config).or_raise(err)?,
-    };
-    let Some(main_job) = main_job else {
-        eprintln!("Nothing to do");
-        return Ok(());
-    };
-    main_job.run().or_raise(err)
+    info!("Checking archive {archive:?}");
+    convert::ArchiveJobs::single(archive, config).or_raise(err)
 }
 
-fn create_progress_bar(msg: &'static str) -> indicatif::ProgressBar {
-    const MSG_SPACE: usize = 9;
+fn archives_in_dir(
+    root: Directory,
+    config: convert::Configuration,
+) -> Result<convert::ArchiveJobs, Exn<ErrorMessage>> {
+    let err = || ErrorMessage::new("Failed to convert all archives in a directory");
 
-    assert!(msg.len() < MSG_SPACE);
-
-    let style = indicatif::ProgressStyle::with_template(
-        "[{elapsed_precise}] {msg:>9}: {wide_bar} {pos:>5}/{len:5}",
-    )
-    .unwrap();
-
-    indicatif::ProgressBar::new(0)
-        .with_style(style)
-        .with_message(msg)
+    info!("Checking archives directory {root:?}");
+    convert::ArchiveJobs::collect(root, config).or_raise(err)
 }
 
-fn init_logger(path: &Path, level: tracing::Level) -> exn::Result<(), ErrorMessage> {
+fn images_in_dir_recursively(
+    root: Directory,
+    config: convert::Configuration,
+) -> Result<Option<convert::RecursiveDirJobs>, Exn<ErrorMessage>> {
+    let err = || ErrorMessage::new("Failed to convert all images in a directory");
+
+    info!("Checking root directory {root:?}");
+    convert::RecursiveDirJobs::single(root, config).or_raise(err)
+}
+
+fn init_logger(path: &Path, level: tracing::Level) -> Result<(), Exn<ErrorMessage>> {
     let err = || ErrorMessage::new("Failed to initialize logging to file {path:?}");
 
     let path = match path.is_absolute() {
@@ -283,12 +268,4 @@ fn init_logger(path: &Path, level: tracing::Level) -> exn::Result<(), ErrorMessa
         .init();
 
     Ok(())
-}
-
-fn main() -> exn::Result<(), ErrorMessage> {
-    let ret = real_main();
-    if let Err(e) = &ret {
-        error!("Application error:\n{e:?}");
-    }
-    ret
 }
