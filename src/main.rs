@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::thread;
 
 use clap::Parser;
-use exn::{ErrorExt, Exn, OptionExt, ResultExt, bail};
+use exn::{ErrorExt, Exn, OptionExt, ResultExt};
 use tracing::{debug, error, info};
 
 use crate::convert::{
@@ -259,8 +259,7 @@ fn init_logger(path: &Path, level: tracing::Level) -> exn::Result<(), ErrorMessa
     // add another layer for error context
     let err = |msg| {
         let exn = ErrorMessage::new(msg).raise();
-        let exn = exn.raise(err());
-        return exn;
+        exn.raise(err())
     };
     if !directory.is_dir() {
         let msg = format!("Directory does not exist: {directory:?}");

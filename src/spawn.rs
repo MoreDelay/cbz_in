@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 
-use exn::{ErrorExt, ResultExt, bail};
+use exn::{ErrorExt, ResultExt};
 use tracing::{debug, error};
 
 use crate::error::ErrorMessage;
