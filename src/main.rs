@@ -242,7 +242,7 @@ fn init_logger(path: &Path, level: tracing::Level) -> exn::Result<(), ErrorMessa
         return Err(ErrorMessage(msg)).or_raise(err);
     }
     let Some(file_name) = path.file_name() else {
-        let msg = format!("The filename is empty");
+        let msg = "The filename is empty".to_string();
         debug!("{msg}");
         return Err(ErrorMessage(msg)).or_raise(err);
     };
@@ -265,9 +265,9 @@ fn log_error(error: &Exn<ErrorMessage>) {
             return;
         }
 
-        let child_prefix = format!("{prefix}|   ");
+        let child_prefix = format!("|   {prefix}");
         for (idx, frame) in children.iter().enumerate() {
-            error!("{prefix}|-> {idx}: {}", frame.error());
+            error!("{prefix}{idx}: {}", frame.error());
             walk(&child_prefix, frame);
         }
     }
@@ -275,7 +275,16 @@ fn log_error(error: &Exn<ErrorMessage>) {
     error!("{error}");
     error!("Caused by:");
 
-    walk("", error.frame());
+    let children = error.frame().children();
+    if children.is_empty() {
+        return;
+    }
+
+    let child_prefix = "|-- ";
+    for (idx, frame) in children.iter().enumerate() {
+        error!("{idx}: {}", frame.error());
+        walk(child_prefix, frame);
+    }
 }
 
 fn main() -> exn::Result<(), ErrorMessage> {
