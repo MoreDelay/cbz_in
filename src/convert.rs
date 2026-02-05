@@ -4,6 +4,7 @@ use std::io::{BufRead, Read, Write};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
+use derive_more::Display;
 use exn::{ErrorExt, Exn, OptionExt, ResultExt, bail};
 use indicatif::{MultiProgress, ProgressBar};
 use signal_hook::{
@@ -11,7 +12,7 @@ use signal_hook::{
     iterator::Signals,
 };
 use thiserror::Error;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use walkdir::WalkDir;
 use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
@@ -76,10 +77,6 @@ impl ArchivePath {
         }
 
         Ok(ArchivePath(archive_path))
-    }
-
-    fn into_inner(self) -> PathBuf {
-        self.0
     }
 }
 
@@ -237,13 +234,8 @@ enum ConversionJob {
     Completed(ConversionJobCompleted),
 }
 
-#[derive(Debug, Error)]
-pub enum NothingToDo {
-    #[error("No files to convert in '{0}'")]
-    NoFilesToConvert(PathBuf),
-    #[error("Already converted '{0}'")]
-    AlreadyDone(PathBuf),
-}
+#[derive(Debug, Display, Error)]
+pub struct NothingToDo(String);
 
 #[derive(Debug)]
 enum Proceeded {
@@ -640,24 +632,111 @@ impl ConversionJobs {
     }
 }
 
-struct ArchiveJob {
+pub struct Bars {
+    pub multi: MultiProgress,
+    pub jobs: ProgressBar,
+    pub images: ProgressBar,
+}
+
+pub trait Job {
+    fn path(&self) -> &Path;
+
+    fn run(self, bars: &ProgressBar) -> exn::Result<(), ErrorMessage>;
+}
+
+pub trait JobCollection: IntoIterator<Item = Self::Job> + Sized {
+    type Job: Job;
+
+    fn jobs(&self) -> usize;
+
+    fn run(self, bars: &Bars) -> exn::Result<(), ErrorMessage> {
+        bars.jobs.reset();
+        bars.jobs.set_length(self.jobs() as u64);
+
+        let errors = self
+            .into_iter()
+            .map(|job| Self::run_single(job, bars))
+            .filter_map(|res| res.err())
+            .collect::<Vec<_>>();
+        match errors.is_empty() {
+            true => Ok(()),
+            false => {
+                let n = errors.len();
+                let msg = format!("Failed to convert {n} job");
+                debug!("{msg}");
+                let err = ErrorMessage(msg);
+                Err(Exn::raise_all(err, errors))
+            }
+        }
+    }
+
+    fn run_single(job: Self::Job, bars: &Bars) -> exn::Result<(), ErrorMessage> {
+        info!("Converting {:?}", job.path());
+        let print_res = bars.multi.println(format!("Converting {:?}", job.path()));
+        if let Err(e) = print_res {
+            warn!("Failed to write new message to stdout: {e:?}");
+        }
+
+        let run_res = job.run(&bars.images);
+        bars.jobs.inc(1);
+        match &run_res {
+            Ok(_) => info!("Done"),
+            Err(e) => error!("{e}"),
+        }
+        run_res
+    }
+}
+
+pub struct ArchiveJob {
     archive_path: ArchivePath,
     extraction: ExtractionJob,
     conversion: ConversionJobs,
     compression: CompressionJob,
 }
 
+impl Job for ArchiveJob {
+    fn path(&self) -> &Path {
+        &self.archive_path
+    }
+
+    fn run(self, bar: &ProgressBar) -> exn::Result<(), ErrorMessage> {
+        let Self {
+            archive_path,
+            extraction,
+            conversion,
+            compression,
+        } = self;
+
+        let err = || {
+            let msg = format!(
+                "Failed to convert images in archive {:?}",
+                archive_path.deref()
+            );
+            debug!("{msg}");
+            ErrorMessage(msg)
+        };
+
+        let _guard = extraction.run().or_raise(err)?;
+        conversion.run(bar).or_raise(err)?;
+        compression.run().or_raise(err)?;
+
+        Ok(())
+    }
+}
+
 impl ArchiveJob {
     fn new(
         archive_path: ArchivePath,
         config: ConversionConfig,
-    ) -> exn::Result<Result<Self, NothingToDo>, ErrorMessage> {
+    ) -> exn::Result<exn::Result<Self, NothingToDo>, ErrorMessage> {
         let ConversionConfig {
             target, n_workers, ..
         } = config;
 
         if Self::already_converted(&archive_path, target) {
-            return Ok(Err(NothingToDo::AlreadyDone(archive_path.into_inner())));
+            let msg = format!("Already converted {archive_path:?}");
+            let exn = Exn::new(NothingToDo(msg));
+            return Ok(Err(exn));
         }
 
         let extract_dir = Self::get_conversion_root_dir(&archive_path);
@@ -692,9 +771,9 @@ impl ArchiveJob {
             })?;
 
         if job_queue.is_empty() {
-            return Ok(Err(NothingToDo::NoFilesToConvert(
-                archive_path.into_inner(),
-            )));
+            let msg = format!("No files to convert in {archive_path:?}");
+            let exn = Exn::new(NothingToDo(msg));
+            return Ok(Err(exn));
         }
 
         let jobs_in_progress = Vec::from_iter((0..n_workers).map(|_| None));
@@ -716,34 +795,6 @@ impl ArchiveJob {
             conversion,
             compression,
         }))
-    }
-
-    pub fn run(self, bar: &ProgressBar) -> exn::Result<(), ErrorMessage> {
-        let Self {
-            archive_path,
-            extraction,
-            conversion,
-            compression,
-        } = self;
-
-        let err = || {
-            let msg = format!(
-                "Error during conversion of the archive {:?}",
-                archive_path.deref()
-            );
-            debug!("{msg}");
-            ErrorMessage(msg)
-        };
-
-        let _guard = extraction.run().or_raise(err)?;
-        conversion.run(bar).or_raise(err)?;
-        compression.run().or_raise(err)?;
-
-        Ok(())
-    }
-
-    pub fn archive(&self) -> &Path {
-        &self.archive_path
     }
 
     fn get_conversion_root_dir(cbz_path: &Path) -> PathBuf {
@@ -838,46 +889,39 @@ impl ArchiveJob {
     }
 }
 
-pub struct SingleArchiveJob(ArchiveJob);
+pub struct ArchiveJobs(Vec<ArchiveJob>);
 
-impl SingleArchiveJob {
-    pub fn new(
+impl JobCollection for ArchiveJobs {
+    type Job = ArchiveJob;
+
+    fn jobs(&self) -> usize {
+        self.0.len()
+    }
+}
+
+impl ArchiveJobs {
+    pub fn single(
         archive: ArchivePath,
         config: ConversionConfig,
-    ) -> exn::Result<Result<Self, NothingToDo>, ErrorMessage> {
-        Ok(ArchiveJob::new(archive, config)?.map(Self))
+    ) -> exn::Result<Option<Self>, ErrorMessage> {
+        match ArchiveJob::new(archive, config)? {
+            Ok(job) => Ok(Some(Self(vec![job]))),
+            Err(nothing_to_do) => {
+                info!("{nothing_to_do}");
+                Ok(None)
+            }
+        }
     }
 
-    pub fn run(self, bar: &ProgressBar) -> exn::Result<(), ErrorMessage> {
-        self.0.run(bar)
-    }
-}
-
-pub struct ArchivesInDirectoryJob {
-    root_dir: Directory,
-    jobs: Vec<ArchiveJob>,
-}
-
-pub struct Bars {
-    pub multi: MultiProgress,
-    pub archives: ProgressBar,
-    pub images: ProgressBar,
-}
-
-impl ArchivesInDirectoryJob {
-    pub fn collect(
-        root_dir: Directory,
-        config: ConversionConfig,
-    ) -> exn::Result<Self, ErrorMessage> {
+    pub fn collect(root: Directory, config: ConversionConfig) -> exn::Result<Self, ErrorMessage> {
         let err = || {
-            let msg = format!(
-                "Error while looking for archives needing conversion from root {root_dir:?}"
-            );
+            let msg =
+                format!("Error while looking for archives needing conversion from root {root:?}");
             debug!("{msg}");
             ErrorMessage(msg)
         };
 
-        let jobs = root_dir
+        let jobs = root
             .read_dir()
             .or_raise(err)?
             .filter_map(|dir_entry| {
@@ -905,31 +949,30 @@ impl ArchivesInDirectoryJob {
                 }
             })
             .collect::<exn::Result<Vec<_>, ErrorMessage>>()?;
-        Ok(Self { root_dir, jobs })
+        Ok(Self(jobs))
     }
 
-    pub fn run(self, bars: &Bars) -> exn::Result<(), ErrorMessage> {
-        let err = || {
-            let msg = format!("Failed for some archive inside {:?}", self.root_dir);
-            debug!("{msg}");
-            ErrorMessage(msg)
-        };
-
-        bars.archives.reset();
-        bars.archives.set_length(self.jobs.len() as u64);
-
-        for job in self.jobs.into_iter() {
-            info!("Converting {:?}", job.archive());
-            // ignore error that may happen when writing to stdout
-            let _ = bars
-                .multi
-                .println(format!("Converting {:?}", job.archive()));
-            job.run(&bars.images).or_raise(err)?;
-            bars.archives.inc(1);
-            info!("Done");
+    pub fn new(iter: impl IntoIterator<Item = ArchiveJob>) -> Option<Self> {
+        let jobs = iter.into_iter().collect::<Vec<_>>();
+        match jobs.is_empty() {
+            true => None,
+            false => Some(Self(jobs)),
         }
+    }
+}
 
-        Ok(())
+impl Extend<ArchiveJob> for ArchiveJobs {
+    fn extend<T: IntoIterator<Item = ArchiveJob>>(&mut self, iter: T) {
+        self.0.extend(iter);
+    }
+}
+
+impl IntoIterator for ArchiveJobs {
+    type Item = ArchiveJob;
+    type IntoIter = std::vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
     }
 }
 
@@ -947,10 +990,6 @@ impl Directory {
                 Err(err)
             }
         }
-    }
-
-    fn into_inner(self) -> PathBuf {
-        self.0
     }
 }
 
@@ -1014,11 +1053,37 @@ pub struct RecursiveDirJob {
     conversion: ConversionJobs,
 }
 
+impl Job for RecursiveDirJob {
+    fn path(&self) -> &Path {
+        &self.root
+    }
+
+    fn run(self, bar: &ProgressBar) -> exn::Result<(), ErrorMessage> {
+        let Self {
+            root,
+            hardlink,
+            conversion,
+        } = self;
+
+        let err = || {
+            let msg = format!("Failed to convert all images recursively in {root:?}");
+            debug!("{msg}");
+            ErrorMessage(msg)
+        };
+
+        let guard = hardlink.run().or_raise(err)?;
+        conversion.run(bar).or_raise(err)?;
+
+        guard.keep();
+        Ok(())
+    }
+}
+
 impl RecursiveDirJob {
     pub fn new(
         root: Directory,
         config: ConversionConfig,
-    ) -> exn::Result<Result<Self, NothingToDo>, ErrorMessage> {
+    ) -> exn::Result<exn::Result<Self, NothingToDo>, ErrorMessage> {
         let err = || {
             let msg = format!(
                 "Failed to prepare job for recursive image conversion starting at {root:?}"
@@ -1054,7 +1119,9 @@ impl RecursiveDirJob {
             .collect::<Result<VecDeque<_>, _>>()
             .or_raise(err)?;
         if job_queue.is_empty() {
-            return Ok(Err(NothingToDo::NoFilesToConvert(root.into_inner())));
+            let msg = format!("No files to convert in {root:?}");
+            let exn = Exn::new(NothingToDo(msg));
+            return Ok(Err(exn));
         }
 
         let jobs_in_progress = Vec::from_iter((0..n_workers).map(|_| None));
@@ -1072,26 +1139,6 @@ impl RecursiveDirJob {
             hardlink,
             conversion,
         }))
-    }
-
-    pub fn run(self, bar: &ProgressBar) -> exn::Result<(), ErrorMessage> {
-        let Self {
-            root,
-            hardlink,
-            conversion,
-        } = self;
-
-        let err = || {
-            let msg = format!("Failed to convert all images recursively in {root:?}");
-            debug!("{msg}");
-            ErrorMessage(msg)
-        };
-
-        let guard = hardlink.run().or_raise(err)?;
-        conversion.run(bar).or_raise(err)?;
-
-        guard.keep();
-        Ok(())
     }
 
     fn images_in_dir(root: &Directory) -> exn::Result<Vec<(PathBuf, ImageFormat)>, ErrorMessage> {
@@ -1145,6 +1192,75 @@ impl RecursiveDirJob {
     }
 }
 
+pub struct RecursiveDirJobs(Vec<RecursiveDirJob>);
+
+impl JobCollection for RecursiveDirJobs {
+    type Job = RecursiveDirJob;
+
+    fn jobs(&self) -> usize {
+        self.0.len()
+    }
+}
+
+impl RecursiveDirJobs {
+    pub fn single(
+        dir: Directory,
+        config: ConversionConfig,
+    ) -> exn::Result<Option<Self>, ErrorMessage> {
+        match RecursiveDirJob::new(dir, config)? {
+            Ok(job) => Ok(Some(Self(vec![job]))),
+            Err(nothing_to_do) => {
+                info!("{nothing_to_do}");
+                Ok(None)
+            }
+        }
+    }
+
+    pub fn new(iter: impl IntoIterator<Item = RecursiveDirJob>) -> Option<Self> {
+        let jobs = iter.into_iter().collect::<Vec<_>>();
+        match jobs.is_empty() {
+            true => None,
+            false => Some(Self(jobs)),
+        }
+    }
+
+    pub fn run(self, bars: &Bars) -> exn::Result<(), ErrorMessage> {
+        bars.jobs.reset();
+        bars.jobs.set_length(self.0.len() as u64);
+
+        let errors = self
+            .0
+            .into_iter()
+            .map(|job| Self::run_single(job, bars))
+            .filter_map(|res| res.err())
+            .collect::<Vec<_>>();
+        match errors.is_empty() {
+            true => Ok(()),
+            false => {
+                let n = errors.len();
+                let msg = format!("Failed to convert {n} archives");
+                debug!("{msg}");
+                let err = ErrorMessage(msg);
+                Err(Exn::raise_all(err, errors))
+            }
+        }
+    }
+}
+
+impl Extend<RecursiveDirJob> for RecursiveDirJobs {
+    fn extend<T: IntoIterator<Item = RecursiveDirJob>>(&mut self, iter: T) {
+        self.0.extend(iter);
+    }
+}
+
+impl IntoIterator for RecursiveDirJobs {
+    type Item = RecursiveDirJob;
+    type IntoIter = std::vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
