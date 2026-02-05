@@ -140,7 +140,6 @@ dependencies = [
  "exn",
  "indicatif",
  "signal-hook",
- "thiserror",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
