@@ -77,7 +77,7 @@ impl ManagedChild {
 
         let err = || {
             let msg = format!(
-                "Error when waiting on a child process for the tool '{}'",
+                "Error when waiting on a child process running '{}'",
                 self.cmd
             );
             debug!("{msg}");

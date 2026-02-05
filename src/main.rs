@@ -1,6 +1,7 @@
 mod convert;
 mod spawn;
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::thread;
 
@@ -10,7 +11,9 @@ use exn::{Exn, OptionExt, ResultExt, bail};
 use thiserror::Error;
 use tracing::{debug, error, info};
 
-use crate::convert::{ArchivePath, ConversionConfig, Directory};
+use crate::convert::{
+    ArchiveJobs, ArchivePath, ConversionConfig, Directory, JobCollection, RecursiveDirJobs,
+};
 
 /// Convert images within comic archives to newer image formats.
 ///
@@ -26,8 +29,8 @@ struct Args {
     format: convert::ImageFormat,
 
     /// Path to a cbz file or a directory containing cbz files.
-    #[arg(default_value = ".", verbatim_doc_comment)]
-    path: PathBuf,
+    #[arg(default_value = ".", num_args = 1.., verbatim_doc_comment)]
+    paths: Vec<PathBuf>,
 
     /// Number of processes spawned.
     ///
@@ -66,7 +69,10 @@ struct Args {
 #[derive(Debug, Display, Error)]
 struct ErrorMessage(String);
 
-fn single_archive(archive: ArchivePath, config: ConversionConfig) -> exn::Result<(), ErrorMessage> {
+fn single_archive(
+    archive: ArchivePath,
+    config: ConversionConfig,
+) -> exn::Result<Option<ArchiveJobs>, ErrorMessage> {
     let err = || {
         let msg = "Failed to create conversion job on a single archive".to_string();
         debug!("{msg}");
@@ -74,81 +80,146 @@ fn single_archive(archive: ArchivePath, config: ConversionConfig) -> exn::Result
     };
 
     info!("Checking {archive:?}");
-    let job = match convert::SingleArchiveJob::new(archive, config).or_raise(err)? {
-        Ok(job) => job,
-        Err(nothing_to_do) => {
-            error!("{nothing_to_do}");
-            println!("{nothing_to_do}");
-            return Ok(());
-        }
-    };
-    let inner_bar = create_progress_bar("Images");
-    inner_bar.tick();
-    job.run(&inner_bar).or_raise(err)?;
-    inner_bar.finish();
-    info!("Done");
-    Ok(())
+    convert::ArchiveJobs::single(archive, config).or_raise(err)
 }
 
-fn archives_in_dir(root: Directory, config: ConversionConfig) -> exn::Result<(), ErrorMessage> {
+fn archives_in_dir(
+    root: Directory,
+    config: ConversionConfig,
+) -> exn::Result<convert::ArchiveJobs, ErrorMessage> {
     let err = || {
         let msg = "Failed to convert all archives in a directory".to_string();
         debug!("{msg}");
         ErrorMessage(msg)
     };
 
-    let jobs = convert::ArchivesInDirectoryJob::collect(root, config).or_raise(err)?;
-
-    let bars = {
-        let multi = indicatif::MultiProgress::new();
-        let archives = multi.add(create_progress_bar("Archives"));
-        let images = multi.add(create_progress_bar("Images"));
-
-        convert::Bars {
-            multi,
-            archives,
-            images,
-        }
-    };
-
-    jobs.run(&bars).or_raise(err)?;
-
-    bars.images.finish();
-    bars.archives.finish();
-    Ok(())
+    convert::ArchiveJobs::collect(root, config).or_raise(err)
 }
 
 fn images_in_dir_recursively(
     root: Directory,
     config: ConversionConfig,
-) -> exn::Result<(), ErrorMessage> {
+) -> exn::Result<Option<RecursiveDirJobs>, ErrorMessage> {
     let err = || {
         let msg = "Failed to convert all images in a directory".to_string();
         debug!("{msg}");
         ErrorMessage(msg)
     };
 
-    let job = match convert::RecursiveDirJob::new(root, config).or_raise(err)? {
-        Ok(job) => job,
-        Err(nothing_to_do) => {
-            error!("{nothing_to_do}");
-            println!("{nothing_to_do}");
-            return Ok(());
-        }
-    };
-    let inner_bar = create_progress_bar("Images");
-    inner_bar.tick();
-    job.run(&inner_bar).or_raise(err)?;
-    inner_bar.finish();
-    info!("Done");
-    Ok(())
+    RecursiveDirJobs::single(root, config).or_raise(err)
+}
+
+enum MainJob {
+    Archives(convert::ArchiveJobs),
+    Directories(convert::RecursiveDirJobs),
+}
+
+impl MainJob {
+    fn collect_archive_jobs(
+        paths: VecDeque<PathBuf>,
+        config: ConversionConfig,
+    ) -> exn::Result<Option<Self>, ErrorMessage> {
+        let collect_single = |path| {
+            let (path, dir_exn) = match crate::convert::Directory::new(path) {
+                Ok(root) => return Ok(Some(archives_in_dir(root, config)?)),
+                Err(exn) => exn.recover(),
+            };
+
+            let (path, archive_exn) = match ArchivePath::new(path) {
+                Ok(archive) => return single_archive(archive, config),
+                Err(exn) => exn.recover(),
+            };
+
+            let msg = format!("Neither an archive nor a directory: {path:?}");
+            debug!("{msg}");
+            let exn = Exn::raise_all(ErrorMessage(msg), [dir_exn, archive_exn]);
+            Err(exn)
+        };
+
+        let err = || {
+            let msg = "Failed to collect all archives".to_string();
+            debug!("{msg}");
+            ErrorMessage(msg)
+        };
+
+        let jobs = paths
+            .into_iter()
+            .map(collect_single)
+            .collect::<exn::Result<Vec<_>, _>>()
+            .or_raise(err)?
+            .into_iter()
+            .flatten()
+            .flatten();
+        let jobs = ArchiveJobs::new(jobs).map(Self::Archives);
+        Ok(jobs)
+    }
+
+    fn collect_directory_jobs(
+        paths: VecDeque<PathBuf>,
+        config: ConversionConfig,
+    ) -> exn::Result<Option<Self>, ErrorMessage> {
+        let collect_single = |path| {
+            let root = Directory::new(path).map_err(|e| e.discard_recovery())?;
+            images_in_dir_recursively(root, config)
+        };
+
+        let err = || {
+            let msg = "Failed to collect all directories".to_string();
+            debug!("{msg}");
+            ErrorMessage(msg)
+        };
+
+        let jobs = paths
+            .into_iter()
+            .map(collect_single)
+            .collect::<exn::Result<Vec<_>, _>>()
+            .or_raise(err)?
+            .into_iter()
+            .flatten()
+            .flatten();
+        let jobs = RecursiveDirJobs::new(jobs).map(Self::Directories);
+        Ok(jobs)
+    }
+
+    fn run(self) -> exn::Result<(), ErrorMessage> {
+        let bars = {
+            let multi = indicatif::MultiProgress::new();
+            let archives = multi.add(create_progress_bar("Archives"));
+            let images = multi.add(create_progress_bar("Images"));
+
+            archives.enable_responsive_tick(std::time::Duration::from_millis(250));
+            images.enable_responsive_tick(std::time::Duration::from_millis(250));
+
+            convert::Bars {
+                multi,
+                jobs: archives,
+                images,
+            }
+        };
+
+        let res = match self {
+            MainJob::Archives(jobs) => jobs.run(&bars),
+            MainJob::Directories(jobs) => jobs.run(&bars),
+        };
+
+        debug!("finish bars");
+        bars.jobs.finish();
+        bars.images.finish();
+        res
+    }
 }
 
 fn real_main() -> exn::Result<(), ErrorMessage> {
+    let err = || {
+        let msg = "failed to run conversion jobs".to_string();
+        debug!("{msg}");
+        ErrorMessage(msg)
+    };
+
     let matches = Args::parse();
 
     if let Some(log_path) = matches.log {
-        init_logger(&log_path, matches.level)?;
+        init_logger(&log_path, matches.level).or_raise(err)?;
     }
 
     let cmd = std::env::args_os()
@@ -175,32 +246,17 @@ fn real_main() -> exn::Result<(), ErrorMessage> {
         forced: matches.force,
     };
 
-    let path = matches.path;
+    let paths = VecDeque::from(matches.paths);
 
-    let (path, dir_exn) = match crate::convert::Directory::new(path) {
-        Ok(root) => match matches.no_archive {
-            true => return images_in_dir_recursively(root, config),
-            false => return archives_in_dir(root, config),
-        },
-        Err(exn) => exn.recover(),
+    let main_job = match matches.no_archive {
+        true => MainJob::collect_directory_jobs(paths, config).or_raise(err)?,
+        false => MainJob::collect_archive_jobs(paths, config).or_raise(err)?,
     };
-
-    let (path, archive_exn) = match ArchivePath::new(path) {
-        Ok(archive) => match matches.no_archive {
-            true => {
-                let (path, exn) = dir_exn.recover();
-                let msg = format!("Got a file path when expecting a directory: {path:?}");
-                debug!("{msg}");
-                return Err(exn.raise(ErrorMessage(msg)));
-            }
-            false => return single_archive(archive, config),
-        },
-        Err(exn) => exn.recover(),
+    let Some(main_job) = main_job else {
+        eprintln!("Nothing to do");
+        return Ok(());
     };
-
-    let msg = format!("Neither an archive nor a directory: {path:?}");
-    debug!("{msg}");
-    Err(Exn::raise_all(ErrorMessage(msg), [archive_exn, dir_exn]))
+    main_job.run().or_raise(err)
 }
 
 fn create_progress_bar(msg: &'static str) -> indicatif::ProgressBar {
@@ -212,7 +268,6 @@ fn create_progress_bar(msg: &'static str) -> indicatif::ProgressBar {
     let bar = indicatif::ProgressBar::new(0)
         .with_style(style)
         .with_message(msg);
-    bar.enable_responsive_tick(std::time::Duration::from_millis(250));
     bar
 }
 
