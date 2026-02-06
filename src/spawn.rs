@@ -310,7 +310,7 @@ pub fn extract_zip(archive: &Path, destination: &Path) -> Result<ManagedChild, E
     let mut cmd = Command::new(TOOL.name());
     cmd.args([
         "x",
-        "-tzip", // undocumented switch to remove header lines
+        "-tzip",
         archive.to_str().unwrap(),
         "-spe",
         format!("-o{}", destination.to_str().unwrap()).as_str(),

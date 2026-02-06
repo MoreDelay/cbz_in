@@ -44,7 +44,7 @@ impl ArchiveJobs {
     pub fn collect(root: Directory, config: Configuration) -> Result<Self, Exn<ErrorMessage>> {
         let err = || {
             ErrorMessage::new(format!(
-                "Error while looking for archives needing conversion from root {root:?}"
+                "Error while looking for archives needing conversion in directory {root:?}"
             ))
         };
 

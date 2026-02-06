@@ -41,7 +41,6 @@ fn real_main() -> Result<(), Exn<ErrorMessage>> {
         .map(|s| s.to_string_lossy().to_string())
         .collect::<Vec<_>>()
         .join(" ");
-
     info!("starting new execution as {cmd:?}");
     let cwd = std::env::current_dir().unwrap_or_default();
     info!("working directory: {:?}", cwd);
@@ -222,7 +221,8 @@ fn archives_in_dir(
     root: Directory,
     config: convert::Configuration,
 ) -> Result<convert::ArchiveJobs, Exn<ErrorMessage>> {
-    let err = || ErrorMessage::new("Failed to convert all archives in a directory");
+    let err =
+        || ErrorMessage::new("Failed to create conversion job for all archives in a directory");
 
     info!("Checking archives directory {root:?}");
     convert::ArchiveJobs::collect(root, config).or_raise(err)
@@ -233,9 +233,9 @@ fn images_in_dir_recursively(
     root: Directory,
     config: convert::Configuration,
 ) -> Result<Option<convert::RecursiveDirJobs>, Exn<ErrorMessage>> {
-    let err = || ErrorMessage::new("Failed to convert all images in a directory");
+    let err = || ErrorMessage::new("Failed to create conversion job for a directory");
 
-    info!("Checking root directory {root:?}");
+    info!("Checking root directory recursively {root:?}");
     convert::RecursiveDirJobs::single(root, config).or_raise(err)
 }
 
@@ -264,7 +264,7 @@ fn init_logger(path: &Path, level: tracing::Level) -> Result<(), Exn<ErrorMessag
         return Err(err(msg));
     }
     let Some(file_name) = path.file_name() else {
-        let msg = "The filename is empty".to_string();
+        let msg = format!("The filename is empty: {path:?}");
         return Err(err(msg));
     };
 
