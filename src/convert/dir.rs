@@ -9,11 +9,16 @@ use walkdir::WalkDir;
 
 use crate::convert::{
     Configuration,
-    image::{ConversionJob, ConversionJobDetails, ConversionJobs},
+    image::{ConversionJob, ConversionJobs, Details},
 };
 use crate::error::NothingToDo;
 use crate::{convert::image::ImageFormat, error::ErrorMessage};
 
+/// Represents the job to convert all images within a directory.
+///
+/// When run, this job creates a mirrored directory of hard links to all original files. Then all
+/// images are replaced with the converted image type. This is only intended for regular
+/// directories, and does not traverse mount points.
 pub struct RecursiveDirJob {
     root: Directory,
     hardlink: RecursiveHardLinkJob,
@@ -47,6 +52,9 @@ impl super::Job for RecursiveDirJob {
 }
 
 impl RecursiveDirJob {
+    /// Create a new job to convert all images in a directory.
+    ///
+    /// No files get touched until this job is run.
     pub fn new(
         root: Directory,
         config: Configuration,
@@ -61,6 +69,12 @@ impl RecursiveDirJob {
             target, n_workers, ..
         } = config;
 
+        if Self::already_converted(&root, target).or_raise(err)? {
+            let msg = format!("Already converted {root:?}");
+            let exn = Exn::new(NothingToDo::new(msg));
+            return Ok(Err(exn));
+        }
+
         let copy_root = Self::get_hardlink_dir(&root, config.target).or_raise(err)?;
         let job_queue = Self::images_in_dir(&root)?
             .into_iter()
@@ -69,7 +83,7 @@ impl RecursiveDirJob {
                     .strip_prefix(&root)
                     .expect("image path is within root by construction");
                 let copy_path = copy_root.join(rel_path);
-                match ConversionJobDetails::new(&copy_path, format, config) {
+                match Details::new(&copy_path, format, config) {
                     Ok(Some(task)) => {
                         debug!("create job for {copy_path:?}: {task:?}");
                         Some(Ok(ConversionJob::new(copy_path, task)))
@@ -101,6 +115,37 @@ impl RecursiveDirJob {
         }))
     }
 
+    /// Builds the path to the mirrored directory with hard links.
+    fn get_hardlink_dir(
+        root: &Directory,
+        target: ImageFormat,
+    ) -> Result<PathBuf, Exn<ErrorMessage>> {
+        let err = || ErrorMessage::new(format!("Directory has no parent: {root:?}"));
+
+        let parent = root.parent().ok_or_raise(err)?;
+        let name = root.file_stem().unwrap().to_string_lossy();
+        let new_name = format!("{}-{}", name, target.ext());
+        Ok(parent.join(new_name))
+    }
+
+    /// Checks if the given archive has already been converted.
+    ///
+    /// A converted archive either already holds the correct image format suffix in its name, or
+    /// there exists another archive with the same name and that suffix in the same directory.
+    fn already_converted(root: &Directory, target: ImageFormat) -> Result<bool, Exn<ErrorMessage>> {
+        let err =
+            || ErrorMessage::new("Could not check if this directory has been converted before");
+
+        let converted_path = Self::get_hardlink_dir(root, target).or_raise(err)?;
+
+        let conversion_ending = format!("-{}", target.ext());
+        let is_converted_dir = root.to_str().unwrap().ends_with(&conversion_ending);
+        let has_converted_dir = converted_path.try_exists().or_raise(err)?;
+
+        Ok(is_converted_dir || has_converted_dir)
+    }
+
+    /// Collects all images and their file type found recursively in a directory.
     fn images_in_dir(root: &Directory) -> Result<Vec<(PathBuf, ImageFormat)>, Exn<ErrorMessage>> {
         let err = || {
             ErrorMessage::new(format!(
@@ -135,20 +180,13 @@ impl RecursiveDirJob {
             })
             .collect()
     }
-
-    fn get_hardlink_dir(
-        root: &Directory,
-        target: ImageFormat,
-    ) -> Result<PathBuf, Exn<ErrorMessage>> {
-        let err = || ErrorMessage::new(format!("Directory has no parent: {root:?}"));
-
-        let parent = root.parent().ok_or_raise(err)?;
-        let name = root.file_stem().unwrap().to_string_lossy();
-        let new_name = format!("{}-{}", name, target.ext());
-        Ok(parent.join(new_name))
-    }
 }
 
+/// Represents the job to create a mirror directory of hard links.
+///
+/// When run, this job creates a new directory named `<original name>-<target extension>`.The
+/// directory will create a hard link to all files in the original directory, therefore this is a
+/// relatively light-weight operation.
 struct RecursiveHardLinkJob {
     root: Directory,
     target: ImageFormat,
@@ -187,10 +225,14 @@ impl RecursiveHardLinkJob {
     }
 }
 
+/// A filesystem path that was verified to point to an existing directory.
 #[derive(Debug, Clone)]
 pub struct Directory(PathBuf);
 
 impl Directory {
+    /// Checked constructor to verify the path points to a directory.
+    ///
+    /// This only checks that the directory exists at the time of creation.
     pub fn new(path: PathBuf) -> Result<Self, Exn<ErrorMessage, PathBuf>> {
         match path.is_dir() {
             true => Ok(Self(path)),
@@ -217,19 +259,23 @@ impl std::convert::AsRef<Path> for Directory {
     }
 }
 
-/// Deletes the temporary directory when dropped
+/// Deletes the temporary directory when dropped.
 ///
-/// To keep the directory, use `guard.keep()`
+/// To keep the directory, use [TempDirGuard::keep()].
 pub struct TempDirGuard {
     temp_root: Option<PathBuf>,
 }
 
 impl TempDirGuard {
+    /// Create a guard for a temporary directory. Deletes the directory on drop.
+    ///
+    /// The directory must not yet exist when the guard is created.
     pub fn new(temp_root: PathBuf) -> Self {
         let temp_root = Some(temp_root);
         Self { temp_root }
     }
 
+    /// Drop the guard without removing the temporary directory.
     pub fn keep(mut self) {
         self.temp_root.take();
     }

@@ -18,12 +18,15 @@ use tracing::debug;
 
 use crate::convert::Configuration;
 use crate::convert::dir::TempDirGuard;
-use crate::{
-    convert::image::{ConversionJob, ConversionJobDetails, ConversionJobs, ImageFormat},
-    error::{ErrorMessage, NothingToDo},
-    spawn,
-};
+use crate::convert::image::{ConversionJob, ConversionJobs, Details, ImageFormat};
+use crate::error::{ErrorMessage, NothingToDo};
+use crate::spawn;
 
+/// Represents the job to convert all images within a Zip archive.
+///
+/// When run, this job extracts the archive into a temporary directory next to the archive,
+/// converts all files inside that directory, then compresses the archive again. The final archive
+/// is placed next to the original, with an additional suffix to its name.
 pub struct ArchiveJob {
     archive_path: ArchivePath,
     extraction: ExtractionJob,
@@ -58,15 +61,24 @@ impl super::Job for ArchiveJob {
 }
 
 impl ArchiveJob {
+    /// Create a new job to convert all images in an archive.
+    ///
+    /// No files get touched until this job is run.
     pub fn new(
         archive_path: ArchivePath,
         config: Configuration,
     ) -> Result<Result<Self, Exn<NothingToDo>>, Exn<ErrorMessage>> {
+        let err = || {
+            ErrorMessage::new(format!(
+                "Failed to prepare job for archive conversion {archive_path:?}"
+            ))
+        };
+
         let Configuration {
             target, n_workers, ..
         } = config;
 
-        if Self::already_converted(&archive_path, target) {
+        if Self::already_converted(&archive_path, target).or_raise(err)? {
             let msg = format!("Already converted {archive_path:?}");
             let exn = Exn::new(NothingToDo::new(msg));
             return Ok(Err(exn));
@@ -79,12 +91,13 @@ impl ArchiveJob {
             return Err(exn);
         }
 
-        let root_dir = Self::get_extraction_root_dir(&archive_path)?;
-        let job_queue = Self::images_in_archive(&archive_path)?
+        let root_dir = Self::get_extraction_root_dir(&archive_path).or_raise(err)?;
+        let job_queue = Self::images_in_archive(&archive_path)
+            .or_raise(err)?
             .into_iter()
             .filter_map(|(image_path, format)| {
                 let image_path = root_dir.join(image_path);
-                match ConversionJobDetails::new(&image_path, format, config) {
+                match Details::new(&image_path, format, config) {
                     Ok(Some(task)) => {
                         debug!("create job for {image_path:?}: {task:?}");
                         Some(Ok(ConversionJob::new(image_path, task)))
@@ -97,7 +110,7 @@ impl ArchiveJob {
                 }
             })
             .collect::<Result<VecDeque<_>, _>>()
-            .or_raise(|| ErrorMessage::new("Error while preparing all conversion job"))?;
+            .or_raise(err)?;
 
         if job_queue.is_empty() {
             let msg = format!("No files to convert in {archive_path:?}");
@@ -121,26 +134,43 @@ impl ArchiveJob {
         }))
     }
 
-    fn get_conversion_root_dir(cbz_path: &Path) -> PathBuf {
+    /// Builds the path to the temporary directory where the archive gets extracted to.
+    fn get_conversion_root_dir(cbz_path: &ArchivePath) -> PathBuf {
         let dir = cbz_path.parent().unwrap();
         let name = cbz_path.file_stem().unwrap();
         dir.join(name)
     }
 
-    fn already_converted(path: &ArchivePath, format: ImageFormat) -> bool {
-        let conversion_ending = format!(".{}.cbz", format.ext());
+    /// Checks if the given archive has already been converted.
+    ///
+    /// A converted archive either already holds the correct image format suffix in its name, or
+    /// there exists another archive with the same name and that suffix in the same directory.
+    fn already_converted(
+        path: &ArchivePath,
+        target: ImageFormat,
+    ) -> Result<bool, Exn<ErrorMessage>> {
+        let err =
+            || ErrorMessage::new("Could not check if archive has been converted before: {path:?}");
+
+        let conversion_ending = format!(".{}.cbz", target.ext());
 
         let dir = path.parent().unwrap();
         let name = path.file_stem().unwrap();
         let zip_path = dir.join(format!("{}{}", name.to_str().unwrap(), conversion_ending));
 
         let is_converted_archive = path.to_str().unwrap().ends_with(&conversion_ending);
-        let has_converted_archive = zip_path.exists();
+        let has_converted_archive = zip_path.try_exists().or_raise(err)?;
 
-        is_converted_archive || has_converted_archive
+        Ok(is_converted_archive || has_converted_archive)
     }
 
-    fn get_extraction_root_dir(cbz_path: &Path) -> Result<PathBuf, Exn<ErrorMessage>> {
+    /// Builds the path that should be provided for 7z such that it aligns with our expectations.
+    ///
+    /// When the archive gets compressed later, it should include a single top-level directory with
+    /// the same file name as the archive itself, without extensions. If the archive already has
+    /// this directory, then it can be extracted directly. Otherwise the root directory must be
+    /// created first, and the contents are extracted inside of that.
+    fn get_extraction_root_dir(cbz_path: &ArchivePath) -> Result<PathBuf, Exn<ErrorMessage>> {
         let err = || {
             let msg = format!("Could not determine the extraction dir for {cbz_path:?}");
             ErrorMessage::new(msg)
@@ -173,8 +203,9 @@ impl ArchiveJob {
         Ok(extract_dir)
     }
 
+    /// Collects all images and their file type found the an archive.
     fn images_in_archive(
-        cbz_path: &Path,
+        cbz_path: &ArchivePath,
     ) -> Result<Vec<(PathBuf, ImageFormat)>, Exn<ErrorMessage>> {
         let err = || ErrorMessage::new(format!("Could not list files within archive {cbz_path:?}"));
 

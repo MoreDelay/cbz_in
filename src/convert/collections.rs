@@ -14,10 +14,11 @@ use crate::{
 
 use super::archive::ArchiveJob;
 
+/// Represents a collection of [ArchiveJob]'s, which are all performed in one operation.
 pub struct ArchiveJobs(Vec<ArchiveJob>);
 
 impl JobCollection for ArchiveJobs {
-    type Job = ArchiveJob;
+    type Single = ArchiveJob;
 
     fn jobs(&self) -> usize {
         self.0.len()
@@ -25,6 +26,7 @@ impl JobCollection for ArchiveJobs {
 }
 
 impl ArchiveJobs {
+    /// The constructed [ArchiveJobs] will contain only a single [ArchiveJob].
     pub fn single(
         archive: ArchivePath,
         config: Configuration,
@@ -38,6 +40,7 @@ impl ArchiveJobs {
         }
     }
 
+    /// Create an [ArchiveJob] for all archives found in the provided root directory.
     pub fn collect(root: Directory, config: Configuration) -> Result<Self, Exn<ErrorMessage>> {
         let err = || {
             ErrorMessage::new(format!(
@@ -76,6 +79,7 @@ impl ArchiveJobs {
         Ok(Self(jobs))
     }
 
+    /// Combine all [ArchiveJob]'s to wrap them up in a new collection.
     pub fn new(iter: impl IntoIterator<Item = ArchiveJob>) -> Option<Self> {
         let jobs = iter.into_iter().collect::<Vec<_>>();
         match jobs.is_empty() {
@@ -100,10 +104,11 @@ impl IntoIterator for ArchiveJobs {
     }
 }
 
+/// Represents a collection of [RecursiveDirJob]'s, which are all performed in one operation.
 pub struct RecursiveDirJobs(Vec<RecursiveDirJob>);
 
 impl JobCollection for RecursiveDirJobs {
-    type Job = RecursiveDirJob;
+    type Single = RecursiveDirJob;
 
     fn jobs(&self) -> usize {
         self.0.len()
@@ -111,6 +116,7 @@ impl JobCollection for RecursiveDirJobs {
 }
 
 impl RecursiveDirJobs {
+    /// The constructed [RecursiveDirJobs] will contain only a single [RecursiveDirJob].
     pub fn single(
         dir: Directory,
         config: Configuration,
@@ -124,6 +130,7 @@ impl RecursiveDirJobs {
         }
     }
 
+    /// Combine all [RecursiveDirJob]'s to wrap them up in a new collection.
     pub fn new(iter: impl IntoIterator<Item = RecursiveDirJob>) -> Option<Self> {
         let jobs = iter.into_iter().collect::<Vec<_>>();
         match jobs.is_empty() {

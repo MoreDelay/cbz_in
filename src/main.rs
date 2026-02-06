@@ -3,6 +3,7 @@ mod error;
 mod spawn;
 
 use std::collections::VecDeque;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::thread;
 
@@ -15,6 +16,9 @@ use crate::convert::dir::Directory;
 use crate::convert::{ImageFormat, JobCollection};
 use crate::error::ErrorMessage;
 
+/// The program entry point.
+///
+/// It's only purpose is to log all errors bubbling up until here.
 fn main() -> Result<(), Exn<ErrorMessage>> {
     let ret = real_main();
     if let Err(e) = &ret {
@@ -23,6 +27,7 @@ fn main() -> Result<(), Exn<ErrorMessage>> {
     ret
 }
 
+/// The application's entry point.
 fn real_main() -> Result<(), Exn<ErrorMessage>> {
     let err = || ErrorMessage::new("Failed to run conversion jobs");
 
@@ -41,13 +46,11 @@ fn real_main() -> Result<(), Exn<ErrorMessage>> {
     let cwd = std::env::current_dir().unwrap_or_default();
     info!("working directory: {:?}", cwd);
 
+    const ONE: NonZeroUsize = NonZeroUsize::new(1).unwrap();
     let n_workers = match matches.workers {
         Some(Some(value)) => value,
-        Some(None) => 1,
-        None => match thread::available_parallelism() {
-            Ok(value) => value.get(),
-            Err(_) => 1,
-        },
+        Some(None) => ONE,
+        None => thread::available_parallelism().unwrap_or(ONE),
     };
 
     let config = convert::Configuration {
@@ -78,26 +81,28 @@ fn real_main() -> Result<(), Exn<ErrorMessage>> {
 #[derive(Parser)]
 #[command(version, verbatim_doc_comment)]
 struct Args {
-    /// All images within the archive(s) are converted to this format.
+    /// All images within the archive(s) are converted to this format
     #[arg(required = true, verbatim_doc_comment)]
     format: ImageFormat,
 
-    /// Path to a cbz file or a directory containing cbz files.
+    /// Path to cbz files or directories containing cbz files
+    ///
+    /// When providing directories, only top-level archives are considered for conversion.
     #[arg(default_value = ".", num_args = 1.., verbatim_doc_comment)]
     paths: Vec<PathBuf>,
 
-    /// Number of processes spawned.
+    /// Number of processes spawned
     ///
     /// Uses as many processes as you have cores by default. When used as a flag only spawns a
     /// single process at a time.
     #[arg(short = 'j', long, verbatim_doc_comment)]
-    workers: Option<Option<usize>>,
+    workers: Option<Option<NonZeroUsize>>,
 
     /// Convert all images of all formats.
     #[arg(short, long, verbatim_doc_comment)]
     force: bool,
 
-    /// Convert images in the directory directly (recursively).
+    /// Convert images in the directory directly (recursively)
     ///
     /// This will create a copy of your directory structure using hard links. This means your data
     /// is not copied as both structures point to the same underlying files. The only difference
@@ -105,7 +110,7 @@ struct Args {
     #[arg(long, verbatim_doc_comment)]
     no_archive: bool,
 
-    /// Write a log file.
+    /// Write a log file
     #[arg(
         long ,
         value_name = "LOG_FILE",
@@ -115,17 +120,19 @@ struct Args {
     )]
     log: Option<PathBuf>,
 
-    /// Detail level of logging.
+    /// Detail level of logging
     #[arg(long, default_value = "info", verbatim_doc_comment)]
     level: tracing::Level,
 }
 
+/// The top-level task of the application, as determined by user arguments.
 enum MainJob {
     Archives(convert::ArchiveJobs),
     Directories(convert::RecursiveDirJobs),
 }
 
 impl MainJob {
+    /// Create [MainJob::Archives], combining all found archives into a single job collection.
     fn collect_archive_jobs(
         paths: VecDeque<PathBuf>,
         config: convert::Configuration,
@@ -160,6 +167,7 @@ impl MainJob {
         Ok(jobs)
     }
 
+    /// Create [MainJob::Directories], combining all directories into a single job collection.
     fn collect_directory_jobs(
         paths: VecDeque<PathBuf>,
         config: convert::Configuration,
@@ -183,10 +191,11 @@ impl MainJob {
         Ok(jobs)
     }
 
+    /// Run this job.
     fn run(self) -> Result<(), Exn<ErrorMessage>> {
         let collection_type = match self {
-            MainJob::Archives(_) => convert::CollectionType::Archives,
-            MainJob::Directories(_) => convert::CollectionType::Directories,
+            MainJob::Archives(_) => convert::JobsBarTitle::Archives,
+            MainJob::Directories(_) => convert::JobsBarTitle::Directories,
         };
         let bars = convert::Bars::new(collection_type);
 
@@ -201,6 +210,7 @@ impl MainJob {
     }
 }
 
+/// Create a [convert::ArchiveJobs] for a single archive.
 fn single_archive(
     archive: ArchivePath,
     config: convert::Configuration,
@@ -211,6 +221,7 @@ fn single_archive(
     convert::ArchiveJobs::single(archive, config).or_raise(err)
 }
 
+/// Create a [convert::ArchiveJobs] for all archives in a directory.
 fn archives_in_dir(
     root: Directory,
     config: convert::Configuration,
@@ -221,6 +232,7 @@ fn archives_in_dir(
     convert::ArchiveJobs::collect(root, config).or_raise(err)
 }
 
+/// Create a [convert::RecursiveDirJobs] for a directory.
 fn images_in_dir_recursively(
     root: Directory,
     config: convert::Configuration,
@@ -231,6 +243,7 @@ fn images_in_dir_recursively(
     convert::RecursiveDirJobs::single(root, config).or_raise(err)
 }
 
+/// Initialize the logger as requested.
 fn init_logger(path: &Path, level: tracing::Level) -> Result<(), Exn<ErrorMessage>> {
     let err = || ErrorMessage::new("Failed to initialize logging to file {path:?}");
 
