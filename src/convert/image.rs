@@ -249,7 +249,7 @@ impl StateCompleted {
                 to,
             },
             Details::Finish { .. } => {
-                let msg = "image from a previous pass could not be formatted further, \
+                let msg = "Image from a previous pass could not be formatted further, \
                                 something is gravely wrong";
                 return Err(exn.raise(ErrorMessage::new(msg)));
             }

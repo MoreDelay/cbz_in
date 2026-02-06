@@ -54,7 +54,7 @@ pub trait JobCollection: IntoIterator<Item = Self::Single> + Sized {
             true => Ok(()),
             false => {
                 let n = errors.len();
-                let err = ErrorMessage::new(format!("Failed to complete {n} job"));
+                let err = ErrorMessage::new(format!("Failed to complete {n} job(s)"));
                 Err(Exn::raise_all(err, errors))
             }
         }
@@ -105,7 +105,7 @@ impl Bars {
     pub fn println(&self, msg: impl AsRef<str>) {
         let msg = msg.as_ref();
         if let Err(e) = self.multi.println(msg) {
-            warn!("Failed to write new message to stdout: {e:?}\nOriginal message: {msg}");
+            warn!("Failed to write a message to console: {e:?}\nOriginal message: {msg}");
         }
     }
 

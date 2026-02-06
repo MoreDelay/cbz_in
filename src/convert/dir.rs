@@ -41,7 +41,7 @@ impl super::Job for RecursiveDirJob {
         let err = || {
             let root = root.deref();
             ErrorMessage::new(format!(
-                "Failed to convert all images recursively in {root:?}"
+                "Failed to convert all images recursively within {root:?}"
             ))
         };
 
