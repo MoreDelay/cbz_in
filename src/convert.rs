@@ -54,7 +54,7 @@ pub trait JobCollection: IntoIterator<Item = Self::Single> + Sized {
             true => Ok(()),
             false => {
                 let n = errors.len();
-                let err = ErrorMessage::new(format!("Failed to convert {n} job"));
+                let err = ErrorMessage::new(format!("Failed to complete {n} job"));
                 Err(Exn::raise_all(err, errors))
             }
         }
@@ -63,16 +63,16 @@ pub trait JobCollection: IntoIterator<Item = Self::Single> + Sized {
     /// Run one of the jobs that is part of the collection.
     fn run_single(job: Self::Single, bars: &Bars) -> Result<(), Exn<ErrorMessage>> {
         info!("Converting {:?}", job.path());
-        let print_res = bars.multi.println(format!("Converting {:?}", job.path()));
-        if let Err(e) = print_res {
-            warn!("Failed to write new message to stdout: {e:?}");
-        }
+        bars.println(format!("Converting {:?}", job.path()));
 
         let run_res = job.run(&bars.images);
         bars.jobs.inc(1);
         match &run_res {
             Ok(_) => info!("Done"),
-            Err(e) => error!("{e}"),
+            Err(e) => {
+                bars.println(format!("ERROR: {e}"));
+                error!("{e}");
+            }
         }
         run_res
     }
@@ -102,14 +102,11 @@ impl Bars {
         }
     }
 
-    /// Get the progress bar for the progress across job collections.
-    pub fn jobs(&self) -> &ProgressBar {
-        &self.jobs
-    }
-
-    /// Get the progress bar for the progress on individual images.
-    pub fn images(&self) -> &ProgressBar {
-        &self.images
+    pub fn println(&self, msg: impl AsRef<str>) {
+        let msg = msg.as_ref();
+        if let Err(e) = self.multi.println(msg) {
+            warn!("Failed to write new message to stdout: {e:?}\nOriginal message: {msg}");
+        }
     }
 
     /// Create a new progress bar with hard-coded style.
@@ -126,6 +123,7 @@ impl Bars {
         indicatif::ProgressBar::new(0)
             .with_style(style)
             .with_message(title)
+            .with_finish(indicatif::ProgressFinish::AndLeave)
     }
 }
 
