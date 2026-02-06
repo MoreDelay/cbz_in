@@ -78,27 +78,27 @@ fn real_main() -> Result<(), Exn<ErrorMessage>> {
 /// Png and Jpeg. The new archive with converted images is placed adjacent to the original, so this
 /// operation is non-destructive.
 #[derive(Parser)]
-#[command(version, verbatim_doc_comment)]
+#[command(version)]
 struct Args {
     /// All images within the archive(s) are converted to this format
-    #[arg(required = true, verbatim_doc_comment)]
+    #[arg(required = true)]
     format: ImageFormat,
 
     /// Path to cbz files or directories containing cbz files
     ///
     /// When providing directories, only top-level archives are considered for conversion.
-    #[arg(default_value = ".", num_args = 1.., verbatim_doc_comment)]
+    #[arg(default_value = ".", num_args = 1..)]
     paths: Vec<PathBuf>,
 
     /// Number of processes spawned
     ///
     /// Uses as many processes as you have cores by default. When used as a flag only spawns a
     /// single process at a time.
-    #[arg(short = 'j', long, verbatim_doc_comment)]
+    #[arg(short = 'j', long)]
     workers: Option<Option<NonZeroUsize>>,
 
     /// Convert all images of all formats.
-    #[arg(short, long, verbatim_doc_comment)]
+    #[arg(short, long)]
     force: bool,
 
     /// Convert images in the directory directly (recursively)
@@ -106,7 +106,7 @@ struct Args {
     /// This will create a copy of your directory structure using hard links. This means your data
     /// is not copied as both structures point to the same underlying files. The only difference
     /// between both directory structures are the converted images found in a recursive search.
-    #[arg(long, verbatim_doc_comment)]
+    #[arg(long)]
     no_archive: bool,
 
     /// Write a log file
@@ -115,12 +115,11 @@ struct Args {
         value_name = "LOG_FILE",
         num_args(0..=1),
         default_missing_value = "./cbz_in.log",
-        verbatim_doc_comment
     )]
     log: Option<PathBuf>,
 
     /// Detail level of logging
-    #[arg(long, default_value = "info", verbatim_doc_comment)]
+    #[arg(long, default_value = "info")]
     level: tracing::Level,
 }
 

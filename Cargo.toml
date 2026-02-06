@@ -8,7 +8,7 @@ description = "Convert images within comic archives to newer image formats"
 
 [dependencies]
 anyhow = "1.0.100"
-clap = { version = "4.5.16", features = ["derive"] }
+clap = { version = "4.5.16", features = ["derive", "wrap_help"] }
 derive_more = { version = "2.1.1", features = ["display"] }
 # exn = "0.3.0"
 exn = { git = "https://github.com/MoreDelay/exn", branch = "recovery" }
