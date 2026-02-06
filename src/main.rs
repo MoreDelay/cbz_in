@@ -199,14 +199,10 @@ impl MainJob {
         };
         let bars = convert::Bars::new(collection_type);
 
-        let res = match self {
+        match self {
             MainJob::Archives(jobs) => jobs.run(&bars),
             MainJob::Directories(jobs) => jobs.run(&bars),
-        };
-
-        bars.jobs().finish();
-        bars.images().finish();
-        res
+        }
     }
 }
 

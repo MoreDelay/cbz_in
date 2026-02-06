@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::fs;
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
 use exn::{ErrorExt, Exn, OptionExt, ResultExt};
@@ -38,6 +39,7 @@ impl super::Job for RecursiveDirJob {
         } = self;
 
         let err = || {
+            let root = root.deref();
             ErrorMessage::new(format!(
                 "Failed to convert all images recursively in {root:?}"
             ))
