@@ -14,6 +14,7 @@ missing_docs_in_private_items = "warn"
 anyhow = "1.0.100"
 clap = { version = "4.5.16", features = ["derive", "wrap_help"] }
 derive_more = { version = "2.1.1", features = ["display"] }
+either = "1.15.0"
 # exn = "0.3.0"
 exn = { git = "https://github.com/MoreDelay/exn", branch = "recovery" }
 # indicatif = "0.18.3"

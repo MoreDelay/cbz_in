@@ -20,7 +20,7 @@ use tracing::debug;
 
 use crate::convert::Configuration;
 use crate::convert::dir::TempDirGuard;
-use crate::convert::image::{ConversionJob, ConversionJobs, Details, ImageFormat};
+use crate::convert::image::{ConversionJob, ConversionJobs, ImageFormat, Plan};
 use crate::convert::search::{ArchiveImages, ImageInfo};
 use crate::error::{ErrorMessage, NothingToDo};
 use crate::spawn;
@@ -106,20 +106,18 @@ impl ArchiveJob {
             .into_iter()
             .filter_map(|ImageInfo { path, format }| {
                 let image_path = root_dir.join(path);
-                match Details::new(&image_path, format, config) {
-                    Ok(Some(task)) => {
+                match Plan::new(format, config) {
+                    Some(task) => {
                         debug!("create job for {image_path:?}: {task:?}");
-                        Some(Ok(ConversionJob::new(image_path, task)))
+                        Some(ConversionJob::new(image_path, task))
                     }
-                    Ok(None) => {
+                    None => {
                         debug!("skip conversion for {image_path:?}");
                         None
                     }
-                    Err(e) => Some(Err(e)),
                 }
             })
-            .collect::<Result<VecDeque<_>, _>>()
-            .or_raise(err)?;
+            .collect::<VecDeque<_>>();
 
         if job_queue.is_empty() {
             let msg = format!("No files to convert in {archive:?}");
