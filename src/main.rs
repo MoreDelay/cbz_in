@@ -4,30 +4,35 @@ mod convert;
 mod error;
 mod spawn;
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::thread;
 
 use clap::Parser;
-use exn::{ErrorExt, Exn, OptionExt, ResultExt};
-use tracing::{error, info};
+use exn::{ErrorExt, Exn, OptionExt, ResultExt, bail};
+use tracing::info;
 
 use crate::convert::archive::ArchivePath;
 use crate::convert::dir::Directory;
 use crate::convert::image::ImageFormat;
-use crate::convert::{ArchiveJobs, Configuration, JobCollection, RecursiveDirJobs};
-use crate::error::ErrorMessage;
+use crate::convert::{ArchiveJobs, Configuration, Job, JobCollection, RecursiveDirJobs};
+use crate::error::{ErrorMessage, got_interrupted};
 
 /// The program entry point.
 ///
 /// It's only purpose is to log all errors bubbling up until here.
 fn main() -> Result<(), Exn<ErrorMessage>> {
     let ret = real_main();
-    if let Err(e) = &ret {
-        error!("Application error:\n{e:?}");
+
+    match ret {
+        Ok(()) => Ok(()),
+        Err(exn) if got_interrupted(&exn) => {
+            eprintln!("Got interrupted");
+            Ok(())
+        }
+        Err(exn) => Err(exn),
     }
-    ret
 }
 
 /// The application's entry point.
@@ -71,7 +76,12 @@ fn real_main() -> Result<(), Exn<ErrorMessage>> {
         eprintln!("Nothing to do");
         return Ok(());
     };
-    main_job.run().or_raise(err)
+
+    main_job.dry_run().or_raise(err)?;
+    if !matches.dry_run {
+        main_job.run().or_raise(err)?;
+    }
+    Ok(())
 }
 
 /// Convert images within comic archives to newer image formats.
@@ -103,6 +113,10 @@ struct Args {
     /// Convert all images of all formats.
     #[arg(short, long)]
     force: bool,
+
+    /// Check if all tools are available to perform conversions.
+    #[arg(short, long)]
+    dry_run: bool,
 
     /// Convert images in the directory directly (recursively)
     ///
@@ -203,9 +217,67 @@ impl MainJob {
         let bars = convert::Bars::new(collection_type);
 
         match self {
-            MainJob::Archives(jobs) => jobs.run(&bars),
-            MainJob::Directories(jobs) => jobs.run(&bars),
+            MainJob::Archives(jobs) => jobs.run(&bars)?,
+            MainJob::Directories(jobs) => jobs.run(&bars)?,
         }
+
+        bars.finish();
+        Ok(())
+    }
+
+    /// Check if we can run this job, and print out statistics.
+    fn dry_run(&self) -> Result<(), Exn<ErrorMessage>> {
+        let err = || ErrorMessage::new("Issue encountered during dry run");
+
+        self.check_tools().or_raise(err)?;
+        self.print_statistics();
+        Ok(())
+    }
+
+    /// Check if all tools needed for this job are actually available.
+    fn check_tools(&self) -> Result<(), Exn<ErrorMessage>> {
+        let iter: &mut dyn Iterator<Item = _> = match self {
+            MainJob::Archives(jobs) => &mut jobs.jobs().flat_map(|job| job.iter()),
+            MainJob::Directories(jobs) => &mut jobs.jobs().flat_map(|job| job.iter()),
+        };
+        let required_tools = iter
+            .flat_map(|job| job.plan().required_tools())
+            .collect::<HashSet<_>>();
+        let missing_tools = required_tools
+            .into_iter()
+            .flat_map(|tool| match tool.available() {
+                Ok(true) => None,
+                Ok(false) => Some(Ok(tool.name())),
+                Err(e) => Some(Err(e)),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        if !missing_tools.is_empty() {
+            let tools = missing_tools.join(", ");
+            let msg = format!("Missing tools: {tools}");
+            bail!(ErrorMessage::new(msg))
+        }
+        Ok(())
+    }
+
+    /// Print out statistics on how many images would get converted by this job.
+    fn print_statistics(&self) {
+        let collections = match self {
+            MainJob::Archives(jobs) => jobs.jobs().count(),
+            MainJob::Directories(jobs) => jobs.jobs().count(),
+        };
+
+        let images = match self {
+            MainJob::Archives(jobs) => &mut jobs.jobs().flat_map(|job| job.iter()).count(),
+            MainJob::Directories(jobs) => &mut jobs.jobs().flat_map(|job| job.iter()).count(),
+        };
+
+        let coll_type = match self {
+            MainJob::Archives(_) => "archives",
+            MainJob::Directories(_) => "directories",
+        };
+
+        println!("Found {collections} {coll_type}, with a total of {images} images to convert");
     }
 }
 

@@ -12,7 +12,10 @@ use exn::Exn;
 use indicatif::{MultiProgress, ProgressBar};
 use tracing::{error, info, warn};
 
-use crate::{convert::image::ImageFormat, error::ErrorMessage};
+use crate::{
+    convert::image::{ConversionJob, ImageFormat},
+    error::{ErrorMessage, got_interrupted},
+};
 
 pub use collections::{ArchiveJobs, RecursiveDirJobs};
 
@@ -32,6 +35,9 @@ pub trait Job {
     /// Get a path for this job, that best describes its scope of operation.
     fn path(&self) -> &Path;
 
+    /// Get an iterator over all image conversion jobs for inspection.
+    fn iter(&self) -> impl Iterator<Item = &ConversionJob>;
+
     /// Run this job.
     fn run(self, bars: &ProgressBar) -> Result<(), Exn<ErrorMessage>>;
 }
@@ -41,19 +47,28 @@ pub trait JobCollection: IntoIterator<Item = Self::Single> + Sized {
     /// The job type which of which this is a collection of.
     type Single: Job;
 
-    /// Get the number of jobs that are part of this collection.
-    fn jobs(&self) -> usize;
+    /// Get an iterator over all image conversion jobs for inspection.
+    fn jobs(&self) -> impl Iterator<Item = &Self::Single>;
 
     /// Run all internal jobs, showing the progress in [Bars].
     fn run(self, bars: &Bars) -> Result<(), Exn<ErrorMessage>> {
         bars.jobs.reset();
-        bars.jobs.set_length(self.jobs() as u64);
+        bars.jobs.set_length(self.jobs().count() as u64);
 
         let errors = self
             .into_iter()
             .map(|job| Self::run_single(job, bars))
-            .filter_map(|res| res.err())
-            .collect::<Vec<_>>();
+            .filter_map(|res| {
+                let err = res.err()?;
+
+                // Stop all further jobs if we got interrupted
+                match got_interrupted(&err) {
+                    true => Some(Err(err)),
+                    false => Some(Ok(err)),
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
         match errors.is_empty() {
             true => Ok(()),
             false => {
@@ -70,12 +85,14 @@ pub trait JobCollection: IntoIterator<Item = Self::Single> + Sized {
         bars.println(format!("Converting {:?}", job.path()));
 
         let run_res = job.run(&bars.images);
-        bars.jobs.inc(1);
         match &run_res {
-            Ok(_) => info!("Done"),
-            Err(e) => {
-                bars.println(format!("ERROR: {e}"));
-                error!("{e}");
+            Ok(()) => {
+                bars.jobs.inc(1);
+                info!("Done");
+            }
+            Err(err) => {
+                bars.println(format!("ERROR: {err}"));
+                error!("{err}");
             }
         }
         run_res
@@ -117,6 +134,14 @@ impl Bars {
         }
     }
 
+    /// Finish progress on bars for the "happy path".
+    ///
+    /// Dropping [Bars] without calling this method indicates we exited irregularly.
+    pub fn finish(self) {
+        self.jobs.finish();
+        self.images.finish();
+    }
+
     /// Create a new progress bar with hard-coded style.
     fn create_progress_bar(title: &'static str) -> indicatif::ProgressBar {
         const MSG_SPACE: usize = 9;
@@ -131,7 +156,7 @@ impl Bars {
         indicatif::ProgressBar::new(0)
             .with_style(style)
             .with_message(title)
-            .with_finish(indicatif::ProgressFinish::AndLeave)
+            .with_finish(indicatif::ProgressFinish::Abandon)
     }
 }
 

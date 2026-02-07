@@ -46,6 +46,10 @@ impl super::Job for ArchiveJob {
         &self.archive_path
     }
 
+    fn iter(&self) -> impl Iterator<Item = &ConversionJob> {
+        self.conversion.iter()
+    }
+
     /// Run this job.
     fn run(self, bar: &ProgressBar) -> Result<(), Exn<ErrorMessage>> {
         let Self {

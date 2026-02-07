@@ -23,8 +23,8 @@ pub struct ArchiveJobs(Vec<ArchiveJob>);
 impl JobCollection for ArchiveJobs {
     type Single = ArchiveJob;
 
-    fn jobs(&self) -> usize {
-        self.0.len()
+    fn jobs(&self) -> impl Iterator<Item = &Self::Single> {
+        self.0.iter()
     }
 }
 
@@ -110,8 +110,8 @@ pub struct RecursiveDirJobs(Vec<RecursiveDirJob>);
 impl JobCollection for RecursiveDirJobs {
     type Single = RecursiveDirJob;
 
-    fn jobs(&self) -> usize {
-        self.0.len()
+    fn jobs(&self) -> impl Iterator<Item = &Self::Single> {
+        self.0.iter()
     }
 }
 

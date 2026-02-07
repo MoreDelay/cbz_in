@@ -8,7 +8,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use either::Either;
 use exn::{ErrorExt, Exn, ResultExt};
 use indicatif::ProgressBar;
 use signal_hook::consts::{SIGCHLD, SIGINT};
@@ -16,26 +15,53 @@ use signal_hook::iterator::Signals;
 use tracing::debug;
 
 use crate::convert::Configuration;
-use crate::error::ErrorMessage;
-use crate::spawn::{self, ManagedChild};
+use crate::error::{ErrorMessage, Interrupted};
+use crate::spawn::{self, ManagedChild, Tool};
 
 /// Represents the task to convert an image from one type to another.
 #[derive(Debug)]
 pub struct ConversionJob {
+    /// The path to the image we want to convert.
+    image_path: PathBuf,
+    /// The conversion plan that remains to be executed for this image.
+    plan: Plan,
+}
+
+impl ConversionJob {
+    /// Create a new conversion job that will follow the plan.
+    pub fn new(image_path: PathBuf, plan: Plan) -> Self {
+        Self { image_path, plan }
+    }
+
+    /// Get the conversion plan for this job.
+    pub fn plan(&self) -> &Plan {
+        &self.plan
+    }
+
+    /// Convert this job to a running job.
+    fn init(self) -> Result<RunConversionJob, Exn<ErrorMessage>> {
+        RunConversionJob::new(self)
+    }
+}
+
+/// Represents the task to convert an image from one type to another.
+#[derive(Debug)]
+pub struct RunConversionJob {
     /// The current state of the job.
     state: State,
 }
 
-impl ConversionJob {
-    /// Create a new conversion job that will follow the plan laid out in [Details].
-    pub fn new(image_path: PathBuf, details: Plan) -> Self {
+impl RunConversionJob {
+    /// Create a running job for [ConversionJob].
+    pub fn new(job: ConversionJob) -> Result<Self, Exn<ErrorMessage>> {
+        let sequence = job.plan.resolve(&job.image_path)?;
         let waiting = StateWaiting {
-            image_path,
-            plan: Either::Left(details),
+            image_path: job.image_path,
+            sequence,
             tool_use: ToolUse::Best,
         };
         let state = State::Waiting(waiting);
-        Self { state }
+        Ok(Self { state })
     }
 
     /// Try to progress on this conversion job.
@@ -84,9 +110,9 @@ impl ConversionJob {
 #[derive(Debug)]
 enum Proceeded {
     /// The job could not make any progress.
-    SameAsBefore(ConversionJob),
+    SameAsBefore(RunConversionJob),
     /// The job did make progress.
-    Progress(ConversionJob),
+    Progress(RunConversionJob),
     /// The job finished.
     Finished,
 }
@@ -108,7 +134,7 @@ struct StateWaiting {
     /// The path to the image we want to convert.
     image_path: PathBuf,
     /// The conversion plan that remains to be executed for this image.
-    plan: Either<Plan, Sequence>,
+    sequence: Sequence,
     /// The type of tool we want to use for conversion.
     tool_use: ToolUse,
 }
@@ -118,15 +144,10 @@ impl StateWaiting {
     fn start_conversion(self) -> Result<StateRunning, Exn<ErrorMessage>> {
         let StateWaiting {
             image_path,
-            plan,
+            sequence,
             tool_use,
         } = self;
         let err = || ErrorMessage::new(format!("Failed image conversion for {image_path:?}"));
-
-        let sequence = match plan {
-            Either::Left(details) => Sequence::resolve(details, &image_path).or_raise(err)?,
-            Either::Right(resolved) => resolved,
-        };
 
         debug!("start conversion for {image_path:?}: {sequence:?}");
 
@@ -240,7 +261,7 @@ impl StateCompleted {
             Sequence::TwoStep { over: from, to, .. } => {
                 let waiting = StateWaiting {
                     image_path: image_path.with_extension(from.ext()),
-                    plan: Either::Right(Sequence::Finish { from, to }),
+                    sequence: Sequence::Finish { from, to },
                     tool_use: ToolUse::Best,
                 };
                 Some(waiting)
@@ -284,7 +305,7 @@ impl StateCompleted {
 
         let waiting = StateWaiting {
             image_path,
-            plan: Either::Right(sequence),
+            sequence,
             tool_use: ToolUse::Backup { last_error: exn },
         };
 
@@ -354,6 +375,42 @@ impl Plan {
         perform.then_some(out)
     }
 
+    /// Determine the tools that need to be installed for this conversion to work.
+    pub fn required_tools(&self) -> Vec<Tool> {
+        use ImageFormat::*;
+        use Tool::*;
+
+        fn decode(from: ImageFormat) -> Tool {
+            match from {
+                Jpeg => Magick,
+                Png => Magick,
+                Avif => Avifdec,
+                Jxl => Djxl,
+                Webp => Dwebp,
+            }
+        }
+
+        fn encode(from: ImageFormat) -> Tool {
+            match from {
+                Jpeg => Magick,
+                Png => Magick,
+                Avif => Cavif,
+                Jxl => Cjxl,
+                Webp => Cwebp,
+            }
+        }
+
+        match *self {
+            Plan::OneStep { from, to } => match (from, to) {
+                (Jpeg | Png, _) => vec![encode(to)],
+                (_, Jpeg | Png) => vec![decode(from)],
+                (_, _) => unreachable!(),
+            },
+            Plan::TwoStep { from, to, .. } => vec![decode(from), encode(to)],
+            Plan::IndeterminateJxl { to, .. } => vec![decode(Jxl), encode(to)],
+        }
+    }
+
     /// Check if these details will always be performed without need of [Configuration::forced].
     fn perform_always(&self) -> bool {
         let tuple = match self {
@@ -368,6 +425,11 @@ impl Plan {
             (_, Jpeg | Png) => true,
             (_, _) => false,
         }
+    }
+
+    /// Resolve the conversion plan into a concrete sequence of conversion steps.
+    fn resolve(self, image_path: &Path) -> Result<Sequence, Exn<ErrorMessage>> {
+        Sequence::resolve(self, image_path)
     }
 }
 
@@ -503,6 +565,11 @@ impl ConversionJobs {
         }
     }
 
+    /// Create an iterator over all image conversion jobs.
+    pub fn iter(&self) -> impl Iterator<Item = &ConversionJob> {
+        self.job_queue.iter()
+    }
+
     /// Run this job.
     pub fn run(self, bar: &ProgressBar) -> Result<(), Exn<ErrorMessage>> {
         RunConversionJobs::new(self).run(bar)
@@ -514,7 +581,7 @@ struct RunConversionJobs {
     /// A queue of jobs waiting to be run.
     job_queue: VecDeque<ConversionJob>,
     /// Jobs we are currently actively progressing.
-    jobs_in_progress: Vec<Option<ConversionJob>>,
+    jobs_in_progress: Vec<Option<RunConversionJob>>,
 }
 
 impl RunConversionJobs {
@@ -534,30 +601,32 @@ impl RunConversionJobs {
 
     /// Run this job.
     fn run(mut self, bar: &ProgressBar) -> Result<(), Exn<ErrorMessage>> {
+        let err = || ErrorMessage::new("Could not complete conversion jobs");
+
         assert!(!self.job_queue.is_empty());
         bar.reset();
         bar.set_length(self.job_queue.len() as u64);
 
         // these signals will be catched from here on out until dropped
-        let mut signals = Signals::new([SIGINT, SIGCHLD])
-            .or_raise(|| ErrorMessage::new("Could not listen to process signals"))?;
+        let mut signals = Signals::new([SIGINT, SIGCHLD]).or_raise(err)?;
 
         // start out as many jobs as allowed
         for slot in self.jobs_in_progress.iter_mut() {
             let Some(job) = self.job_queue.pop_front() else {
                 break;
             };
-            *slot = Some(job);
+            *slot = Some(job.init().or_raise(err)?);
         }
-        self.proceed_jobs(bar)?;
+        self.proceed_jobs(bar).or_raise(err)?;
 
         while self.jobs_pending() {
             for signal in signals.wait() {
                 match signal {
                     SIGINT => {
-                        return Err(ErrorMessage::new("Got interrupted").raise());
+                        let interrupted = Interrupted.raise();
+                        return Err(interrupted.raise(err()));
                     }
-                    SIGCHLD => self.proceed_jobs(bar)?,
+                    SIGCHLD => self.proceed_jobs(bar).or_raise(err)?,
                     _ => unreachable!(),
                 }
             }
@@ -579,7 +648,7 @@ impl RunConversionJobs {
                         Proceeded::Finished => bar.inc(1),
                     },
                     None => match self.job_queue.pop_front() {
-                        Some(job) => *slot = Some(job),
+                        Some(job) => *slot = Some(job.init()?),
                         None => break,
                     },
                 }
