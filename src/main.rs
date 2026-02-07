@@ -1,8 +1,8 @@
 //! This programm is used to convert image files within Zip archives from one format to another.
 
-pub mod convert;
-pub mod error;
-pub mod spawn;
+mod convert;
+mod error;
+mod spawn;
 
 use std::collections::VecDeque;
 use std::num::NonZeroUsize;
