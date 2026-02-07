@@ -1,3 +1,5 @@
+//! Error structs used in this app.
+
 use derive_more::Display;
 use tracing::debug;
 

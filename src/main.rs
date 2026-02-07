@@ -1,6 +1,8 @@
-mod convert;
-mod error;
-mod spawn;
+//! This programm is used to convert image files within Zip archives from one format to another.
+
+pub mod convert;
+pub mod error;
+pub mod spawn;
 
 use std::collections::VecDeque;
 use std::num::NonZeroUsize;
@@ -13,7 +15,8 @@ use tracing::{error, info};
 
 use crate::convert::archive::ArchivePath;
 use crate::convert::dir::Directory;
-use crate::convert::{ArchiveJobs, Configuration, ImageFormat, JobCollection, RecursiveDirJobs};
+use crate::convert::image::ImageFormat;
+use crate::convert::{ArchiveJobs, Configuration, JobCollection, RecursiveDirJobs};
 use crate::error::ErrorMessage;
 
 /// The program entry point.
@@ -125,7 +128,9 @@ struct Args {
 
 /// The top-level task of the application, as determined by user arguments.
 enum MainJob {
+    /// We work on archives.
     Archives(ArchiveJobs),
+    /// We work on directories.
     Directories(RecursiveDirJobs),
 }
 

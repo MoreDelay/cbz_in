@@ -1,3 +1,5 @@
+//! Contains everythng related to spawning process.
+
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 
@@ -9,7 +11,9 @@ use crate::error::ErrorMessage;
 /// Child process that gets killed on drop.
 #[derive(Debug)]
 pub struct ManagedChild {
+    /// The command used to spawn the process.
     cmd: String,
+    /// The handle to the child process.
     child: Option<Child>,
 }
 
@@ -321,14 +325,23 @@ pub fn extract_zip(archive: &Path, destination: &Path) -> Result<ManagedChild, E
 /// All external tools used that may be used during conversion.
 #[derive(Debug, Clone, Copy)]
 pub enum Tool {
+    /// The programm `magick`.
     Magick,
+    /// The programm `cavif`.
     Cavif,
+    /// The programm `cjxl`.
     Cjxl,
+    /// The programm `cwebp`.
     Cwebp,
+    /// The programm `dwebp`.
     Dwebp,
+    /// The programm `djxl`.
     Djxl,
+    /// The programm `avifdec`.
     Avifdec,
+    /// The programm `jxlinfo`.
     Jxlinfo,
+    /// The programm `7z`.
     _7z,
 }
 

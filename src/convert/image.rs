@@ -1,3 +1,5 @@
+//! Contains everything related to dealing with individual images.
+
 use std::collections::VecDeque;
 use std::io::BufRead;
 use std::num::NonZeroUsize;
@@ -18,6 +20,7 @@ use crate::{error::ErrorMessage, spawn};
 /// Represents the task to convert an image from one type to another.
 #[derive(Debug)]
 pub struct ConversionJob {
+    /// The current state of the job.
     state: State,
 }
 
@@ -78,24 +81,33 @@ impl ConversionJob {
 /// The return type for [ConversionJob::proceed] to indicate if we made progress.
 #[derive(Debug)]
 enum Proceeded {
+    /// The job could not make any progress.
     SameAsBefore(ConversionJob),
+    /// The job did make progress.
     Progress(ConversionJob),
+    /// The job finished.
     Finished,
 }
 
 /// A representation of the inner state machine of [ConversionJob].
 #[derive(Debug)]
 enum State {
+    /// We wait until a subprocess can be started.
     Waiting(StateWaiting),
+    /// A child process is running for us.
     Running(StateRunning),
+    /// Our child process has exited and we may clean up now.
     Completed(StateCompleted),
 }
 
 /// The data associated with the [State::Waiting].
 #[derive(Debug)]
 struct StateWaiting {
+    /// The path to the image we want to convert.
     image_path: PathBuf,
+    /// The conversion plan that remains to be executed for this image.
     details: Details,
+    /// The type of tool we want to use for conversion.
     tool_use: ToolUse,
 }
 
@@ -130,7 +142,7 @@ impl StateWaiting {
                 (Webp, Png) => spawn::decode_webp(input, output).or_raise(err)?,
                 (_, _) => unreachable!(),
             },
-            ToolUse::Backup(_) => match spawn::convert_with_magick(input, output) {
+            ToolUse::Backup { .. } => match spawn::convert_with_magick(input, output) {
                 Ok(child) => child,
                 Err(exn) => {
                     let last_exn = tool_use
@@ -154,9 +166,13 @@ impl StateWaiting {
 /// The data associated with the [State::Running].
 #[derive(Debug)]
 struct StateRunning {
+    /// The tracked child process.
     child: spawn::ManagedChild,
+    /// The original image path that is currently being converted.
     image_path: PathBuf,
+    /// The conversion plan that remains to be executed for this image.
     details: Details,
+    /// The type of tool we want to use for conversion.
     tool_use: ToolUse,
 }
 
@@ -183,8 +199,8 @@ struct StateCompleted(StateRunning);
 impl StateCompleted {
     /// State machine transition from [State::Completed] to [State::Waiting].
     ///
-    /// Waits on the child process and deletes original image file. If we completed all conversions
-    /// as specified by the details, we stop here.
+    /// Waits on the child process and deletes the original image file. If we completed all
+    /// conversions as specified by the details, we stop here.
     fn complete(self) -> Result<Option<StateWaiting>, Exn<ErrorMessage, Option<StateWaiting>>> {
         let Self(StateRunning {
             child,
@@ -236,10 +252,10 @@ impl StateCompleted {
         details: Details,
         tool_use: ToolUse,
     ) -> Result<Exn<ErrorMessage, StateWaiting>, Exn<ErrorMessage>> {
-        if let ToolUse::Backup(last_exn) = tool_use {
+        if let ToolUse::Backup { last_error } = tool_use {
             let msg = format!("Give up trying to convert {image_path:?}");
             let err = ErrorMessage::new(msg);
-            return Err(Exn::raise_all(err, [last_exn, exn]));
+            return Err(Exn::raise_all(err, [last_error, exn]));
         }
 
         let details = match details {
@@ -260,7 +276,7 @@ impl StateCompleted {
         let waiting = StateWaiting {
             image_path,
             details,
-            tool_use: ToolUse::Backup(exn),
+            tool_use: ToolUse::Backup { last_error: exn },
         };
 
         Ok(Exn::with_recovery(ErrorMessage::new(msg), waiting))
@@ -271,15 +287,28 @@ impl StateCompleted {
 #[derive(Debug)]
 pub enum Details {
     /// A single step conversion.
-    OneStep { from: ImageFormat, to: ImageFormat },
+    OneStep {
+        /// Initial image format.
+        from: ImageFormat,
+        /// Target image format.
+        to: ImageFormat,
+    },
     /// The first step in a two-step conversion.
     TwoStep {
+        /// Initial image format.
         from: ImageFormat,
+        /// Intermediate image format.
         over: ImageFormat,
+        /// Target image format.
         to: ImageFormat,
     },
     /// The second step in a two-step conversion
-    Finish { from: ImageFormat, to: ImageFormat },
+    Finish {
+        /// Initial image format.
+        from: ImageFormat,
+        /// Target image format.
+        to: ImageFormat,
+    },
 }
 
 impl Details {
@@ -383,8 +412,13 @@ impl Details {
 /// with `magick`. Only if that also fails do we report an issue.
 #[derive(Debug)]
 enum ToolUse {
+    /// Use the intended, dedicated tool.
     Best,
-    Backup(Exn<ErrorMessage>),
+    /// We failed before, so try to use `magick` now.
+    Backup {
+        /// The error context from the last failure
+        last_error: Exn<ErrorMessage>,
+    },
 }
 
 impl ToolUse {
@@ -392,7 +426,7 @@ impl ToolUse {
     fn get_exn(self) -> Option<Exn<ErrorMessage>> {
         match self {
             ToolUse::Best => None,
-            ToolUse::Backup(exn) => Some(exn),
+            ToolUse::Backup { last_error } => Some(last_error),
         }
     }
 }
@@ -403,7 +437,9 @@ impl ToolUse {
 /// to prepare the image files in the filesystem such that all operations are non-destructive to
 /// the original files.
 pub struct ConversionJobs {
+    /// A queue of jobs waiting to be run.
     job_queue: VecDeque<ConversionJob>,
+    /// Jobs we are currently actively progressing.
     jobs_in_progress: Vec<Option<ConversionJob>>,
 }
 
@@ -417,6 +453,7 @@ impl ConversionJobs {
         }
     }
 
+    /// Run this job.
     pub fn run(mut self, bar: &ProgressBar) -> Result<(), Exn<ErrorMessage>> {
         assert!(!self.job_queue.is_empty());
         bar.reset();
@@ -479,13 +516,17 @@ impl ConversionJobs {
 }
 
 /// All supported image file formats.
-#[derive(clap::ValueEnum, Clone, Copy, Debug, Default, PartialEq)]
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq)]
 pub enum ImageFormat {
-    #[default]
+    /// A JPEG file.
     Jpeg,
+    /// A PNG file.
     Png,
+    /// A AVIF file.
     Avif,
+    /// A JXL file.
     Jxl,
+    /// A WebP file.
     Webp,
 }
 

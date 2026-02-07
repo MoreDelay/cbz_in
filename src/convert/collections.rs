@@ -1,3 +1,5 @@
+//! Contains the main jobs that are ready to run when constructed.
+
 use std::ops::Deref;
 
 use exn::{Exn, ResultExt};

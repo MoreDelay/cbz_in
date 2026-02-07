@@ -1,3 +1,5 @@
+//! Contains everything related to information gathering.
+
 use std::io::BufRead;
 use std::path::PathBuf;
 
@@ -16,7 +18,9 @@ use super::ImageFormat;
 ///
 /// The image paths stored here are relative to the archive root.
 pub struct ArchiveImages {
+    /// The archive for which we store information.
     pub(super) archive: ArchivePath,
+    /// All images found.
     pub(super) images: Vec<ImageInfo>,
 }
 
@@ -48,12 +52,14 @@ impl ArchiveImages {
 ///
 /// The image paths stored here are relative to the root.
 pub struct DirImages {
+    /// The directory for which we store information.
     pub(super) root: Directory,
+    /// All images found.
     pub(super) images: Vec<ImageInfo>,
 }
 
 impl DirImages {
-    /// Find all images in a directory..
+    /// Find all images in a directory.
     pub fn new(root: Directory) -> Result<Self, Exn<ErrorMessage>> {
         let err = || ErrorMessage::new(format!("Could not list files within directory {root:?}"));
 
@@ -84,7 +90,9 @@ impl DirImages {
 /// context on how we found the image in the first place, i.e. as part of an archive or a
 /// directory.
 pub struct ImageInfo {
+    /// The relative path to the image.
     pub(super) path: PathBuf,
+    /// The file type of the image.
     pub(super) format: ImageFormat,
 }
 
