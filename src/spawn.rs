@@ -45,6 +45,8 @@ impl ManagedChild {
     }
 
     /// Wait on the child process to finish.
+    ///
+    /// Returns an error when the sub-process indicates an error.
     pub fn wait(self) -> Result<(), Exn<ErrorMessage>> {
         self.wait_with_output()?;
         Ok(())
@@ -323,7 +325,7 @@ pub fn extract_zip(archive: &Path, destination: &Path) -> Result<ManagedChild, E
 }
 
 /// All external tools used that may be used during conversion.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub enum Tool {
     /// The programm `magick`.
     Magick,
@@ -347,7 +349,7 @@ pub enum Tool {
 
 impl Tool {
     /// Get the (linux) executable name for the tool in question.
-    fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Tool::Magick => "magick",
             Tool::Cavif => "cavif",
@@ -359,6 +361,15 @@ impl Tool {
             Tool::Jxlinfo => "jxlinfo",
             Tool::_7z => "7z",
         }
+    }
+
+    /// Check if this tool is available
+    pub fn available(self) -> Result<bool, Exn<ErrorMessage>> {
+        let err = || ErrorMessage::new(format!("Error when checking if tool exists: {self}"));
+
+        let mut cmd = Command::new("which");
+        cmd.args([self.name()]);
+        Ok(ManagedChild::spawn(cmd).or_raise(err)?.wait().is_ok())
     }
 }
 

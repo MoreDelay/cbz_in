@@ -36,6 +36,10 @@ impl super::Job for RecursiveDirJob {
         &self.root
     }
 
+    fn iter(&self) -> impl Iterator<Item = &ConversionJob> {
+        self.conversion.iter()
+    }
+
     /// Run this job.
     fn run(self, bar: &ProgressBar) -> Result<(), Exn<ErrorMessage>> {
         let Self {
