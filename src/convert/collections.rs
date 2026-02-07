@@ -8,6 +8,7 @@ use crate::{
         Configuration, JobCollection,
         archive::ArchivePath,
         dir::{Directory, RecursiveDirJob},
+        search::{ArchiveImages, DirImages},
     },
     error::ErrorMessage,
 };
@@ -29,19 +30,16 @@ impl ArchiveJobs {
     /// The constructed [ArchiveJobs] will contain only a single [ArchiveJob].
     pub fn single(
         archive: ArchivePath,
-        config: Configuration,
+        config: &Configuration,
     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
-        match ArchiveJob::new(archive, config)? {
-            Ok(job) => Ok(Some(Self(vec![job]))),
-            Err(nothing_to_do) => {
-                info!("{nothing_to_do}");
-                Ok(None)
-            }
-        }
+        Ok(Self::single_internal(archive, config)?.map(|job| Self(vec![job])))
     }
 
     /// Create an [ArchiveJob] for all archives found in the provided root directory.
-    pub fn collect(root: Directory, config: Configuration) -> Result<Self, Exn<ErrorMessage>> {
+    pub fn collect(
+        root: Directory,
+        config: &Configuration,
+    ) -> Result<Option<Self>, Exn<ErrorMessage>> {
         let err = || {
             ErrorMessage::new(format!(
                 "Error while looking for archives needing conversion in directory {root:?}"
@@ -59,24 +57,14 @@ impl ArchiveJobs {
                 let archive = match ArchivePath::new(path) {
                     Ok(archive) => archive,
                     Err(exn) => {
-                        let (path, exn) = exn.recover();
-                        debug!("skipping {path:?}: {exn:?}");
+                        debug!("skipping: {exn:?}");
                         return None;
                     }
                 };
-
-                info!("Checking {:?}", archive.deref());
-                match ArchiveJob::new(archive, config) {
-                    Ok(Ok(job)) => Some(Ok(job)),
-                    Ok(Err(nothing_to_do)) => {
-                        info!("{nothing_to_do}");
-                        None
-                    }
-                    Err(e) => Some(Err(e)),
-                }
+                Self::single_internal(archive, config).transpose()
             })
-            .collect::<Result<Vec<_>, Exn<ErrorMessage>>>()?;
-        Ok(Self(jobs))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self::new(jobs))
     }
 
     /// Combine all [ArchiveJob]'s to wrap them up in a new collection.
@@ -87,11 +75,21 @@ impl ArchiveJobs {
             false => Some(Self(jobs)),
         }
     }
-}
 
-impl Extend<ArchiveJob> for ArchiveJobs {
-    fn extend<T: IntoIterator<Item = ArchiveJob>>(&mut self, iter: T) {
-        self.0.extend(iter);
+    /// Internal constructor for a single [ArchiveJobs].
+    fn single_internal(
+        archive: ArchivePath,
+        config: &Configuration,
+    ) -> Result<Option<ArchiveJob>, Exn<ErrorMessage>> {
+        info!("Checking {:?}", archive.deref());
+        let archive = ArchiveImages::new(archive)?;
+        match ArchiveJob::new(archive, config)? {
+            Ok(job) => Ok(Some(job)),
+            Err(nothing_to_do) => {
+                info!("{nothing_to_do}");
+                Ok(None)
+            }
+        }
     }
 }
 
@@ -119,8 +117,10 @@ impl RecursiveDirJobs {
     /// The constructed [RecursiveDirJobs] will contain only a single [RecursiveDirJob].
     pub fn single(
         dir: Directory,
-        config: Configuration,
+        config: &Configuration,
     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
+        info!("Checking {:?}", dir.deref());
+        let dir = DirImages::new(dir)?;
         match RecursiveDirJob::new(dir, config)? {
             Ok(job) => Ok(Some(Self(vec![job]))),
             Err(nothing_to_do) => {
@@ -137,12 +137,6 @@ impl RecursiveDirJobs {
             true => None,
             false => Some(Self(jobs)),
         }
-    }
-}
-
-impl Extend<RecursiveDirJob> for RecursiveDirJobs {
-    fn extend<T: IntoIterator<Item = RecursiveDirJob>>(&mut self, iter: T) {
-        self.0.extend(iter);
     }
 }
 

@@ -287,7 +287,7 @@ impl Details {
     pub fn new(
         image_path: &Path,
         current: ImageFormat,
-        config: Configuration,
+        config: &Configuration,
     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
         use ImageFormat::*;
 
@@ -299,7 +299,7 @@ impl Details {
             ))
         };
 
-        let Configuration { target, forced, .. } = config;
+        let &Configuration { target, forced, .. } = config;
 
         let out = match (current, target) {
             (a, b) if a == b => return Ok(None),
