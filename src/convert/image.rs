@@ -490,13 +490,41 @@ impl ToolUse {
 pub struct ConversionJobs {
     /// A queue of jobs waiting to be run.
     job_queue: VecDeque<ConversionJob>,
-    /// Jobs we are currently actively progressing.
-    jobs_in_progress: Vec<Option<ConversionJob>>,
+    /// The number of jobs that run in parallel.
+    n_workers: NonZeroUsize,
 }
 
 impl ConversionJobs {
     /// Initialize a new collection with the given jobs.
     pub fn new(job_queue: VecDeque<ConversionJob>, n_workers: NonZeroUsize) -> Self {
+        Self {
+            job_queue,
+            n_workers,
+        }
+    }
+
+    /// Run this job.
+    pub fn run(self, bar: &ProgressBar) -> Result<(), Exn<ErrorMessage>> {
+        RunConversionJobs::new(self).run(bar)
+    }
+}
+
+/// Helper struct to execute [ConversionJobs::run].
+struct RunConversionJobs {
+    /// A queue of jobs waiting to be run.
+    job_queue: VecDeque<ConversionJob>,
+    /// Jobs we are currently actively progressing.
+    jobs_in_progress: Vec<Option<ConversionJob>>,
+}
+
+impl RunConversionJobs {
+    /// Create the helper struct to actually run the conversion for these jobs.
+    fn new(jobs: ConversionJobs) -> Self {
+        let ConversionJobs {
+            job_queue,
+            n_workers,
+        } = jobs;
+
         let jobs_in_progress = Vec::from_iter((0..n_workers.get()).map(|_| None));
         Self {
             job_queue,
@@ -505,7 +533,7 @@ impl ConversionJobs {
     }
 
     /// Run this job.
-    pub fn run(mut self, bar: &ProgressBar) -> Result<(), Exn<ErrorMessage>> {
+    fn run(mut self, bar: &ProgressBar) -> Result<(), Exn<ErrorMessage>> {
         assert!(!self.job_queue.is_empty());
         bar.reset();
         bar.set_length(self.job_queue.len() as u64);
