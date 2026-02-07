@@ -1,3 +1,5 @@
+//! Contains everything related to performing conversions.
+
 pub mod archive;
 pub mod collections;
 pub mod dir;
@@ -10,10 +12,9 @@ use exn::Exn;
 use indicatif::{MultiProgress, ProgressBar};
 use tracing::{error, info, warn};
 
-use crate::error::ErrorMessage;
+use crate::{convert::image::ImageFormat, error::ErrorMessage};
 
 pub use collections::{ArchiveJobs, RecursiveDirJobs};
-pub use image::ImageFormat;
 
 /// General configuration for a run of any conversion job.
 #[derive(Debug, Clone, Copy)]
@@ -31,14 +32,16 @@ pub trait Job {
     /// Get a path for this job, that best describes its scope of operation.
     fn path(&self) -> &Path;
 
-    /// Run this job
+    /// Run this job.
     fn run(self, bars: &ProgressBar) -> Result<(), Exn<ErrorMessage>>;
 }
 
 /// A trait for a collection of jobs that internally run jobs themselves.
 pub trait JobCollection: IntoIterator<Item = Self::Single> + Sized {
+    /// The job type which of which this is a collection of.
     type Single: Job;
 
+    /// Get the number of jobs that are part of this collection.
     fn jobs(&self) -> usize;
 
     /// Run all internal jobs, showing the progress in [Bars].
@@ -81,8 +84,11 @@ pub trait JobCollection: IntoIterator<Item = Self::Single> + Sized {
 
 /// A set of progress bars used to indicate the progress of the conversion.
 pub struct Bars {
+    /// The multi bar containing all other bars in this struct.
     multi: MultiProgress,
+    /// The progress bar for overarching jobs.
     jobs: ProgressBar,
+    /// The progress bar for individual image conversions.
     images: ProgressBar,
 }
 
@@ -103,6 +109,7 @@ impl Bars {
         }
     }
 
+    /// Print a message above our progress bars.
     pub fn println(&self, msg: impl AsRef<str>) {
         let msg = msg.as_ref();
         if let Err(e) = self.multi.println(msg) {
@@ -131,7 +138,9 @@ impl Bars {
 /// All different titles that can be given to the [Bars::jobs] progress bar.
 #[derive(Debug, Clone, Copy)]
 pub enum JobsBarTitle {
+    /// Indicate we work on archives.
     Archives,
+    /// Indicate we work on directories.
     Directories,
 }
 

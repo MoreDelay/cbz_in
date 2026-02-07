@@ -1,3 +1,5 @@
+//! Contains everything related to handling directories.
+
 use std::collections::VecDeque;
 use std::fs;
 use std::ops::Deref;
@@ -21,8 +23,11 @@ use super::search::ImageInfo;
 /// images are replaced with the converted image type. This is only intended for regular
 /// directories, and does not traverse mount points.
 pub struct RecursiveDirJob {
+    /// The root directory from which we start to look for images.
     root: Directory,
+    /// The jobs to create a copy of the directory structure.
     hardlink: RecursiveHardLinkJob,
+    /// The conversion jobs to convert all images.
     conversion: ConversionJobs,
 }
 
@@ -31,6 +36,7 @@ impl super::Job for RecursiveDirJob {
         &self.root
     }
 
+    /// Run this job.
     fn run(self, bar: &ProgressBar) -> Result<(), Exn<ErrorMessage>> {
         let Self {
             root,
@@ -152,11 +158,14 @@ impl RecursiveDirJob {
 /// directory will create a hard link to all files in the original directory, therefore this is a
 /// relatively light-weight operation.
 struct RecursiveHardLinkJob {
+    /// The original directory for which we create a copy.
     root: Directory,
+    /// The target image format which becomes part of the archive's file name.
     target: ImageFormat,
 }
 
 impl RecursiveHardLinkJob {
+    /// Run this job.
     fn run(self) -> Result<TempDirGuard, Exn<ErrorMessage>> {
         let copy_root = RecursiveDirJob::get_hardlink_dir(&self.root, self.target)
             .expect("checked by construction that dir is not root");
@@ -227,6 +236,7 @@ impl std::convert::AsRef<Path> for Directory {
 ///
 /// To keep the directory, use [TempDirGuard::keep()].
 pub struct TempDirGuard {
+    /// The guarded directory.
     temp_root: Option<PathBuf>,
 }
 

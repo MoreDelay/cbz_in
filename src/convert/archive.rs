@@ -1,3 +1,5 @@
+//! Contains everything related to handling zip archives.
+
 use std::fs::{self, File};
 use std::io::BufRead;
 use std::io::Read;
@@ -29,9 +31,13 @@ use crate::spawn;
 /// converts all files inside that directory, then compresses the archive again. The final archive
 /// is placed next to the original, with an additional suffix to its name.
 pub struct ArchiveJob {
+    /// The path to the archive on which this job operates.
     archive_path: ArchivePath,
+    /// The extraction job for the archive.
     extraction: ExtractionJob,
+    /// The conversion jobs to convert all images.
     conversion: ConversionJobs,
+    /// The job to compress the archive back into a Zip file again.
     compression: CompressionJob,
 }
 
@@ -40,6 +46,7 @@ impl super::Job for ArchiveJob {
         &self.archive_path
     }
 
+    /// Run this job.
     fn run(self, bar: &ProgressBar) -> Result<(), Exn<ErrorMessage>> {
         let Self {
             archive_path,
@@ -206,11 +213,17 @@ impl ArchiveJob {
     }
 }
 
+/// The job to extract an archive into a temporary directory.
+///
+/// The temporary directory is placed next to the archive and will have the same name as the
+/// archive, just missing its extensions.
 struct ExtractionJob {
+    /// The archive to be extracted.
     archive_path: ArchivePath,
 }
 
 impl ExtractionJob {
+    /// Run this job.
     fn run(self) -> Result<TempDirGuard, Exn<ErrorMessage>> {
         let err = || {
             let path = &self.archive_path;
@@ -236,48 +249,18 @@ impl ExtractionJob {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct ArchivePath(PathBuf);
-
-impl std::ops::Deref for ArchivePath {
-    type Target = Path;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl ArchivePath {
-    const ARCHIVE_EXTENSIONS: [&str; 2] = ["zip", "cbz"];
-
-    pub fn new(archive_path: PathBuf) -> Result<Self, Exn<ErrorMessage, PathBuf>> {
-        let correct_extension = archive_path.extension().is_some_and(|ext| {
-            Self::ARCHIVE_EXTENSIONS
-                .iter()
-                .any(|valid_ext| ext.eq_ignore_ascii_case(valid_ext))
-        });
-        if !correct_extension {
-            let msg = format!("Archive has an unsupported extension: {archive_path:?}");
-            let exn = Exn::with_recovery(ErrorMessage::new(msg), archive_path);
-            return Err(exn);
-        }
-
-        if !archive_path.is_file() {
-            let msg = format!("Archive does not exist: {archive_path:?}");
-            let exn = Exn::with_recovery(ErrorMessage::new(msg), archive_path);
-            return Err(exn);
-        }
-
-        Ok(ArchivePath(archive_path))
-    }
-}
-
+/// The job to compress a directory into an archive.
+///
+/// The archive name will have the same name as the directory, extended with `.<image-format>.cbz`.
 struct CompressionJob {
+    /// The root directory to compress into a Zip file.
     root: PathBuf,
+    /// The target image format which becomes part of the archive's file name.
     target: ImageFormat,
 }
 
 impl CompressionJob {
+    /// Run this job.
     fn run(self) -> Result<(), Exn<ErrorMessage>> {
         let err = || {
             let root = &self.root;
@@ -333,5 +316,46 @@ impl CompressionJob {
 
         zipper.finish().or_raise(err)?;
         Ok(())
+    }
+}
+
+/// A path that was verified to point to an existing Zip archive.
+#[derive(Debug, Clone)]
+pub struct ArchivePath(PathBuf);
+
+impl std::ops::Deref for ArchivePath {
+    type Target = Path;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl ArchivePath {
+    /// All valid Zip archive extensions we consider.
+    const ARCHIVE_EXTENSIONS: [&str; 2] = ["zip", "cbz"];
+
+    /// Checked constructor to verify the path points to an archive.
+    ///
+    /// This only checks that the directory exists at the time of creation.
+    pub fn new(archive_path: PathBuf) -> Result<Self, Exn<ErrorMessage, PathBuf>> {
+        let correct_extension = archive_path.extension().is_some_and(|ext| {
+            Self::ARCHIVE_EXTENSIONS
+                .iter()
+                .any(|valid_ext| ext.eq_ignore_ascii_case(valid_ext))
+        });
+        if !correct_extension {
+            let msg = format!("Archive has an unsupported extension: {archive_path:?}");
+            let exn = Exn::with_recovery(ErrorMessage::new(msg), archive_path);
+            return Err(exn);
+        }
+
+        if !archive_path.is_file() {
+            let msg = format!("Archive does not exist: {archive_path:?}");
+            let exn = Exn::with_recovery(ErrorMessage::new(msg), archive_path);
+            return Err(exn);
+        }
+
+        Ok(ArchivePath(archive_path))
     }
 }
