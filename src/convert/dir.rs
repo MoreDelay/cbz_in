@@ -11,7 +11,7 @@ use tracing::{debug, error};
 use walkdir::WalkDir;
 
 use crate::convert::Configuration;
-use crate::convert::image::{ConversionJob, ConversionJobs, Details, ImageFormat};
+use crate::convert::image::{ConversionJob, ConversionJobs, ImageFormat, Plan};
 use crate::convert::search::DirImages;
 use crate::error::{ErrorMessage, NothingToDo};
 
@@ -89,20 +89,19 @@ impl RecursiveDirJob {
             .into_iter()
             .filter_map(|ImageInfo { path, format }| {
                 let copy_path = copy_root.join(path);
-                match Details::new(&copy_path, format, config) {
-                    Ok(Some(task)) => {
+                match Plan::new(format, config) {
+                    Some(task) => {
                         debug!("create job for {copy_path:?}: {task:?}");
-                        Some(Ok(ConversionJob::new(copy_path, task)))
+                        Some(ConversionJob::new(copy_path, task))
                     }
-                    Ok(None) => {
+                    None => {
                         debug!("skip conversion for {copy_path:?}");
                         None
                     }
-                    Err(e) => Some(Err(e)),
                 }
             })
-            .collect::<Result<VecDeque<_>, _>>()
-            .or_raise(err)?;
+            .collect::<VecDeque<_>>();
+
         if job_queue.is_empty() {
             let msg = format!("No files to convert in {root:?}");
             let exn = Exn::new(NothingToDo::new(msg));

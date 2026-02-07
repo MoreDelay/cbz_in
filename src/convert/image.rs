@@ -8,6 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use either::Either;
 use exn::{ErrorExt, Exn, ResultExt};
 use indicatif::ProgressBar;
 use signal_hook::consts::{SIGCHLD, SIGINT};
@@ -15,7 +16,8 @@ use signal_hook::iterator::Signals;
 use tracing::debug;
 
 use crate::convert::Configuration;
-use crate::{error::ErrorMessage, spawn};
+use crate::error::ErrorMessage;
+use crate::spawn::{self, ManagedChild};
 
 /// Represents the task to convert an image from one type to another.
 #[derive(Debug)]
@@ -26,10 +28,10 @@ pub struct ConversionJob {
 
 impl ConversionJob {
     /// Create a new conversion job that will follow the plan laid out in [Details].
-    pub fn new(image_path: PathBuf, details: Details) -> Self {
+    pub fn new(image_path: PathBuf, details: Plan) -> Self {
         let waiting = StateWaiting {
             image_path,
-            details,
+            plan: Either::Left(details),
             tool_use: ToolUse::Best,
         };
         let state = State::Waiting(waiting);
@@ -106,7 +108,7 @@ struct StateWaiting {
     /// The path to the image we want to convert.
     image_path: PathBuf,
     /// The conversion plan that remains to be executed for this image.
-    details: Details,
+    plan: Either<Plan, Sequence>,
     /// The type of tool we want to use for conversion.
     tool_use: ToolUse,
 }
@@ -116,14 +118,19 @@ impl StateWaiting {
     fn start_conversion(self) -> Result<StateRunning, Exn<ErrorMessage>> {
         let StateWaiting {
             image_path,
-            details,
+            plan,
             tool_use,
         } = self;
         let err = || ErrorMessage::new(format!("Failed image conversion for {image_path:?}"));
 
-        debug!("start conversion for {image_path:?}: {details:?}");
+        let sequence = match plan {
+            Either::Left(details) => Sequence::resolve(details, &image_path).or_raise(err)?,
+            Either::Right(resolved) => resolved,
+        };
 
-        let (from, to) = details.next_step();
+        debug!("start conversion for {image_path:?}: {sequence:?}");
+
+        let (from, to) = sequence.next_step();
         let input = &image_path;
         let output = &image_path.with_extension(to.ext());
 
@@ -157,7 +164,7 @@ impl StateWaiting {
         Ok(StateRunning {
             child,
             image_path,
-            details,
+            sequence,
             tool_use,
         })
     }
@@ -167,11 +174,11 @@ impl StateWaiting {
 #[derive(Debug)]
 struct StateRunning {
     /// The tracked child process.
-    child: spawn::ManagedChild,
+    child: ManagedChild,
     /// The original image path that is currently being converted.
     image_path: PathBuf,
     /// The conversion plan that remains to be executed for this image.
-    details: Details,
+    sequence: Sequence,
     /// The type of tool we want to use for conversion.
     tool_use: ToolUse,
 }
@@ -205,14 +212,14 @@ impl StateCompleted {
         let Self(StateRunning {
             child,
             image_path,
-            details,
+            sequence,
             tool_use,
         }) = self;
 
-        debug!("completed conversion for {image_path:?}: {details:?}");
+        debug!("completed conversion for {image_path:?}: {sequence:?}");
 
         if let Err(exn) = child.wait() {
-            let exn = match Self::try_to_recover(exn, image_path, details, tool_use) {
+            let exn = match Self::try_to_recover(exn, image_path, sequence, tool_use) {
                 Ok(exn) => exn.map(Some),
                 Err(exn) => exn.attach(None),
             };
@@ -228,12 +235,12 @@ impl StateCompleted {
 
         fs::remove_file(&image_path).or_raise_with_recovery(err, None)?;
 
-        let after = match details {
-            Details::OneStep { .. } | Details::Finish { .. } => None,
-            Details::TwoStep { over: from, to, .. } => {
+        let after = match sequence {
+            Sequence::OneStep { .. } | Sequence::Finish { .. } => None,
+            Sequence::TwoStep { over: from, to, .. } => {
                 let waiting = StateWaiting {
                     image_path: image_path.with_extension(from.ext()),
-                    details: Details::Finish { from, to },
+                    plan: Either::Right(Sequence::Finish { from, to }),
                     tool_use: ToolUse::Best,
                 };
                 Some(waiting)
@@ -249,7 +256,7 @@ impl StateCompleted {
     fn try_to_recover(
         exn: Exn<ErrorMessage>,
         image_path: PathBuf,
-        details: Details,
+        sequence: Sequence,
         tool_use: ToolUse,
     ) -> Result<Exn<ErrorMessage, StateWaiting>, Exn<ErrorMessage>> {
         if let ToolUse::Backup { last_error } = tool_use {
@@ -258,13 +265,15 @@ impl StateCompleted {
             return Err(Exn::raise_all(err, [last_error, exn]));
         }
 
-        let details = match details {
-            Details::OneStep { from, to } | Details::TwoStep { from, to, .. } => Details::TwoStep {
-                from,
-                over: ImageFormat::Png,
-                to,
-            },
-            Details::Finish { .. } => {
+        let sequence = match sequence {
+            Sequence::OneStep { from, to } | Sequence::TwoStep { from, to, .. } => {
+                Sequence::TwoStep {
+                    from,
+                    over: ImageFormat::Png,
+                    to,
+                }
+            }
+            Sequence::Finish { .. } => {
                 let msg = "Image from a previous pass could not be formatted further, \
                                 something is gravely wrong";
                 return Err(exn.raise(ErrorMessage::new(msg)));
@@ -275,7 +284,7 @@ impl StateCompleted {
 
         let waiting = StateWaiting {
             image_path,
-            details,
+            plan: Either::Right(sequence),
             tool_use: ToolUse::Backup { last_error: exn },
         };
 
@@ -285,7 +294,86 @@ impl StateCompleted {
 
 /// Represents the plan of the conversion sequence an image will go through.
 #[derive(Debug)]
-pub enum Details {
+pub enum Plan {
+    /// A single step conversion.
+    OneStep {
+        /// Initial image format.
+        from: ImageFormat,
+        /// Target image format.
+        to: ImageFormat,
+    },
+    /// The first step in a two-step conversion.
+    TwoStep {
+        /// Initial image format.
+        from: ImageFormat,
+        /// Intermediate image format.
+        over: ImageFormat,
+        /// Target image format.
+        to: ImageFormat,
+    },
+    /// The concrete details of JXL conversion depend on whether the JXL file is a compressed JPEG
+    /// file or not. This is only known when images have been prepared and can not be known
+    /// beforehand.
+    IndeterminateJxl {
+        /// Initial image format.
+        from: ImageFormat,
+        /// Target image format.
+        to: ImageFormat,
+    },
+}
+
+impl Plan {
+    /// Determine the details for a specific image to reach the goal set out by the configuration.
+    pub fn new(current: ImageFormat, config: &Configuration) -> Option<Self> {
+        use ImageFormat::*;
+
+        let &Configuration { target, forced, .. } = config;
+
+        let out = match (current, target) {
+            (a, b) if a == b => return None,
+            (Avif, Jxl | Webp) => Self::TwoStep {
+                from: current,
+                over: Png,
+                to: target,
+            },
+            (Jxl, Avif | Webp) => Self::IndeterminateJxl {
+                from: current,
+                to: target,
+            },
+            (Webp, Jpeg | Avif | Jxl) => Self::TwoStep {
+                from: current,
+                over: Png,
+                to: target,
+            },
+            (_, _) => Self::OneStep {
+                from: current,
+                to: target,
+            },
+        };
+        let perform = forced || out.perform_always();
+        perform.then_some(out)
+    }
+
+    /// Check if these details will always be performed without need of [Configuration::forced].
+    fn perform_always(&self) -> bool {
+        let tuple = match self {
+            Plan::OneStep { from, to, .. } => (*from, *to),
+            Plan::TwoStep { from, to, .. } => (*from, *to),
+            Plan::IndeterminateJxl { .. } => return false,
+        };
+
+        use ImageFormat::*;
+        match tuple {
+            (Jpeg | Png, _) => true,
+            (_, Jpeg | Png) => true,
+            (_, _) => false,
+        }
+    }
+}
+
+/// Represents the current sequence step that an image is going through.
+#[derive(Debug)]
+enum Sequence {
     /// A single step conversion.
     OneStep {
         /// Initial image format.
@@ -311,80 +399,43 @@ pub enum Details {
     },
 }
 
-impl Details {
-    /// Determine the details for a specific image to reach the goal set out by the configuration.
-    pub fn new(
-        image_path: &Path,
-        current: ImageFormat,
-        config: &Configuration,
-    ) -> Result<Option<Self>, Exn<ErrorMessage>> {
-        use ImageFormat::*;
+impl Sequence {
+    /// Resolve the conversion plan into a concrete sequence of conversion steps.
+    fn resolve(details: Plan, image_path: &Path) -> Result<Self, Exn<ErrorMessage>> {
+        let err = || ErrorMessage::new(format!("Could not resolve how to convert {image_path:?}"));
 
-        let err = || {
-            let current = current.ext();
-            let target = config.target.ext();
-            ErrorMessage::new(format!(
-                "Failed to create the conversion job from {current:?} to {target:?} for {image_path:?}",
-            ))
-        };
-
-        let &Configuration { target, forced, .. } = config;
-
-        let out = match (current, target) {
-            (a, b) if a == b => return Ok(None),
-            (Avif, Jxl | Webp) => Self::TwoStep {
-                from: current,
-                over: Png,
-                to: target,
-            },
-            (Jxl, Avif | Webp) => match Self::jxl_is_compressed_jpeg(image_path).or_raise(err)? {
-                true => Self::TwoStep {
-                    from: current,
-                    over: Jpeg,
-                    to: target,
-                },
-                false => Self::TwoStep {
-                    from: current,
-                    over: Png,
-                    to: target,
-                },
-            },
-            (Webp, Jpeg | Avif | Jxl) => Self::TwoStep {
-                from: current,
-                over: Png,
-                to: target,
-            },
-            (_, _) => Self::OneStep {
-                from: current,
-                to: target,
-            },
-        };
-        let perform = forced || out.perform_always();
-        Ok(perform.then_some(out))
-    }
-
-    /// Check if these details will always be performed without need of [Configuration::forced].
-    fn perform_always(&self) -> bool {
-        let tuple = match self {
-            Details::OneStep { from, to, .. } => (*from, *to),
-            Details::TwoStep { from, to, .. } => (*from, *to),
-            Details::Finish { .. } => return true,
-        };
-
-        use ImageFormat::*;
-        match tuple {
-            (Jpeg | Png, _) => true,
-            (_, Jpeg | Png) => true,
-            (_, _) => false,
+        match details {
+            Plan::OneStep { from, to } => Ok(Self::OneStep { from, to }),
+            Plan::TwoStep { from, over, to } => Ok(Self::TwoStep { from, over, to }),
+            Plan::IndeterminateJxl { from, to } => {
+                match Self::jxl_is_compressed_jpeg(image_path).or_raise(err)? {
+                    true => {
+                        debug!("jxl is compressed jpeg: {image_path:?}");
+                        Ok(Self::TwoStep {
+                            from,
+                            over: ImageFormat::Jpeg,
+                            to,
+                        })
+                    }
+                    false => {
+                        debug!("jxl is encoded: {image_path:?}");
+                        Ok(Self::TwoStep {
+                            from,
+                            over: ImageFormat::Png,
+                            to,
+                        })
+                    }
+                }
+            }
         }
     }
 
     /// Returns the conversion sequence that should be performed next in the current plan.
     fn next_step(&self) -> (ImageFormat, ImageFormat) {
         match *self {
-            Details::OneStep { from, to } => (from, to),
-            Details::TwoStep { from, over, .. } => (from, over),
-            Details::Finish { from, to } => (from, to),
+            Self::OneStep { from, to } => (from, to),
+            Self::TwoStep { from, over, .. } => (from, over),
+            Self::Finish { from, to } => (from, to),
         }
     }
 
@@ -553,7 +604,7 @@ mod tests {
     fn test_check_for_compressed_jxl() {
         let compressed_path = PathBuf::from("test_data/compressed.jxl");
         assert!(compressed_path.exists());
-        let out = Details::jxl_is_compressed_jpeg(&compressed_path).unwrap();
+        let out = Sequence::jxl_is_compressed_jpeg(&compressed_path).unwrap();
         assert!(out);
     }
 
@@ -561,7 +612,7 @@ mod tests {
     fn test_check_for_encoded_jxl() {
         let encoded_path = PathBuf::from("test_data/encoded.jxl");
         assert!(encoded_path.exists());
-        let out = Details::jxl_is_compressed_jpeg(&encoded_path).unwrap();
+        let out = Sequence::jxl_is_compressed_jpeg(&encoded_path).unwrap();
         assert!(!out);
     }
 }
