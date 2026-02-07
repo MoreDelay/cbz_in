@@ -172,6 +172,8 @@ impl MainJob {
 
         let err = || ErrorMessage::new("Failed to collect all archives");
 
+        println!("Looking for images to convert in archives...");
+
         let jobs = paths
             .into_iter()
             .map(collect_single)
@@ -195,6 +197,8 @@ impl MainJob {
             let root = Directory::new(path).map_err(|e| e.discard_recovery())?;
             images_in_dir_recursively(root, config)
         };
+
+        println!("Looking for images to convert in directories...");
 
         let jobs = paths
             .into_iter()
