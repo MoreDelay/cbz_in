@@ -2,6 +2,7 @@ pub mod archive;
 pub mod collections;
 pub mod dir;
 pub mod image;
+pub mod search;
 
 use std::{num::NonZeroUsize, path::Path};
 

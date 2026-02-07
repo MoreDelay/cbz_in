@@ -3,17 +3,17 @@ use std::fs;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
-use exn::{ErrorExt, Exn, OptionExt, ResultExt};
+use exn::{Exn, OptionExt, ResultExt};
 use indicatif::ProgressBar;
 use tracing::{debug, error};
 use walkdir::WalkDir;
 
-use crate::convert::{
-    Configuration,
-    image::{ConversionJob, ConversionJobs, Details},
-};
-use crate::error::NothingToDo;
-use crate::{convert::image::ImageFormat, error::ErrorMessage};
+use crate::convert::Configuration;
+use crate::convert::image::{ConversionJob, ConversionJobs, Details, ImageFormat};
+use crate::convert::search::DirImages;
+use crate::error::{ErrorMessage, NothingToDo};
+
+use super::search::ImageInfo;
 
 /// Represents the job to convert all images within a directory.
 ///
@@ -58,16 +58,17 @@ impl RecursiveDirJob {
     ///
     /// No files get touched until this job is run.
     pub fn new(
-        root: Directory,
-        config: Configuration,
+        dir: DirImages,
+        config: &Configuration,
     ) -> Result<Result<Self, Exn<NothingToDo>>, Exn<ErrorMessage>> {
+        let DirImages { root, images } = dir;
         let err = || {
             ErrorMessage::new(format!(
                 "Failed to prepare job for recursive image conversion starting at {root:?}"
             ))
         };
 
-        let Configuration {
+        let &Configuration {
             target, n_workers, ..
         } = config;
 
@@ -78,13 +79,10 @@ impl RecursiveDirJob {
         }
 
         let copy_root = Self::get_hardlink_dir(&root, config.target).or_raise(err)?;
-        let job_queue = Self::images_in_dir(&root)?
+        let job_queue = images
             .into_iter()
-            .filter_map(|(image_path, format)| {
-                let rel_path = image_path
-                    .strip_prefix(&root)
-                    .expect("image path is within root by construction");
-                let copy_path = copy_root.join(rel_path);
+            .filter_map(|ImageInfo { path, format }| {
+                let copy_path = copy_root.join(path);
                 match Details::new(&copy_path, format, config) {
                     Ok(Some(task)) => {
                         debug!("create job for {copy_path:?}: {task:?}");
@@ -145,42 +143,6 @@ impl RecursiveDirJob {
         let has_converted_dir = converted_path.try_exists().or_raise(err)?;
 
         Ok(is_converted_dir || has_converted_dir)
-    }
-
-    /// Collects all images and their file type found recursively in a directory.
-    fn images_in_dir(root: &Directory) -> Result<Vec<(PathBuf, ImageFormat)>, Exn<ErrorMessage>> {
-        let err = || {
-            ErrorMessage::new(format!(
-                "Error when looking for images in directory {root:?}"
-            ))
-        };
-
-        WalkDir::new(root)
-            .into_iter()
-            .filter_map(|entry| {
-                let entry = match entry {
-                    Ok(entry) => entry,
-                    Err(inner) => {
-                        let outer = err();
-                        return Some(Err(inner.raise().raise(outer)));
-                    }
-                };
-                let file = entry.path().to_path_buf();
-                let ext = file.extension()?.to_string_lossy().to_lowercase();
-
-                use ImageFormat::*;
-                let file = match ext.as_str() {
-                    "jpg" => Some((file, Jpeg)),
-                    "jpeg" => Some((file, Jpeg)),
-                    "png" => Some((file, Png)),
-                    "avif" => Some((file, Avif)),
-                    "jxl" => Some((file, Jxl)),
-                    "webp" => Some((file, Webp)),
-                    _ => None,
-                };
-                Ok(file).transpose()
-            })
-            .collect()
     }
 }
 

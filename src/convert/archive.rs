@@ -19,6 +19,7 @@ use tracing::debug;
 use crate::convert::Configuration;
 use crate::convert::dir::TempDirGuard;
 use crate::convert::image::{ConversionJob, ConversionJobs, Details, ImageFormat};
+use crate::convert::search::{ArchiveImages, ImageInfo};
 use crate::error::{ErrorMessage, NothingToDo};
 use crate::spawn;
 
@@ -65,38 +66,39 @@ impl ArchiveJob {
     ///
     /// No files get touched until this job is run.
     pub fn new(
-        archive_path: ArchivePath,
-        config: Configuration,
+        archive: ArchiveImages,
+        config: &Configuration,
     ) -> Result<Result<Self, Exn<NothingToDo>>, Exn<ErrorMessage>> {
+        let ArchiveImages { archive, images } = archive;
+
         let err = || {
             ErrorMessage::new(format!(
-                "Failed to prepare job for archive conversion {archive_path:?}"
+                "Failed to prepare job for archive conversion {archive:?}"
             ))
         };
 
-        let Configuration {
+        let &Configuration {
             target, n_workers, ..
         } = config;
 
-        if Self::already_converted(&archive_path, target).or_raise(err)? {
-            let msg = format!("Already converted {archive_path:?}");
+        if Self::already_converted(&archive, target).or_raise(err)? {
+            let msg = format!("Already converted {archive:?}");
             let exn = Exn::new(NothingToDo::new(msg));
             return Ok(Err(exn));
         }
 
-        let extract_dir = Self::get_conversion_root_dir(&archive_path);
+        let extract_dir = Self::get_conversion_root_dir(&archive);
         if extract_dir.exists() {
-            let msg = format!("Extract directory already exists at {archive_path:?}");
+            let msg = format!("Extract directory already exists at {archive:?}");
             let exn = Exn::new(ErrorMessage::new(msg));
             return Err(exn);
         }
 
-        let root_dir = Self::get_extraction_root_dir(&archive_path).or_raise(err)?;
-        let job_queue = Self::images_in_archive(&archive_path)
-            .or_raise(err)?
+        let root_dir = Self::get_extraction_root_dir(&archive).or_raise(err)?;
+        let job_queue = images
             .into_iter()
-            .filter_map(|(image_path, format)| {
-                let image_path = root_dir.join(image_path);
+            .filter_map(|ImageInfo { path, format }| {
+                let image_path = root_dir.join(path);
                 match Details::new(&image_path, format, config) {
                     Ok(Some(task)) => {
                         debug!("create job for {image_path:?}: {task:?}");
@@ -113,21 +115,21 @@ impl ArchiveJob {
             .or_raise(err)?;
 
         if job_queue.is_empty() {
-            let msg = format!("No files to convert in {archive_path:?}");
+            let msg = format!("No files to convert in {archive:?}");
             let exn = Exn::new(NothingToDo::new(msg));
             return Ok(Err(exn));
         }
 
         let extraction = ExtractionJob {
-            archive_path: archive_path.clone(),
+            archive_path: archive.clone(),
         };
         let conversion = ConversionJobs::new(job_queue, n_workers);
         let compression = CompressionJob {
-            root: Self::get_conversion_root_dir(&archive_path),
+            root: Self::get_conversion_root_dir(&archive),
             target,
         };
         Ok(Ok(Self {
-            archive_path,
+            archive_path: archive,
             extraction,
             conversion,
             compression,
@@ -201,41 +203,6 @@ impl ArchiveJob {
             false => Self::get_conversion_root_dir(cbz_path),
         };
         Ok(extract_dir)
-    }
-
-    /// Collects all images and their file type found the an archive.
-    fn images_in_archive(
-        cbz_path: &ArchivePath,
-    ) -> Result<Vec<(PathBuf, ImageFormat)>, Exn<ErrorMessage>> {
-        let err = || ErrorMessage::new(format!("Could not list files within archive {cbz_path:?}"));
-
-        spawn::list_archive_files(cbz_path)
-            .and_then(|c| c.wait_with_output())
-            .or_raise(err)?
-            .stdout
-            .lines()
-            .filter_map(|line| {
-                let line = line.or_raise(err);
-                let line = match line {
-                    Ok(line) => line,
-                    Err(e) => return Some(Err(e)),
-                };
-                let file = line.strip_prefix("Path = ").map(PathBuf::from)?;
-                let ext = file.extension()?.to_string_lossy().to_lowercase();
-
-                use ImageFormat::*;
-                let file = match ext.as_str() {
-                    "jpg" => Some((file, Jpeg)),
-                    "jpeg" => Some((file, Jpeg)),
-                    "png" => Some((file, Png)),
-                    "avif" => Some((file, Avif)),
-                    "jxl" => Some((file, Jxl)),
-                    "webp" => Some((file, Webp)),
-                    _ => None,
-                };
-                Ok(file).transpose()
-            })
-            .collect()
     }
 }
 
