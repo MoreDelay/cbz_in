@@ -4,6 +4,7 @@ use std::io::BufRead;
 use std::path::PathBuf;
 
 use exn::{Exn, ResultExt};
+use tracing::info;
 use walkdir::WalkDir;
 
 use crate::{
@@ -28,6 +29,8 @@ impl ArchiveImages {
     /// Find all images in an archive.
     pub fn new(archive: ArchivePath) -> Result<Self, Exn<ErrorMessage>> {
         let err = || ErrorMessage::new(format!("Could not list files within archive {archive:?}"));
+
+        info!("Checking {archive:?}");
 
         let images = spawn::list_archive_files(&archive)
             .and_then(|c| c.wait_with_output())
@@ -62,6 +65,8 @@ impl DirImages {
     /// Find all images in a directory.
     pub fn new(root: Directory) -> Result<Self, Exn<ErrorMessage>> {
         let err = || ErrorMessage::new(format!("Could not list files within directory {root:?}"));
+
+        info!("Checking {:?}", root);
 
         let images = WalkDir::new(&root)
             .same_file_system(true)

@@ -1,7 +1,5 @@
 //! Contains the main jobs that are ready to run when constructed.
 
-use std::ops::Deref;
-
 use exn::{Exn, ResultExt};
 use tracing::{debug, info};
 
@@ -83,7 +81,6 @@ impl ArchiveJobs {
         archive: ArchivePath,
         config: &Configuration,
     ) -> Result<Option<ArchiveJob>, Exn<ErrorMessage>> {
-        info!("Checking {:?}", archive.deref());
         let archive = ArchiveImages::new(archive)?;
         match ArchiveJob::new(archive, config)? {
             Ok(job) => Ok(Some(job)),
@@ -121,7 +118,6 @@ impl RecursiveDirJobs {
         dir: Directory,
         config: &Configuration,
     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
-        info!("Checking {:?}", dir.deref());
         let dir = DirImages::new(dir)?;
         match RecursiveDirJob::new(dir, config)? {
             Ok(job) => Ok(Some(Self(vec![job]))),

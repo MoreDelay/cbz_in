@@ -2,7 +2,6 @@
 
 use std::collections::VecDeque;
 use std::fs;
-use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
 use exn::{Exn, OptionExt, ResultExt};
@@ -49,7 +48,6 @@ impl super::Job for RecursiveDirJob {
         } = self;
 
         let err = || {
-            let root = root.deref();
             ErrorMessage::new(format!(
                 "Failed to convert all images recursively within {root:?}"
             ))
@@ -202,7 +200,7 @@ impl RecursiveHardLinkJob {
 }
 
 /// A filesystem path that was verified to point to an existing directory.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Directory(PathBuf);
 
 impl Directory {
@@ -232,6 +230,15 @@ impl std::ops::Deref for Directory {
 impl std::convert::AsRef<Path> for Directory {
     fn as_ref(&self) -> &Path {
         &self.0
+    }
+}
+
+impl std::fmt::Debug for Directory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match f.alternate() {
+            true => f.debug_tuple("Directory").field(&self.0).finish(),
+            false => write!(f, "{:?}", self.0),
+        }
     }
 }
 

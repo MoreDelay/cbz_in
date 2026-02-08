@@ -4,7 +4,6 @@ use std::fs::{self, File};
 use std::io::BufRead;
 use std::io::Read;
 use std::io::Write;
-use std::ops::Deref;
 use std::{
     collections::VecDeque,
     path::{Path, PathBuf},
@@ -32,7 +31,7 @@ use crate::spawn;
 /// is placed next to the original, with an additional suffix to its name.
 pub struct ArchiveJob {
     /// The path to the archive on which this job operates.
-    archive_path: ArchivePath,
+    archive: ArchivePath,
     /// The extraction job for the archive.
     extraction: ExtractionJob,
     /// The conversion jobs to convert all images.
@@ -43,7 +42,7 @@ pub struct ArchiveJob {
 
 impl super::Job for ArchiveJob {
     fn path(&self) -> &Path {
-        &self.archive_path
+        &self.archive
     }
 
     fn iter(&self) -> impl Iterator<Item = &ConversionJob> {
@@ -53,16 +52,13 @@ impl super::Job for ArchiveJob {
     /// Run this job.
     fn run(self, bar: &ProgressBar) -> Result<(), Exn<ErrorMessage>> {
         let Self {
-            archive_path,
+            archive,
             extraction,
             conversion,
             compression,
         } = self;
 
-        let err = || {
-            let path = archive_path.deref();
-            ErrorMessage::new(format!("Failed to convert images in archive {path:?}",))
-        };
+        let err = || ErrorMessage::new(format!("Failed to convert images in archive {archive:?}",));
 
         let _guard = extraction.run().or_raise(err)?;
         conversion.run(bar).or_raise(err)?;
@@ -138,7 +134,7 @@ impl ArchiveJob {
             target,
         };
         Ok(Ok(Self {
-            archive_path: archive,
+            archive,
             extraction,
             conversion,
             compression,
@@ -322,7 +318,7 @@ impl CompressionJob {
 }
 
 /// A path that was verified to point to an existing Zip archive.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ArchivePath(PathBuf);
 
 impl std::ops::Deref for ArchivePath {
@@ -359,5 +355,14 @@ impl ArchivePath {
         }
 
         Ok(ArchivePath(archive_path))
+    }
+}
+
+impl std::fmt::Debug for ArchivePath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match f.alternate() {
+            true => f.debug_tuple("ArchivePath").field(&self.0).finish(),
+            false => write!(f, "{:?}", self.0),
+        }
     }
 }
