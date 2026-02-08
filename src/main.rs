@@ -218,14 +218,14 @@ impl MainJob {
     /// Run this job.
     fn run(self) -> Result<(), Exn<ErrorMessage>> {
         let collection_type = match self {
-            MainJob::Archives(_) => convert::JobsBarTitle::Archives,
-            MainJob::Directories(_) => convert::JobsBarTitle::Directories,
+            Self::Archives(_) => convert::JobsBarTitle::Archives,
+            Self::Directories(_) => convert::JobsBarTitle::Directories,
         };
         let bars = convert::Bars::new(collection_type);
 
         match self {
-            MainJob::Archives(jobs) => jobs.run(&bars)?,
-            MainJob::Directories(jobs) => jobs.run(&bars)?,
+            Self::Archives(jobs) => jobs.run(&bars)?,
+            Self::Directories(jobs) => jobs.run(&bars)?,
         }
 
         bars.finish();
@@ -244,8 +244,8 @@ impl MainJob {
     /// Check if all tools needed for this job are actually available.
     fn check_tools(&self) -> Result<(), Exn<ErrorMessage>> {
         let iter: &mut dyn Iterator<Item = _> = match self {
-            MainJob::Archives(jobs) => &mut jobs.jobs().flat_map(Job::iter),
-            MainJob::Directories(jobs) => &mut jobs.jobs().flat_map(Job::iter),
+            Self::Archives(jobs) => &mut jobs.jobs().flat_map(Job::iter),
+            Self::Directories(jobs) => &mut jobs.jobs().flat_map(Job::iter),
         };
         let required_tools = iter
             .flat_map(|job| job.plan().required_tools())
@@ -270,18 +270,18 @@ impl MainJob {
     /// Print out statistics on how many images would get converted by this job.
     fn print_statistics(&self) {
         let collections = match self {
-            MainJob::Archives(jobs) => jobs.jobs().count(),
-            MainJob::Directories(jobs) => jobs.jobs().count(),
+            Self::Archives(jobs) => jobs.jobs().count(),
+            Self::Directories(jobs) => jobs.jobs().count(),
         };
 
         let images = match self {
-            MainJob::Archives(jobs) => &mut jobs.jobs().flat_map(Job::iter).count(),
-            MainJob::Directories(jobs) => &mut jobs.jobs().flat_map(Job::iter).count(),
+            Self::Archives(jobs) => &mut jobs.jobs().flat_map(Job::iter).count(),
+            Self::Directories(jobs) => &mut jobs.jobs().flat_map(Job::iter).count(),
         };
 
         let coll_type = match self {
-            MainJob::Archives(_) => "archives",
-            MainJob::Directories(_) => "directories",
+            Self::Archives(_) => "archives",
+            Self::Directories(_) => "directories",
         };
 
         println!("Found {collections} {coll_type}, with a total of {images} images to convert");
@@ -324,7 +324,10 @@ fn images_in_dir_recursively(
 
 /// Initialize the logger as requested.
 fn init_logger(path: &Path, level: tracing::Level) -> Result<(), Exn<ErrorMessage>> {
-    let err = || ErrorMessage::new("Failed to initialize logging to file {path:?}");
+    let err = || {
+        let path = path.display();
+        ErrorMessage::new(format!("Failed to initialize logging to file \"{path}\""))
+    };
 
     let path = match path.is_absolute() {
         true => path,

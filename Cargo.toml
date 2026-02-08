@@ -8,6 +8,7 @@ description = "Convert images within comic archives to newer image formats"
 missing_docs = "warn"
 
 [lints.clippy]
+nursery = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 enum_glob_use = "allow"
 match_bool = "allow"

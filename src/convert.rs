@@ -148,6 +148,7 @@ impl Bars {
 
         assert!(title.len() < MSG_SPACE, "title does not fit: {title}");
 
+        #[allow(clippy::literal_string_with_formatting_args)]
         let style = indicatif::ProgressStyle::with_template(
             "[{elapsed_precise}] {msg:>9}: {wide_bar} {pos:>5}/{len:5}",
         )
@@ -171,10 +172,10 @@ pub enum JobsBarTitle {
 
 impl JobsBarTitle {
     /// Get the title for the bar as string.
-    fn name(self) -> &'static str {
+    const fn name(self) -> &'static str {
         match self {
-            JobsBarTitle::Archives => "Archives",
-            JobsBarTitle::Directories => "Dirs",
+            Self::Archives => "Archives",
+            Self::Directories => "Dirs",
         }
     }
 }

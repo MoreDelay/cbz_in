@@ -250,7 +250,7 @@ impl TempDirGuard {
     /// Create a guard for a temporary directory. Deletes the directory on drop.
     ///
     /// The directory must not yet exist when the guard is created.
-    pub fn new(temp_root: PathBuf) -> Self {
+    pub const fn new(temp_root: PathBuf) -> Self {
         let temp_root = Some(temp_root);
         Self { temp_root }
     }

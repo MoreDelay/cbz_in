@@ -111,16 +111,17 @@ impl ImageInfo {
     /// Get image information based on its filename.
     fn new(path: PathBuf) -> Option<Self> {
         use ImageFormat::*;
+
         let ext = path.extension()?.to_string_lossy().to_lowercase();
-        let path = match ext.as_str() {
-            "jpg" => Some((path, Jpeg)),
-            "jpeg" => Some((path, Jpeg)),
-            "png" => Some((path, Png)),
-            "avif" => Some((path, Avif)),
-            "jxl" => Some((path, Jxl)),
-            "webp" => Some((path, Webp)),
-            _ => None,
+        let format = match ext.as_str() {
+            "jpg" => Jpeg,
+            "jpeg" => Jpeg,
+            "png" => Png,
+            "avif" => Avif,
+            "jxl" => Jxl,
+            "webp" => Webp,
+            _ => return None,
         };
-        path.map(|(path, format)| ImageInfo { path, format })
+        Some(Self { path, format })
     }
 }

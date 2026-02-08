@@ -29,12 +29,12 @@ pub struct ConversionJob {
 
 impl ConversionJob {
     /// Create a new conversion job that will follow the plan.
-    pub fn new(image_path: PathBuf, plan: Plan) -> Self {
+    pub const fn new(image_path: PathBuf, plan: Plan) -> Self {
         Self { image_path, plan }
     }
 
     /// Get the conversion plan for this job.
-    pub fn plan(&self) -> &Plan {
+    pub const fn plan(&self) -> &Plan {
         &self.plan
     }
 
@@ -144,7 +144,7 @@ impl StateWaiting {
         #[allow(clippy::enum_glob_use)]
         use ImageFormat::*;
 
-        let StateWaiting {
+        let Self {
             image_path,
             sequence,
             tool_use,
@@ -387,7 +387,7 @@ impl Plan {
         use ImageFormat::*;
         use Tool::*;
 
-        fn decode(from: ImageFormat) -> Tool {
+        const fn decode(from: ImageFormat) -> Tool {
             match from {
                 Jpeg | Png => Magick,
                 Avif => Avifdec,
@@ -396,7 +396,7 @@ impl Plan {
             }
         }
 
-        fn encode(from: ImageFormat) -> Tool {
+        const fn encode(from: ImageFormat) -> Tool {
             match from {
                 Jpeg | Png => Magick,
                 Avif => Cavif,
@@ -406,23 +406,24 @@ impl Plan {
         }
 
         match self {
-            Plan::OneStep { from, to } => match (from, to) {
+            Self::OneStep { from, to } => match (from, to) {
                 (Jpeg | Png, _) => vec![encode(to)],
                 (_, Jpeg | Png) => vec![decode(from)],
                 (_, _) => unreachable!(),
             },
-            Plan::TwoStep { from, to, .. } => vec![decode(from), encode(to)],
-            Plan::IndeterminateJxl { to, .. } => vec![decode(Jxl), encode(to)],
+            Self::TwoStep { from, to, .. } => vec![decode(from), encode(to)],
+            Self::IndeterminateJxl { to, .. } => vec![decode(Jxl), encode(to)],
         }
     }
 
     /// Check if these details will always be performed without need of [`Configuration::forced`].
-    fn perform_always(self) -> bool {
+    const fn perform_always(self) -> bool {
         use ImageFormat::*;
 
         let tuple = match self {
-            Plan::OneStep { from, to, .. } | Plan::TwoStep { from, to, .. } => (from, to),
-            Plan::IndeterminateJxl { .. } => return false,
+            Self::OneStep { from, to, .. } => (from, to),
+            Self::TwoStep { from, to, .. } => (from, to),
+            Self::IndeterminateJxl { .. } => return false,
         };
 
         match tuple {
@@ -491,7 +492,7 @@ impl Sequence {
     }
 
     /// Returns the conversion sequence that should be performed next in the current plan.
-    fn next_step(self) -> (ImageFormat, ImageFormat) {
+    const fn next_step(self) -> (ImageFormat, ImageFormat) {
         match self {
             Self::OneStep { from, to } => (from, to),
             Self::TwoStep { from, over, .. } => (from, over),
@@ -539,8 +540,8 @@ impl ToolUse {
     /// Extract the error context from the previous failure.
     fn get_exn(self) -> Option<Exn<ErrorMessage>> {
         match self {
-            ToolUse::Best => None,
-            ToolUse::Backup { last_error } => Some(last_error),
+            Self::Best => None,
+            Self::Backup { last_error } => Some(last_error),
         }
     }
 }
@@ -559,7 +560,7 @@ pub struct ConversionJobs {
 
 impl ConversionJobs {
     /// Initialize a new collection with the given jobs.
-    pub fn new(job_queue: VecDeque<ConversionJob>, n_workers: NonZeroUsize) -> Self {
+    pub const fn new(job_queue: VecDeque<ConversionJob>, n_workers: NonZeroUsize) -> Self {
         Self {
             job_queue,
             n_workers,
@@ -666,7 +667,7 @@ impl RunConversionJobs {
 }
 
 /// All supported image file formats.
-#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq)]
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImageFormat {
     /// A JPEG file.
     Jpeg,
@@ -682,7 +683,7 @@ pub enum ImageFormat {
 
 impl ImageFormat {
     /// Get the file extension as string.
-    pub fn ext(self) -> &'static str {
+    pub const fn ext(self) -> &'static str {
         use ImageFormat::*;
 
         match self {
