@@ -52,7 +52,7 @@ pub struct RunConversionJob {
 }
 
 impl RunConversionJob {
-    /// Create a running job for [ConversionJob].
+    /// Create a running job for [`ConversionJob`].
     pub fn new(job: ConversionJob) -> Result<Self, Exn<ErrorMessage>> {
         let sequence = job.plan.resolve(&job.image_path)?;
         let waiting = StateWaiting {
@@ -74,16 +74,15 @@ impl RunConversionJob {
                 let state = State::Running(waiting.start_conversion()?);
                 Proceeded::Progress(Self { state })
             }
-            State::Running(mut running) => match running.child_done()? {
-                false => {
+            State::Running(mut running) => {
+                if running.child_done()? {
+                    let state = State::Completed(StateCompleted(running));
+                    Proceeded::Progress(Self { state })
+                } else {
                     let state = State::Running(running);
                     Proceeded::SameAsBefore(Self { state })
                 }
-                true => {
-                    let state = State::Completed(StateCompleted(running));
-                    Proceeded::Progress(Self { state })
-                }
-            },
+            }
             State::Completed(completed) => match completed.complete() {
                 Ok(Some(waiting)) => {
                     let state = State::Waiting(waiting);
@@ -106,7 +105,7 @@ impl RunConversionJob {
     }
 }
 
-/// The return type for [ConversionJob::proceed] to indicate if we made progress.
+/// The return type for [`RunConversionJob::proceed`] to indicate if we made progress.
 #[derive(Debug)]
 enum Proceeded {
     /// The job could not make any progress.
@@ -117,7 +116,7 @@ enum Proceeded {
     Finished,
 }
 
-/// A representation of the inner state machine of [ConversionJob].
+/// A representation of the inner state machine of [`ConversionJob`].
 #[derive(Debug)]
 enum State {
     /// We wait until a subprocess can be started.
@@ -128,7 +127,7 @@ enum State {
     Completed(StateCompleted),
 }
 
-/// The data associated with the [State::Waiting].
+/// The data associated with the [`State::Waiting`].
 #[derive(Debug)]
 struct StateWaiting {
     /// The path to the image we want to convert.
@@ -140,14 +139,20 @@ struct StateWaiting {
 }
 
 impl StateWaiting {
-    /// State machine transition from [State::Waiting] to [State::Running].
+    /// State machine transition from [`State::Waiting`] to [`State::Running`].
     fn start_conversion(self) -> Result<StateRunning, Exn<ErrorMessage>> {
+        #[allow(clippy::enum_glob_use)]
+        use ImageFormat::*;
+
         let StateWaiting {
             image_path,
             sequence,
             tool_use,
         } = self;
-        let err = || ErrorMessage::new(format!("Failed image conversion for {image_path:?}"));
+        let err = || {
+            let path = image_path.display();
+            ErrorMessage::new(format!("Failed image conversion for \"{path}\""))
+        };
 
         debug!("start conversion for {image_path:?}: {sequence:?}");
 
@@ -155,7 +160,6 @@ impl StateWaiting {
         let input = &image_path;
         let output = &image_path.with_extension(to.ext());
 
-        use ImageFormat::*;
         let child = match tool_use {
             ToolUse::Best => match (from, to) {
                 (Jpeg, Png) => spawn::convert_jpeg_to_png(input, output).or_raise(err)?,
@@ -191,7 +195,7 @@ impl StateWaiting {
     }
 }
 
-/// The data associated with the [State::Running].
+/// The data associated with the [`State::Running`].
 #[derive(Debug)]
 struct StateRunning {
     /// The tracked child process.
@@ -208,16 +212,16 @@ impl StateRunning {
     /// Check if the process has already completed.
     fn child_done(&mut self) -> Result<bool, Exn<ErrorMessage>> {
         let err = || {
-            let path = &self.image_path;
+            let path = self.image_path.display();
             ErrorMessage::new(format!(
-                "Could not check if a process finished working on {path:?}",
+                "Could not check if a process finished working on \"{path}\"",
             ))
         };
         self.child.try_wait().or_raise(err)
     }
 }
 
-/// The data associated with the [State::Completed].
+/// The data associated with the [`State::Completed`].
 ///
 /// This is closer to a pseudo state between Running and Waiting. Its purpose is to perform the
 /// final cleanup after the child process has completed the conversion.
@@ -225,7 +229,7 @@ impl StateRunning {
 struct StateCompleted(StateRunning);
 
 impl StateCompleted {
-    /// State machine transition from [State::Completed] to [State::Waiting].
+    /// State machine transition from [`State::Completed`] to [`State::Waiting`].
     ///
     /// Waits on the child process and deletes the original image file. If we completed all
     /// conversions as specified by the details, we stop here.
@@ -250,8 +254,8 @@ impl StateCompleted {
         drop(tool_use);
 
         let err = || {
-            let path = &image_path;
-            ErrorMessage::new(format!("Could not complete a conversion for {path:?}"))
+            let path = image_path.display();
+            ErrorMessage::new(format!("Could not complete a conversion for \"{path}\""))
         };
 
         fs::remove_file(&image_path).or_raise_with_recovery(err, None)?;
@@ -281,7 +285,8 @@ impl StateCompleted {
         tool_use: ToolUse,
     ) -> Result<Exn<ErrorMessage, StateWaiting>, Exn<ErrorMessage>> {
         if let ToolUse::Backup { last_error } = tool_use {
-            let msg = format!("Give up trying to convert {image_path:?}");
+            let path = image_path.display();
+            let msg = format!("Give up trying to convert \"{path}\"");
             let err = ErrorMessage::new(msg);
             return Err(Exn::raise_all(err, [last_error, exn]));
         }
@@ -301,7 +306,8 @@ impl StateCompleted {
             }
         };
 
-        let msg = format!("Could not complete the conversion for {image_path:?}, try to recover");
+        let path = image_path.display();
+        let msg = format!("Could not complete the conversion for \"{path}\", try to recover");
 
         let waiting = StateWaiting {
             image_path,
@@ -314,7 +320,7 @@ impl StateCompleted {
 }
 
 /// Represents the plan of the conversion sequence an image will go through.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum Plan {
     /// A single step conversion.
     OneStep {
@@ -346,6 +352,7 @@ pub enum Plan {
 impl Plan {
     /// Determine the details for a specific image to reach the goal set out by the configuration.
     pub fn new(current: ImageFormat, config: &Configuration) -> Option<Self> {
+        #[allow(clippy::enum_glob_use)]
         use ImageFormat::*;
 
         let &Configuration { target, forced, .. } = config;
@@ -376,14 +383,13 @@ impl Plan {
     }
 
     /// Determine the tools that need to be installed for this conversion to work.
-    pub fn required_tools(&self) -> Vec<Tool> {
+    pub fn required_tools(self) -> Vec<Tool> {
         use ImageFormat::*;
         use Tool::*;
 
         fn decode(from: ImageFormat) -> Tool {
             match from {
-                Jpeg => Magick,
-                Png => Magick,
+                Jpeg | Png => Magick,
                 Avif => Avifdec,
                 Jxl => Djxl,
                 Webp => Dwebp,
@@ -392,15 +398,14 @@ impl Plan {
 
         fn encode(from: ImageFormat) -> Tool {
             match from {
-                Jpeg => Magick,
-                Png => Magick,
+                Jpeg | Png => Magick,
                 Avif => Cavif,
                 Jxl => Cjxl,
                 Webp => Cwebp,
             }
         }
 
-        match *self {
+        match self {
             Plan::OneStep { from, to } => match (from, to) {
                 (Jpeg | Png, _) => vec![encode(to)],
                 (_, Jpeg | Png) => vec![decode(from)],
@@ -411,15 +416,15 @@ impl Plan {
         }
     }
 
-    /// Check if these details will always be performed without need of [Configuration::forced].
-    fn perform_always(&self) -> bool {
+    /// Check if these details will always be performed without need of [`Configuration::forced`].
+    fn perform_always(self) -> bool {
+        use ImageFormat::*;
+
         let tuple = match self {
-            Plan::OneStep { from, to, .. } => (*from, *to),
-            Plan::TwoStep { from, to, .. } => (*from, *to),
+            Plan::OneStep { from, to, .. } | Plan::TwoStep { from, to, .. } => (from, to),
             Plan::IndeterminateJxl { .. } => return false,
         };
 
-        use ImageFormat::*;
         match tuple {
             (Jpeg | Png, _) => true,
             (_, Jpeg | Png) => true,
@@ -434,7 +439,7 @@ impl Plan {
 }
 
 /// Represents the current sequence step that an image is going through.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 enum Sequence {
     /// A single step conversion.
     OneStep {
@@ -464,37 +469,30 @@ enum Sequence {
 impl Sequence {
     /// Resolve the conversion plan into a concrete sequence of conversion steps.
     fn resolve(details: Plan, image_path: &Path) -> Result<Self, Exn<ErrorMessage>> {
-        let err = || ErrorMessage::new(format!("Could not resolve how to convert {image_path:?}"));
+        let err = || {
+            let path = image_path.display();
+            ErrorMessage::new(format!("Could not resolve how to convert \"{path}\""))
+        };
 
         match details {
             Plan::OneStep { from, to } => Ok(Self::OneStep { from, to }),
             Plan::TwoStep { from, over, to } => Ok(Self::TwoStep { from, over, to }),
             Plan::IndeterminateJxl { from, to } => {
-                match Self::jxl_is_compressed_jpeg(image_path).or_raise(err)? {
-                    true => {
-                        debug!("jxl is compressed jpeg: {image_path:?}");
-                        Ok(Self::TwoStep {
-                            from,
-                            over: ImageFormat::Jpeg,
-                            to,
-                        })
-                    }
-                    false => {
-                        debug!("jxl is encoded: {image_path:?}");
-                        Ok(Self::TwoStep {
-                            from,
-                            over: ImageFormat::Png,
-                            to,
-                        })
-                    }
-                }
+                let over = if Self::jxl_is_compressed_jpeg(image_path).or_raise(err)? {
+                    debug!("jxl is compressed jpeg: {image_path:?}");
+                    ImageFormat::Jpeg
+                } else {
+                    debug!("jxl is encoded: {image_path:?}");
+                    ImageFormat::Png
+                };
+                Ok(Self::TwoStep { from, over, to })
             }
         }
     }
 
     /// Returns the conversion sequence that should be performed next in the current plan.
-    fn next_step(&self) -> (ImageFormat, ImageFormat) {
-        match *self {
+    fn next_step(self) -> (ImageFormat, ImageFormat) {
+        match self {
             Self::OneStep { from, to } => (from, to),
             Self::TwoStep { from, over, .. } => (from, over),
             Self::Finish { from, to } => (from, to),
@@ -506,10 +504,13 @@ impl Sequence {
     /// If that is the case, then we would prefer to simple decode it again, instead of routing
     /// over Png.
     fn jxl_is_compressed_jpeg(image_path: &Path) -> Result<bool, Exn<ErrorMessage>> {
-        let err = || ErrorMessage::new(format!("Could not query jxl file {image_path:?}"));
+        let err = || {
+            let image_path = image_path.display();
+            ErrorMessage::new(format!("Could not query jxl file \"{image_path}\""))
+        };
 
         let has_box = spawn::run_jxlinfo(image_path)
-            .and_then(|c| c.wait_with_output())
+            .and_then(ManagedChild::wait_with_output)
             .or_raise(err)?
             .stdout
             .lines()
@@ -576,7 +577,7 @@ impl ConversionJobs {
     }
 }
 
-/// Helper struct to execute [ConversionJobs::run].
+/// Helper struct to execute [`ConversionJobs::run`].
 struct RunConversionJobs {
     /// A queue of jobs waiting to be run.
     job_queue: VecDeque<ConversionJob>,
@@ -592,7 +593,8 @@ impl RunConversionJobs {
             n_workers,
         } = jobs;
 
-        let jobs_in_progress = Vec::from_iter((0..n_workers.get()).map(|_| None));
+        let range = 0..n_workers.get();
+        let jobs_in_progress = range.map(|_| None).collect();
         Self {
             job_queue,
             jobs_in_progress,
@@ -611,7 +613,7 @@ impl RunConversionJobs {
         let mut signals = Signals::new([SIGINT, SIGCHLD]).or_raise(err)?;
 
         // start out as many jobs as allowed
-        for slot in self.jobs_in_progress.iter_mut() {
+        for slot in &mut self.jobs_in_progress {
             let Some(job) = self.job_queue.pop_front() else {
                 break;
             };
@@ -636,7 +638,7 @@ impl RunConversionJobs {
 
     /// Try to proceed as many jobs as possible, until none are doing any more progress.
     fn proceed_jobs(&mut self, bar: &ProgressBar) -> Result<(), Exn<ErrorMessage>> {
-        for slot in self.jobs_in_progress.iter_mut() {
+        for slot in &mut self.jobs_in_progress {
             loop {
                 match slot.take() {
                     Some(job) => match job.proceed()? {
@@ -659,7 +661,7 @@ impl RunConversionJobs {
 
     /// Check if there are any jobs currently in progress.
     fn jobs_pending(&self) -> bool {
-        self.jobs_in_progress.iter().any(|job| job.is_some())
+        self.jobs_in_progress.iter().any(Option::is_some)
     }
 }
 

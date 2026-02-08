@@ -15,7 +15,7 @@ use crate::{
 
 use super::archive::ArchiveJob;
 
-/// Represents a collection of [ArchiveJob]'s, which are all performed in one operation.
+/// Represents a collection of [`ArchiveJob`]'s, which are all performed in one operation.
 pub struct ArchiveJobs(Vec<ArchiveJob>);
 
 impl JobCollection for ArchiveJobs {
@@ -27,7 +27,7 @@ impl JobCollection for ArchiveJobs {
 }
 
 impl ArchiveJobs {
-    /// The constructed [ArchiveJobs] will contain only a single [ArchiveJob].
+    /// The constructed [`ArchiveJobs`] will contain only a single [`ArchiveJob`].
     pub fn single(
         archive: ArchivePath,
         config: &Configuration,
@@ -35,14 +35,15 @@ impl ArchiveJobs {
         Ok(Self::single_internal(archive, config)?.map(|job| Self(vec![job])))
     }
 
-    /// Create an [ArchiveJob] for all archives found in the provided root directory.
+    /// Create an [`ArchiveJob`] for all archives found in the provided root directory.
     pub fn collect(
-        root: Directory,
+        root: &Directory,
         config: &Configuration,
     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
         let err = || {
+            let root = root.display();
             ErrorMessage::new(format!(
-                "Error while looking for archives needing conversion in directory {root:?}"
+                "Error while looking for archives needing conversion in directory \"{root}\""
             ))
         };
 
@@ -67,16 +68,16 @@ impl ArchiveJobs {
         Ok(Self::new(jobs))
     }
 
-    /// Combine all [ArchiveJob]'s to wrap them up in a new collection.
+    /// Combine all [`ArchiveJob`]'s to wrap them up in a new collection.
     pub fn new(iter: impl IntoIterator<Item = ArchiveJob>) -> Option<Self> {
         let jobs = iter.into_iter().collect::<Vec<_>>();
-        match jobs.is_empty() {
-            true => None,
-            false => Some(Self(jobs)),
+        if jobs.is_empty() {
+            return None;
         }
+        Some(Self(jobs))
     }
 
-    /// Internal constructor for a single [ArchiveJobs].
+    /// Internal constructor for a single [`ArchiveJobs`].
     fn single_internal(
         archive: ArchivePath,
         config: &Configuration,
@@ -101,7 +102,7 @@ impl IntoIterator for ArchiveJobs {
     }
 }
 
-/// Represents a collection of [RecursiveDirJob]'s, which are all performed in one operation.
+/// Represents a collection of [`RecursiveDirJob`]'s, which are all performed in one operation.
 pub struct RecursiveDirJobs(Vec<RecursiveDirJob>);
 
 impl JobCollection for RecursiveDirJobs {
@@ -113,7 +114,7 @@ impl JobCollection for RecursiveDirJobs {
 }
 
 impl RecursiveDirJobs {
-    /// The constructed [RecursiveDirJobs] will contain only a single [RecursiveDirJob].
+    /// The constructed [`RecursiveDirJobs`] will contain only a single [`RecursiveDirJob`].
     pub fn single(
         dir: Directory,
         config: &Configuration,
@@ -128,13 +129,13 @@ impl RecursiveDirJobs {
         }
     }
 
-    /// Combine all [RecursiveDirJob]'s to wrap them up in a new collection.
+    /// Combine all [`RecursiveDirJob`]'s to wrap them up in a new collection.
     pub fn new(iter: impl IntoIterator<Item = RecursiveDirJob>) -> Option<Self> {
         let jobs = iter.into_iter().collect::<Vec<_>>();
-        match jobs.is_empty() {
-            true => None,
-            false => Some(Self(jobs)),
+        if jobs.is_empty() {
+            return None;
         }
+        Some(Self(jobs))
     }
 }
 

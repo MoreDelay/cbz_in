@@ -10,7 +10,7 @@ use walkdir::WalkDir;
 use crate::{
     convert::{archive::ArchivePath, dir::Directory},
     error::ErrorMessage,
-    spawn,
+    spawn::{self, ManagedChild},
 };
 
 use super::ImageFormat;
@@ -28,12 +28,15 @@ pub struct ArchiveImages {
 impl ArchiveImages {
     /// Find all images in an archive.
     pub fn new(archive: ArchivePath) -> Result<Self, Exn<ErrorMessage>> {
-        let err = || ErrorMessage::new(format!("Could not list files within archive {archive:?}"));
+        let err = || {
+            let archive = archive.display();
+            ErrorMessage::new(format!("Could not list files within archive \"{archive}\""))
+        };
 
         info!("Checking {archive:?}");
 
         let images = spawn::list_archive_files(&archive)
-            .and_then(|c| c.wait_with_output())
+            .and_then(ManagedChild::wait_with_output)
             .or_raise(err)?
             .stdout
             .lines()
@@ -64,7 +67,10 @@ pub struct DirImages {
 impl DirImages {
     /// Find all images in a directory.
     pub fn new(root: Directory) -> Result<Self, Exn<ErrorMessage>> {
-        let err = || ErrorMessage::new(format!("Could not list files within directory {root:?}"));
+        let err = || {
+            let root = root.display();
+            ErrorMessage::new(format!("Could not list files within directory \"{root}\""))
+        };
 
         info!("Checking {:?}", root);
 
