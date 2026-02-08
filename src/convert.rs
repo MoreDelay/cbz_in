@@ -39,7 +39,7 @@ pub trait Job {
     fn iter(&self) -> impl Iterator<Item = &ConversionJob>;
 
     /// Run this job.
-    fn run(self, bars: &ProgressBar) -> Result<(), Exn<ErrorMessage>>;
+    fn run(self, bar: &ProgressBar) -> Result<(), Exn<ErrorMessage>>;
 }
 
 /// A trait for a collection of jobs that internally run jobs themselves.
@@ -148,11 +148,11 @@ impl Bars {
 
         assert!(title.len() < MSG_SPACE, "title does not fit: {title}");
 
-        #[allow(clippy::literal_string_with_formatting_args)]
+        #[expect(clippy::literal_string_with_formatting_args)]
         let style = indicatif::ProgressStyle::with_template(
             "[{elapsed_precise}] {msg:>9}: {wide_bar} {pos:>5}/{len:5}",
         )
-        .unwrap();
+        .expect("valid template");
 
         indicatif::ProgressBar::new(0)
             .with_style(style)

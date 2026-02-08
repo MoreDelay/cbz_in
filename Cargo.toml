@@ -10,10 +10,45 @@ missing_docs = "warn"
 [lints.clippy]
 nursery = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
+
+# disable some pedantic lints
 enum_glob_use = "allow"
 match_bool = "allow"
 match_same_arms = "allow"
+
+# restiction lints
+allow_attributes = "warn"
+clone_on_ref_ptr = "warn"
+dbg_macro = "warn"
+map_with_unused_argument_over_ranges = "warn"
+missing_assert_message = "warn"
+missing_asserts_for_indexing = "warn"
 missing_docs_in_private_items = "warn"
+mixed_read_write_in_expression = "warn"
+mod_module_files = "warn" # alternative: self_names_module_files
+needless_raw_strings = "warn"
+pathbuf_init_then_push = "warn"
+redundant_test_prefix = "warn"
+redundant_type_annotations = "warn"
+renamed_function_params = "warn"
+rest_pat_in_fully_bound_structs = "warn"
+return_and_then = "warn"
+same_name_method = "warn"
+str_to_string = "warn"
+string_slice = "warn"
+tests_outside_test_module = "warn"
+todo = "warn"
+try_err = "warn"
+undocumented_unsafe_blocks = "warn"
+unimplemented = "warn"
+unnecessary_safety_comment = "warn"
+unnecessary_safety_doc = "warn"
+unneeded_field_pattern = "warn"
+unseparated_literal_suffix = "warn"
+unused_trait_names = "warn"
+unwrap_used = "warn"
+verbose_file_reads = "warn"
+wildcard_enum_match_arm = "warn"
 
 [dependencies]
 anyhow = "1.0.100"

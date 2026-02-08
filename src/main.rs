@@ -10,13 +10,13 @@ use std::path::{Path, PathBuf};
 use std::thread;
 
 use clap::Parser;
-use exn::{ErrorExt, Exn, OptionExt, ResultExt, bail};
+use exn::{ErrorExt as _, Exn, OptionExt as _, ResultExt as _, bail};
 use tracing::info;
 
 use crate::convert::archive::ArchivePath;
 use crate::convert::dir::Directory;
 use crate::convert::image::ImageFormat;
-use crate::convert::{ArchiveJobs, Configuration, Job, JobCollection, RecursiveDirJobs};
+use crate::convert::{ArchiveJobs, Configuration, Job, JobCollection as _, RecursiveDirJobs};
 use crate::error::{ErrorMessage, got_interrupted};
 
 /// The program entry point.
@@ -108,7 +108,7 @@ struct Args {
     ///
     /// Uses as many processes as you have cores by default. When used as a flag only spawns a
     /// single process at a time.
-    #[allow(clippy::option_option)]
+    #[expect(clippy::option_option)]
     #[arg(short = 'j', long)]
     workers: Option<Option<NonZeroUsize>>,
 

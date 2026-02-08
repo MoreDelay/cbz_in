@@ -1,7 +1,7 @@
 //! Contains everything related to dealing with individual images.
 
 use std::collections::VecDeque;
-use std::io::BufRead;
+use std::io::BufRead as _;
 use std::num::NonZeroUsize;
 use std::str::FromStr;
 use std::{
@@ -9,7 +9,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use exn::{ErrorExt, Exn, ResultExt};
+use exn::{ErrorExt as _, Exn, ResultExt as _};
 use indicatif::ProgressBar;
 use signal_hook::consts::{SIGCHLD, SIGINT};
 use signal_hook::iterator::Signals;
@@ -142,7 +142,6 @@ struct StateWaiting {
 impl StateWaiting {
     /// State machine transition from [`State::Waiting`] to [`State::Running`].
     fn start_conversion(self) -> Result<StateRunning, Exn<ErrorMessage>> {
-        #[allow(clippy::enum_glob_use)]
         use ImageFormat::*;
 
         let Self {
@@ -353,7 +352,6 @@ pub enum Plan {
 impl Plan {
     /// Determine the details for a specific image to reach the goal set out by the configuration.
     pub fn new(current: ImageFormat, config: &Configuration) -> Option<Self> {
-        #[allow(clippy::enum_glob_use)]
         use ImageFormat::*;
 
         let &Configuration { target, forced, .. } = config;
@@ -511,13 +509,16 @@ impl Sequence {
             ErrorMessage::new(format!("Could not query jxl file \"{image_path}\""))
         };
 
-        let has_box = spawn::run_jxlinfo(image_path)
+        let has_box: Result<_, std::io::Error> = spawn::run_jxlinfo(image_path)
             .and_then(ManagedChild::wait_with_output)
             .or_raise(err)?
             .stdout
             .lines()
-            .any(|line| line.unwrap().starts_with("box: type: \"jbrd\""));
-        Ok(has_box)
+            .try_fold(false, |mut acc, line| {
+                acc |= line?.starts_with("box: type: \"jbrd\"");
+                Ok(acc)
+            });
+        has_box.or_raise(err)
     }
 }
 
@@ -607,7 +608,8 @@ impl RunConversionJobs {
     fn run(mut self, bar: &ProgressBar) -> Result<(), Exn<ErrorMessage>> {
         let err = || ErrorMessage::new("Could not complete conversion jobs");
 
-        assert!(!self.job_queue.is_empty());
+        assert!(!self.job_queue.is_empty(), "queue filled by construction");
+
         bar.reset();
         bar.set_length(self.job_queue.len() as u64);
 
@@ -720,18 +722,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_check_for_compressed_jxl() {
+    fn check_for_compressed_jxl() {
         let compressed_path = PathBuf::from("test_data/compressed.jxl");
         assert!(compressed_path.exists());
-        let out = Sequence::jxl_is_compressed_jpeg(&compressed_path).unwrap();
-        assert!(out);
+        let out = Sequence::jxl_is_compressed_jpeg(&compressed_path);
+        assert!(matches!(out, Ok(true)));
     }
 
     #[test]
-    fn test_check_for_encoded_jxl() {
+    fn check_for_encoded_jxl() {
         let encoded_path = PathBuf::from("test_data/encoded.jxl");
         assert!(encoded_path.exists());
-        let out = Sequence::jxl_is_compressed_jpeg(&encoded_path).unwrap();
-        assert!(!out);
+        let out = Sequence::jxl_is_compressed_jpeg(&encoded_path);
+        assert!(matches!(out, Ok(false)));
     }
 }

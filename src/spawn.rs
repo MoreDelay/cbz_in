@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 
-use exn::{ErrorExt, Exn, ResultExt};
+use exn::{ErrorExt as _, Exn, ResultExt as _};
 use tracing::{debug, error};
 
 use crate::error::ErrorMessage;
@@ -40,7 +40,12 @@ impl ManagedChild {
             ErrorMessage::new(format!("Error when waiting on a child process: '{cmd}'",))
         };
 
-        let waited = self.child.as_mut().unwrap().try_wait().or_raise(err)?;
+        let waited = self
+            .child
+            .as_mut()
+            .expect("is some as not yet dropped")
+            .try_wait()
+            .or_raise(err)?;
         Ok(waited.is_some())
     }
 
@@ -56,7 +61,7 @@ impl ManagedChild {
     ///
     /// Returns an error when the sub-process indicates an error.
     pub fn wait_with_output(mut self) -> Result<std::process::Output, Exn<ErrorMessage>> {
-        let child = self.child.take().unwrap();
+        let child = self.child.take().expect("is some as not yet dropped");
 
         let err = || {
             let cmd = &self.cmd;
@@ -118,7 +123,9 @@ pub fn convert_with_magick(
     const TOOL: Tool = Tool::Magick;
 
     let mut cmd = Command::new(TOOL.name());
-    cmd.args([input_path.to_str().unwrap(), output_path.to_str().unwrap()]);
+    let input_path = input_path.to_str().expect("paths are valid utf8");
+    let output_path = output_path.to_str().expect("paths are valid utf8");
+    cmd.args([input_path, output_path]);
     ManagedChild::spawn(cmd)
 }
 
@@ -138,12 +145,9 @@ pub fn convert_png_to_jpeg(
     const TOOL: Tool = Tool::Magick;
 
     let mut cmd = Command::new(TOOL.name());
-    cmd.args([
-        input_path.to_str().unwrap(),
-        "-quality",
-        "92",
-        output_path.to_str().unwrap(),
-    ]);
+    let input_path = input_path.to_str().expect("paths are valid utf8");
+    let output_path = output_path.to_str().expect("paths are valid utf8");
+    cmd.args([input_path, "-quality", "92", output_path]);
     ManagedChild::spawn(cmd)
 }
 
@@ -155,13 +159,15 @@ pub fn encode_avif(
     const TOOL: Tool = Tool::Cavif;
 
     let mut cmd = Command::new(TOOL.name());
+    let input_path = input_path.to_str().expect("paths are valid utf8");
+    let output_path = output_path.to_str().expect("paths are valid utf8");
     cmd.args([
         "--speed=3",
         "--threads=1",
         "--quality=88",
-        input_path.to_str().unwrap(),
+        input_path,
         "-o",
-        output_path.to_str().unwrap(),
+        output_path,
     ]);
     ManagedChild::spawn(cmd)
 }
@@ -174,12 +180,14 @@ pub fn encode_jxl(
     const TOOL: Tool = Tool::Cjxl;
 
     let mut cmd = Command::new(TOOL.name());
+    let input_path = input_path.to_str().expect("paths are valid utf8");
+    let output_path = output_path.to_str().expect("paths are valid utf8");
     cmd.args([
         "--effort=9",
         "--num_threads=1",
         "--distance=0",
-        input_path.to_str().unwrap(),
-        output_path.to_str().unwrap(),
+        input_path,
+        output_path,
     ]);
     ManagedChild::spawn(cmd)
 }
@@ -192,13 +200,9 @@ pub fn encode_webp(
     const TOOL: Tool = Tool::Cwebp;
 
     let mut cmd = Command::new(TOOL.name());
-    cmd.args([
-        "-q",
-        "90",
-        input_path.to_str().unwrap(),
-        "-o",
-        output_path.to_str().unwrap(),
-    ]);
+    let input_path = input_path.to_str().expect("paths are valid utf8");
+    let output_path = output_path.to_str().expect("paths are valid utf8");
+    cmd.args(["-q", "90", input_path, "-o", output_path]);
     ManagedChild::spawn(cmd)
 }
 
@@ -210,11 +214,9 @@ pub fn decode_webp(
     const TOOL: Tool = Tool::Dwebp;
 
     let mut cmd = Command::new(TOOL.name());
-    cmd.args([
-        input_path.to_str().unwrap(),
-        "-o",
-        output_path.to_str().unwrap(),
-    ]);
+    let input_path = input_path.to_str().expect("paths are valid utf8");
+    let output_path = output_path.to_str().expect("paths are valid utf8");
+    cmd.args([input_path, "-o", output_path]);
     ManagedChild::spawn(cmd)
 }
 
@@ -226,11 +228,9 @@ pub fn decode_jxl_to_png(
     const TOOL: Tool = Tool::Djxl;
 
     let mut cmd = Command::new(TOOL.name());
-    cmd.args([
-        input_path.to_str().unwrap(),
-        output_path.to_str().unwrap(),
-        "--num_threads=1",
-    ]);
+    let input_path = input_path.to_str().expect("paths are valid utf8");
+    let output_path = output_path.to_str().expect("paths are valid utf8");
+    cmd.args([input_path, output_path, "--num_threads=1"]);
     ManagedChild::spawn(cmd)
 }
 
@@ -242,11 +242,9 @@ pub fn decode_jxl_to_jpeg(
     const TOOL: Tool = Tool::Djxl;
 
     let mut cmd = Command::new(TOOL.name());
-    cmd.args([
-        input_path.to_str().unwrap(),
-        output_path.to_str().unwrap(),
-        "--num_threads=1",
-    ]);
+    let input_path = input_path.to_str().expect("paths are valid utf8");
+    let output_path = output_path.to_str().expect("paths are valid utf8");
+    cmd.args([input_path, output_path, "--num_threads=1"]);
     ManagedChild::spawn(cmd)
 }
 
@@ -258,12 +256,9 @@ pub fn decode_avif_to_png(
     const TOOL: Tool = Tool::Avifdec;
 
     let mut cmd = Command::new(TOOL.name());
-    cmd.args([
-        "--jobs",
-        "1",
-        input_path.to_str().unwrap(),
-        output_path.to_str().unwrap(),
-    ]);
+    let input_path = input_path.to_str().expect("paths are valid utf8");
+    let output_path = output_path.to_str().expect("paths are valid utf8");
+    cmd.args(["--jobs", "1", input_path, output_path]);
     ManagedChild::spawn(cmd)
 }
 
@@ -275,14 +270,9 @@ pub fn decode_avif_to_jpeg(
     const TOOL: Tool = Tool::Avifdec;
 
     let mut cmd = Command::new(TOOL.name());
-    cmd.args([
-        "--jobs",
-        "1",
-        "--quality",
-        "80",
-        input_path.to_str().unwrap(),
-        output_path.to_str().unwrap(),
-    ]);
+    let input_path = input_path.to_str().expect("paths are valid utf8");
+    let output_path = output_path.to_str().expect("paths are valid utf8");
+    cmd.args(["--jobs", "1", "--quality", "80", input_path, output_path]);
     ManagedChild::spawn(cmd)
 }
 
@@ -291,7 +281,8 @@ pub fn run_jxlinfo(image_path: &Path) -> Result<ManagedChild, Exn<ErrorMessage>>
     const TOOL: Tool = Tool::Jxlinfo;
 
     let mut cmd = Command::new(TOOL.name());
-    cmd.args(["-v", image_path.to_str().unwrap()]);
+    let image_path = image_path.to_str().expect("paths are valid utf8");
+    cmd.args(["-v", image_path]);
     ManagedChild::spawn(cmd)
 }
 
@@ -304,7 +295,7 @@ pub fn list_archive_files(archive: &Path) -> Result<ManagedChild, Exn<ErrorMessa
         "l",
         "-ba",  // undocumented switch to remove header lines
         "-slt", // use format that is easier to parse
-        archive.to_str().unwrap(),
+        archive.to_str().expect("paths are valid utf8"),
     ]);
     ManagedChild::spawn(cmd)
 }
@@ -314,13 +305,9 @@ pub fn extract_zip(archive: &Path, destination: &Path) -> Result<ManagedChild, E
     const TOOL: Tool = Tool::_7z;
 
     let mut cmd = Command::new(TOOL.name());
-    cmd.args([
-        "x",
-        "-tzip",
-        archive.to_str().unwrap(),
-        "-spe",
-        format!("-o{}", destination.to_str().unwrap()).as_str(),
-    ]);
+    let archive = archive.to_str().expect("paths are valid utf8");
+    let destination = format!("-o{}", destination.to_str().expect("paths are valid utf8"));
+    cmd.args(["x", "-tzip", archive, "-spe", &destination]);
     ManagedChild::spawn(cmd)
 }
 
