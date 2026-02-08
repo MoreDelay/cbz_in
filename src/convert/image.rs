@@ -3,6 +3,7 @@
 use std::collections::VecDeque;
 use std::io::BufRead;
 use std::num::NonZeroUsize;
+use std::str::FromStr;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -692,6 +693,24 @@ impl ImageFormat {
             Avif => "avif",
             Jxl => "jxl",
             Webp => "webp",
+        }
+    }
+}
+
+impl FromStr for ImageFormat {
+    type Err = &'static str;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        use ImageFormat::*;
+
+        match s.to_lowercase().as_str() {
+            "jpg" => Ok(Jpeg),
+            "jpeg" => Ok(Jpeg),
+            "png" => Ok(Png),
+            "avif" => Ok(Avif),
+            "jxl" => Ok(Jxl),
+            "webp" => Ok(Webp),
+            _ => Err("unsupported image format"),
         }
     }
 }
