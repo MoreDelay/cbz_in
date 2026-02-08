@@ -19,7 +19,7 @@ pub struct ManagedChild {
 
 impl ManagedChild {
     /// Spawn a new [`ManagedChild`].
-    pub fn spawn(mut cmd: Command) -> Result<ManagedChild, Exn<ErrorMessage>> {
+    pub fn spawn(mut cmd: Command) -> Result<Self, Exn<ErrorMessage>> {
         let cmd_str = format!("{cmd:?}");
 
         let err = || ErrorMessage::new(format!("Failed to spawn the process: {cmd_str}"));
@@ -28,7 +28,7 @@ impl ManagedChild {
 
         let spawned = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn();
         match spawned {
-            Ok(child) => Ok(ManagedChild::new(cmd_str, child)),
+            Ok(child) => Ok(Self::new(cmd_str, child)),
             Err(e) => Err(Exn::new(e).raise(err())),
         }
     }
@@ -85,7 +85,7 @@ impl ManagedChild {
     }
 
     /// Internal constructor for a [`ManagedChild`].
-    fn new(cmd: String, child: Child) -> Self {
+    const fn new(cmd: String, child: Child) -> Self {
         Self {
             cmd,
             child: Some(child),
@@ -349,17 +349,17 @@ pub enum Tool {
 
 impl Tool {
     /// Get the (linux) executable name for the tool in question.
-    pub fn name(self) -> &'static str {
+    pub const fn name(self) -> &'static str {
         match self {
-            Tool::Magick => "magick",
-            Tool::Cavif => "cavif",
-            Tool::Cjxl => "cjxl",
-            Tool::Cwebp => "cwebp",
-            Tool::Dwebp => "dwebp",
-            Tool::Djxl => "djxl",
-            Tool::Avifdec => "avifdec",
-            Tool::Jxlinfo => "jxlinfo",
-            Tool::_7z => "7z",
+            Self::Magick => "magick",
+            Self::Cavif => "cavif",
+            Self::Cjxl => "cjxl",
+            Self::Cwebp => "cwebp",
+            Self::Dwebp => "dwebp",
+            Self::Djxl => "djxl",
+            Self::Avifdec => "avifdec",
+            Self::Jxlinfo => "jxlinfo",
+            Self::_7z => "7z",
         }
     }
 

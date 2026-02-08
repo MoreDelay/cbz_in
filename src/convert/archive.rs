@@ -160,8 +160,12 @@ impl ArchiveJob {
         path: &ArchivePath,
         target: ImageFormat,
     ) -> Result<bool, Exn<ErrorMessage>> {
-        let err =
-            || ErrorMessage::new("Could not check if archive has been converted before: {path:?}");
+        let err = || {
+            let path = path.display();
+            ErrorMessage::new(format!(
+                "Could not check if archive has been converted before: \"{path}\""
+            ))
+        };
 
         let conversion_ending = format!(".{}.cbz", target.ext());
 
@@ -357,7 +361,7 @@ impl ArchivePath {
             return Err(exn);
         }
 
-        Ok(ArchivePath(archive))
+        Ok(Self(archive))
     }
 }
 
