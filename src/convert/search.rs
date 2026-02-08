@@ -1,9 +1,9 @@
 //! Contains everything related to information gathering.
 
-use std::io::BufRead;
+use std::io::BufRead as _;
 use std::path::PathBuf;
 
-use exn::{Exn, ResultExt};
+use exn::{Exn, ResultExt as _};
 use tracing::info;
 use walkdir::WalkDir;
 

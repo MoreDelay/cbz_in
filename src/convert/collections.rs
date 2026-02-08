@@ -1,6 +1,6 @@
 //! Contains the main jobs that are ready to run when constructed.
 
-use exn::{Exn, ResultExt};
+use exn::{Exn, ResultExt as _};
 use tracing::{debug, info};
 
 use crate::{

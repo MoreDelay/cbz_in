@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use exn::{Exn, OptionExt, ResultExt};
+use exn::{Exn, OptionExt as _, ResultExt as _};
 use indicatif::ProgressBar;
 use tracing::{debug, error};
 use walkdir::WalkDir;
@@ -135,7 +135,7 @@ impl RecursiveDirJob {
         };
 
         let parent = root.parent().ok_or_raise(err)?;
-        let name = root.file_stem().unwrap().to_string_lossy();
+        let name = root.name();
         let new_name = format!("{}-{}", name, target.ext());
         Ok(parent.join(new_name))
     }
@@ -151,7 +151,7 @@ impl RecursiveDirJob {
         let converted_path = Self::get_hardlink_dir(root, target).or_raise(err)?;
 
         let conversion_ending = format!("-{}", target.ext());
-        let is_converted_dir = root.to_str().unwrap().ends_with(&conversion_ending);
+        let is_converted_dir = root.name().ends_with(&conversion_ending);
         let has_converted_dir = converted_path.try_exists().or_raise(err)?;
 
         Ok(is_converted_dir || has_converted_dir)
@@ -220,7 +220,22 @@ impl Directory {
             let err = Exn::with_recovery(ErrorMessage::new(msg), path);
             return Err(err);
         }
+
+        assert!(
+            path.file_name().is_some_and(|name| !name.is_empty()),
+            "expect directories to have a name"
+        );
+
         Ok(Self(path))
+    }
+
+    /// Get the name for this directory.
+    pub fn name(&self) -> &str {
+        self.0
+            .file_name()
+            .expect("archive has name by construction")
+            .to_str()
+            .expect("directories use unicode names")
     }
 }
 

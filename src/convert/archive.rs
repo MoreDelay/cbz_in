@@ -1,21 +1,16 @@
 //! Contains everything related to handling zip archives.
 
+use std::collections::VecDeque;
+use std::ffi::OsStr;
 use std::fs::{self, File};
-use std::io::BufRead;
-use std::io::Read;
-use std::io::Write;
-use std::{
-    collections::VecDeque,
-    path::{Path, PathBuf},
-};
-use walkdir::WalkDir;
-use zip::CompressionMethod;
-use zip::ZipWriter;
-use zip::write::SimpleFileOptions;
+use std::io::{BufRead as _, Write as _};
+use std::path::{Path, PathBuf};
 
-use exn::{Exn, ResultExt};
+use exn::{ErrorExt as _, Exn, ResultExt as _, bail};
 use indicatif::ProgressBar;
 use tracing::debug;
+use walkdir::WalkDir;
+use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
 use crate::convert::Configuration;
 use crate::convert::dir::TempDirGuard;
@@ -146,9 +141,9 @@ impl ArchiveJob {
     }
 
     /// Builds the path to the temporary directory where the archive gets extracted to.
-    fn get_conversion_root_dir(cbz_path: &ArchivePath) -> PathBuf {
-        let dir = cbz_path.parent().unwrap();
-        let name = cbz_path.file_stem().unwrap();
+    fn get_conversion_root_dir(archive: &ArchivePath) -> PathBuf {
+        let dir = archive.parent();
+        let name = archive.name();
         dir.join(name)
     }
 
@@ -169,11 +164,11 @@ impl ArchiveJob {
 
         let conversion_ending = format!(".{}.cbz", target.ext());
 
-        let dir = path.parent().unwrap();
-        let name = path.file_stem().unwrap();
-        let zip_path = dir.join(format!("{}{}", name.to_str().unwrap(), conversion_ending));
+        let dir = path.parent();
+        let name = path.name().to_str().expect("files should be unicode");
+        let zip_path = dir.join(format!("{name}{conversion_ending}"));
 
-        let is_converted_archive = path.to_str().unwrap().ends_with(&conversion_ending);
+        let is_converted_archive = path.ends_with(&conversion_ending);
         let has_converted_archive = zip_path.try_exists().or_raise(err)?;
 
         Ok(is_converted_archive || has_converted_archive)
@@ -192,22 +187,19 @@ impl ArchiveJob {
             ErrorMessage::new(msg)
         };
 
-        let name = archive.file_stem().unwrap();
+        let name = archive.name();
         let root_dirs = spawn::list_archive_files(archive)
             .and_then(ManagedChild::wait_with_output)
             .or_raise(err)?
             .stdout
             .lines()
-            .filter(|v| v.as_ref().is_ok_and(|line| line.starts_with("Path = ")))
-            .map(|v| v.unwrap().strip_prefix("Path = ").unwrap().to_string())
+            .filter_map(|line| line.ok()?.strip_prefix("Path = ").map(String::from))
             .filter(|file| !file.contains('/'))
             .collect::<Vec<_>>();
 
         let has_root_within = root_dirs.len() == 1 && *root_dirs[0] == *name;
         let extract_dir = if has_root_within {
-            let parent = archive.parent().unwrap().to_path_buf();
-            assert_eq!(parent.join(name), Self::get_conversion_root_dir(archive));
-            parent
+            archive.parent().to_path_buf()
         } else {
             Self::get_conversion_root_dir(archive)
         };
@@ -232,10 +224,17 @@ impl ExtractionJob {
             ErrorMessage::new(format!("Failed to extract the archive \"{path}\""))
         };
 
-        assert!(self.archive_path.is_file());
+        if !self.archive_path.is_file() {
+            let exn = ErrorMessage::new("Archive disappeared").raise();
+            bail!(exn.raise(err()))
+        }
 
         let extract_dir = ArchiveJob::get_conversion_root_dir(&self.archive_path);
-        assert!(!extract_dir.exists());
+
+        if extract_dir.exists() {
+            let exn = ErrorMessage::new("Extraction directory appeared unexpectedly").raise();
+            bail!(exn.raise(err()))
+        }
 
         let guard = TempDirGuard::new(extract_dir.clone());
         fs::create_dir_all(&extract_dir)
@@ -291,7 +290,6 @@ impl CompressionJob {
             .compression_method(CompressionMethod::Stored)
             .unix_permissions(0o755);
 
-        let mut buffer = Vec::new();
         for entry in WalkDir::new(&self.root) {
             let entry = entry.or_raise(err)?;
             let entry = entry.path();
@@ -307,11 +305,8 @@ impl CompressionJob {
 
             if entry.is_file() {
                 zipper.start_file(inner_path, options).or_raise(err)?;
-                File::open(entry)
-                    .and_then(|mut f| f.read_to_end(&mut buffer))
-                    .or_raise(err)?;
-                zipper.write_all(&buffer).or_raise(err)?;
-                buffer.clear();
+                let bytes = fs::read(entry).or_raise(err)?;
+                zipper.write_all(&bytes).or_raise(err)?;
             } else if !inner_path.is_empty() {
                 zipper.add_directory(inner_path, options).or_raise(err)?;
             }
@@ -325,14 +320,6 @@ impl CompressionJob {
 /// A path that was verified to point to an existing Zip archive.
 #[derive(Clone)]
 pub struct ArchivePath(PathBuf);
-
-impl std::ops::Deref for ArchivePath {
-    type Target = Path;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
 
 impl ArchivePath {
     /// All valid Zip archive extensions we consider.
@@ -361,7 +348,34 @@ impl ArchivePath {
             return Err(exn);
         }
 
+        if archive.file_name().is_none_or(OsStr::is_empty) {
+            let path = archive.display();
+            let msg = format!("Archive has empty file name: \"{path}\"");
+            let exn = Exn::with_recovery(ErrorMessage::new(msg), archive);
+            return Err(exn);
+        }
+
         Ok(Self(archive))
+    }
+
+    /// Get the parent directory of this archive.
+    pub fn parent(&self) -> &Path {
+        self.0.parent().expect("file has parent")
+    }
+
+    /// Get the file name for this archive.
+    pub fn name(&self) -> &OsStr {
+        self.0
+            .file_name()
+            .expect("archive has name by construction")
+    }
+}
+
+impl std::ops::Deref for ArchivePath {
+    type Target = Path;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
