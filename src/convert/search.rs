@@ -110,18 +110,8 @@ pub struct ImageInfo {
 impl ImageInfo {
     /// Get image information based on its filename.
     fn new(path: PathBuf) -> Option<Self> {
-        use ImageFormat::*;
-
         let ext = path.extension()?.to_string_lossy().to_lowercase();
-        let format = match ext.as_str() {
-            "jpg" => Jpeg,
-            "jpeg" => Jpeg,
-            "png" => Png,
-            "avif" => Avif,
-            "jxl" => Jxl,
-            "webp" => Webp,
-            _ => return None,
-        };
+        let format = ext.parse().ok()?;
         Some(Self { path, format })
     }
 }
