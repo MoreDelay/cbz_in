@@ -125,12 +125,13 @@ impl ArchiveJob {
         }
 
         let extraction = ExtractionJob {
-            archive_path: archive.clone(),
+            archive: archive.clone(),
         };
         let conversion = ConversionJobs::new(job_queue, n_workers);
         let compression = CompressionJob {
             root: Self::get_conversion_root_dir(&archive),
             target,
+            extension: archive.extension,
         };
         Ok(Ok(Self {
             archive,
@@ -213,23 +214,23 @@ impl ArchiveJob {
 /// archive, just missing its extensions.
 struct ExtractionJob {
     /// The archive to be extracted.
-    archive_path: ArchivePath,
+    archive: ArchivePath,
 }
 
 impl ExtractionJob {
     /// Run this job.
     fn run(self) -> Result<TempDirGuard, Exn<ErrorMessage>> {
         let err = || {
-            let path = self.archive_path.display();
+            let path = self.archive.display();
             ErrorMessage::new(format!("Failed to extract the archive \"{path}\""))
         };
 
-        if !self.archive_path.is_file() {
+        if !self.archive.is_file() {
             let exn = ErrorMessage::new("Archive disappeared").raise();
             bail!(exn.raise(err()))
         }
 
-        let extract_dir = ArchiveJob::get_conversion_root_dir(&self.archive_path);
+        let extract_dir = ArchiveJob::get_conversion_root_dir(&self.archive);
 
         if extract_dir.exists() {
             let exn = ErrorMessage::new("Extraction directory appeared unexpectedly").raise();
@@ -244,7 +245,7 @@ impl ExtractionJob {
                 ErrorMessage::new(msg)
             })
             .or_raise(err)?;
-        spawn::extract_zip(&self.archive_path, &extract_dir)
+        spawn::extract_zip(&self.archive, &extract_dir)
             .and_then(ManagedChild::wait)
             .or_raise(err)?;
         Ok(guard)
@@ -259,6 +260,8 @@ struct CompressionJob {
     root: PathBuf,
     /// The target image format which becomes part of the archive's file name.
     target: ImageFormat,
+    /// The extension to use for the Zip file.
+    extension: ZipExtension,
 }
 
 impl CompressionJob {
@@ -269,20 +272,7 @@ impl CompressionJob {
             ErrorMessage::new(format!("Failed to compress the directory \"{root}\""))
         };
 
-        let dir = self
-            .root
-            .parent()
-            .expect("root is a temporary directory, so it has a parent");
-        let name = self
-            .root
-            .file_stem()
-            .expect("root is a temporary directory with a name");
-        let zip_path = dir.join(format!(
-            "{}.{}.cbz",
-            name.to_str().expect("our file paths are utf8 compliant"),
-            self.target.ext()
-        ));
-
+        let zip_path = self.get_zip_path();
         let file = File::create(zip_path).or_raise(err)?;
 
         let mut zipper = ZipWriter::new(file);
@@ -315,31 +305,58 @@ impl CompressionJob {
         zipper.finish().or_raise(err)?;
         Ok(())
     }
+
+    /// Create the file name path for the newly compressed Zip archive.
+    fn get_zip_path(&self) -> PathBuf {
+        let dir = self
+            .root
+            .parent()
+            .expect("root is a temporary directory, so it has a parent");
+        let name = self
+            .root
+            .file_stem()
+            .expect("root is a temporary directory with a name")
+            .to_str()
+            .expect("our file paths are utf8 compliant");
+        let zip_ext = self.extension.ext();
+
+        let image_ext = self.target.ext();
+        dir.join(format!("{name}.{image_ext}.{zip_ext}"))
+    }
 }
 
 /// A path that was verified to point to an existing Zip archive.
-#[derive(Clone)]
-pub struct ArchivePath(PathBuf);
+#[derive(Debug, Clone)]
+pub struct ArchivePath {
+    /// The path to the archive.
+    archive: PathBuf,
+    /// The file extension used for the archive.
+    extension: ZipExtension,
+}
 
 impl ArchivePath {
-    /// All valid Zip archive extensions we consider.
-    const ARCHIVE_EXTENSIONS: [&str; 2] = ["zip", "cbz"];
-
     /// Checked constructor to verify the path points to an archive.
     ///
     /// This only checks that the directory exists at the time of creation.
     pub fn new(archive: PathBuf) -> Result<Self, Exn<ErrorMessage, PathBuf>> {
-        let correct_extension = archive.extension().is_some_and(|ext| {
-            Self::ARCHIVE_EXTENSIONS
-                .iter()
-                .any(|valid_ext| ext.eq_ignore_ascii_case(valid_ext))
-        });
-        if !correct_extension {
-            let path = archive.display();
-            let msg = format!("Archive has an unsupported extension: \"{path}\"");
-            let exn = Exn::with_recovery(ErrorMessage::new(msg), archive);
+        let Some(extension) = archive.extension() else {
+            let msg = ErrorMessage::new("File is missing a file extension for archives.");
+            let exn = Exn::with_recovery(msg, archive);
             return Err(exn);
-        }
+        };
+        let extension = match extension
+            .to_str()
+            .expect("file names are utf8 compliant")
+            .parse::<ZipExtension>()
+        {
+            Ok(ext) => ext,
+            Err(err) => {
+                let exn = err.raise();
+                let msg = ErrorMessage::new("Archive has an unsupported extension");
+                let exn = exn.raise_with_recovery(msg, archive);
+                return Err(exn);
+            }
+        };
 
         if !archive.is_file() {
             let path = archive.display();
@@ -355,18 +372,18 @@ impl ArchivePath {
             return Err(exn);
         }
 
-        Ok(Self(archive))
+        Ok(Self { archive, extension })
     }
 
     /// Get the parent directory of this archive.
     pub fn parent(&self) -> &Path {
-        self.0.parent().expect("file has parent")
+        self.archive.parent().expect("file has parent")
     }
 
     /// Get the file name for this archive.
     pub fn name(&self) -> &OsStr {
-        self.0
-            .file_name()
+        self.archive
+            .file_stem()
             .expect("archive has name by construction")
     }
 }
@@ -375,16 +392,41 @@ impl std::ops::Deref for ArchivePath {
     type Target = Path;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.archive
     }
 }
 
-impl std::fmt::Debug for ArchivePath {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if f.alternate() {
-            f.debug_tuple("ArchivePath").field(&self.0).finish()
-        } else {
-            write!(f, "{:?}", self.0)
+/// Possible file extensions for a Zip archive.
+#[derive(Debug, Clone, Copy)]
+enum ZipExtension {
+    /// Mark Zip archive with `.zip`.
+    Zip,
+    /// Mark Zip archive with `.cbz`.
+    Cbz,
+}
+
+impl ZipExtension {
+    /// Get the file extension as string.
+    pub const fn ext(self) -> &'static str {
+        use ZipExtension::*;
+
+        match self {
+            Zip => "zip",
+            Cbz => "cbz",
+        }
+    }
+}
+
+impl std::str::FromStr for ZipExtension {
+    type Err = ErrorMessage;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        use ZipExtension::*;
+
+        match s.to_lowercase().as_str() {
+            "zip" => Ok(Zip),
+            "cbz" => Ok(Cbz),
+            _ => Err(ErrorMessage::new("unsupported archive format")),
         }
     }
 }

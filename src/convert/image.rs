@@ -1,13 +1,10 @@
 //! Contains everything related to dealing with individual images.
 
 use std::collections::VecDeque;
+use std::fs;
 use std::io::BufRead as _;
 use std::num::NonZeroUsize;
-use std::str::FromStr;
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use exn::{ErrorExt as _, Exn, ResultExt as _};
 use indicatif::ProgressBar;
@@ -699,7 +696,7 @@ impl ImageFormat {
     }
 }
 
-impl FromStr for ImageFormat {
+impl std::str::FromStr for ImageFormat {
     type Err = &'static str;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
