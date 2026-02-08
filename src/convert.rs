@@ -62,27 +62,27 @@ pub trait JobCollection: IntoIterator<Item = Self::Single> + Sized {
                 let err = res.err()?;
 
                 // Stop all further jobs if we got interrupted
-                match got_interrupted(&err) {
-                    true => Some(Err(err)),
-                    false => Some(Ok(err)),
+                if got_interrupted(&err) {
+                    Some(Err(err))
+                } else {
+                    Some(Ok(err))
                 }
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        match errors.is_empty() {
-            true => Ok(()),
-            false => {
-                let n = errors.len();
-                let err = ErrorMessage::new(format!("Failed to complete {n} job(s)"));
-                Err(Exn::raise_all(err, errors))
-            }
+        if !errors.is_empty() {
+            let n = errors.len();
+            let err = ErrorMessage::new(format!("Failed to complete {n} job(s)"));
+            return Err(Exn::raise_all(err, errors));
         }
+        Ok(())
     }
 
     /// Run one of the jobs that is part of the collection.
     fn run_single(job: Self::Single, bars: &Bars) -> Result<(), Exn<ErrorMessage>> {
-        info!("Converting {:?}", job.path());
-        bars.println(format!("Converting {:?}", job.path()));
+        let path = job.path().display();
+        info!("Converting \"{path}\"");
+        bars.println(format!("Converting \"{path}\""));
 
         let run_res = job.run(&bars.images);
         match &run_res {
@@ -160,7 +160,7 @@ impl Bars {
     }
 }
 
-/// All different titles that can be given to the [Bars::jobs] progress bar.
+/// All different titles that can be given to the [`Bars::jobs`] progress bar.
 #[derive(Debug, Clone, Copy)]
 pub enum JobsBarTitle {
     /// Indicate we work on archives.

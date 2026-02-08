@@ -48,8 +48,9 @@ impl super::Job for RecursiveDirJob {
         } = self;
 
         let err = || {
+            let root = root.display();
             ErrorMessage::new(format!(
-                "Failed to convert all images recursively within {root:?}"
+                "Failed to convert all images recursively within \"{root}\""
             ))
         };
 
@@ -71,8 +72,9 @@ impl RecursiveDirJob {
     ) -> Result<Result<Self, Exn<NothingToDo>>, Exn<ErrorMessage>> {
         let DirImages { root, images } = dir;
         let err = || {
+            let root = root.display();
             ErrorMessage::new(format!(
-                "Failed to prepare job for recursive image conversion starting at {root:?}"
+                "Failed to prepare job for recursive image conversion starting at \"{root}\""
             ))
         };
 
@@ -81,7 +83,8 @@ impl RecursiveDirJob {
         } = config;
 
         if Self::already_converted(&root, target).or_raise(err)? {
-            let msg = format!("Already converted {root:?}");
+            let root = root.display();
+            let msg = format!("Already converted \"{root}\"");
             let exn = Exn::new(NothingToDo::new(msg));
             return Ok(Err(exn));
         }
@@ -91,21 +94,20 @@ impl RecursiveDirJob {
             .into_iter()
             .filter_map(|ImageInfo { path, format }| {
                 let copy_path = copy_root.join(path);
-                match Plan::new(format, config) {
-                    Some(task) => {
-                        debug!("create job for {copy_path:?}: {task:?}");
-                        Some(ConversionJob::new(copy_path, task))
-                    }
-                    None => {
-                        debug!("skip conversion for {copy_path:?}");
-                        None
-                    }
+                if let Some(task) = Plan::new(format, config) {
+                    let path = copy_path.display();
+                    debug!("create job for \"{path}\": {task:?}");
+                    Some(ConversionJob::new(copy_path, task))
+                } else {
+                    debug!("skip conversion for {copy_path:?}");
+                    None
                 }
             })
             .collect::<VecDeque<_>>();
 
         if job_queue.is_empty() {
-            let msg = format!("No files to convert in {root:?}");
+            let root = root.display();
+            let msg = format!("No files to convert in \"{root}\"");
             let exn = Exn::new(NothingToDo::new(msg));
             return Ok(Err(exn));
         }
@@ -127,7 +129,10 @@ impl RecursiveDirJob {
         root: &Directory,
         target: ImageFormat,
     ) -> Result<PathBuf, Exn<ErrorMessage>> {
-        let err = || ErrorMessage::new(format!("Directory has no parent: {root:?}"));
+        let err = || {
+            let root = root.display();
+            ErrorMessage::new(format!("Directory has no parent: \"{root}\""))
+        };
 
         let parent = root.parent().ok_or_raise(err)?;
         let name = root.file_stem().unwrap().to_string_lossy();
@@ -172,13 +177,14 @@ impl RecursiveHardLinkJob {
             .expect("checked by construction that dir is not root");
 
         let err = || {
-            let root = &self.root;
+            let root = self.root.display();
+            let copy_root = copy_root.display();
             ErrorMessage::new(format!(
-                "Error while creating hard links from {root:?} to {copy_root:?}"
+                "Error while creating hard links from \"{root}\" to \"{copy_root}\""
             ))
         };
 
-        let guard = TempDirGuard::new(copy_root.to_path_buf());
+        let guard = TempDirGuard::new(copy_root.clone());
 
         for entry in WalkDir::new(&self.root).same_file_system(true) {
             let entry = entry.or_raise(err)?;
@@ -200,7 +206,7 @@ impl RecursiveHardLinkJob {
 }
 
 /// A filesystem path that was verified to point to an existing directory.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Directory(PathBuf);
 
 impl Directory {
@@ -208,14 +214,13 @@ impl Directory {
     ///
     /// This only checks that the directory exists at the time of creation.
     pub fn new(path: PathBuf) -> Result<Self, Exn<ErrorMessage, PathBuf>> {
-        match path.is_dir() {
-            true => Ok(Self(path)),
-            false => {
-                let msg = format!("Provided path is not a directory: {path:?}");
-                let err = Exn::with_recovery(ErrorMessage::new(msg), path);
-                Err(err)
-            }
+        if !path.is_dir() {
+            let not_dir = path.display();
+            let msg = format!("Provided path is not a directory: \"{not_dir}\"");
+            let err = Exn::with_recovery(ErrorMessage::new(msg), path);
+            return Err(err);
         }
+        Ok(Self(path))
     }
 }
 
@@ -233,18 +238,9 @@ impl std::convert::AsRef<Path> for Directory {
     }
 }
 
-impl std::fmt::Debug for Directory {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match f.alternate() {
-            true => f.debug_tuple("Directory").field(&self.0).finish(),
-            false => write!(f, "{:?}", self.0),
-        }
-    }
-}
-
 /// Deletes the temporary directory when dropped.
 ///
-/// To keep the directory, use [TempDirGuard::keep()].
+/// To keep the directory, use [`TempDirGuard::keep()`].
 pub struct TempDirGuard {
     /// The guarded directory.
     temp_root: Option<PathBuf>,

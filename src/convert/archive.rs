@@ -22,7 +22,7 @@ use crate::convert::dir::TempDirGuard;
 use crate::convert::image::{ConversionJob, ConversionJobs, ImageFormat, Plan};
 use crate::convert::search::{ArchiveImages, ImageInfo};
 use crate::error::{ErrorMessage, NothingToDo};
-use crate::spawn;
+use crate::spawn::{self, ManagedChild};
 
 /// Represents the job to convert all images within a Zip archive.
 ///
@@ -58,7 +58,10 @@ impl super::Job for ArchiveJob {
             compression,
         } = self;
 
-        let err = || ErrorMessage::new(format!("Failed to convert images in archive {archive:?}",));
+        let err = || {
+            let archive = archive.display();
+            ErrorMessage::new(format!("Failed to convert images in archive \"{archive}\""))
+        };
 
         let _guard = extraction.run().or_raise(err)?;
         conversion.run(bar).or_raise(err)?;
@@ -79,8 +82,9 @@ impl ArchiveJob {
         let ArchiveImages { archive, images } = archive;
 
         let err = || {
+            let archive = archive.display();
             ErrorMessage::new(format!(
-                "Failed to prepare job for archive conversion {archive:?}"
+                "Failed to prepare job for archive conversion \"{archive}\""
             ))
         };
 
@@ -89,14 +93,16 @@ impl ArchiveJob {
         } = config;
 
         if Self::already_converted(&archive, target).or_raise(err)? {
-            let msg = format!("Already converted {archive:?}");
+            let archive = archive.display();
+            let msg = format!("Already converted \"{archive}\"");
             let exn = Exn::new(NothingToDo::new(msg));
             return Ok(Err(exn));
         }
 
         let extract_dir = Self::get_conversion_root_dir(&archive);
         if extract_dir.exists() {
-            let msg = format!("Extract directory already exists at {archive:?}");
+            let archive = archive.display();
+            let msg = format!("Extract directory already exists at \"{archive}\"");
             let exn = Exn::new(ErrorMessage::new(msg));
             return Err(exn);
         }
@@ -106,21 +112,19 @@ impl ArchiveJob {
             .into_iter()
             .filter_map(|ImageInfo { path, format }| {
                 let image_path = root_dir.join(path);
-                match Plan::new(format, config) {
-                    Some(task) => {
-                        debug!("create job for {image_path:?}: {task:?}");
-                        Some(ConversionJob::new(image_path, task))
-                    }
-                    None => {
-                        debug!("skip conversion for {image_path:?}");
-                        None
-                    }
+                if let Some(task) = Plan::new(format, config) {
+                    debug!("create job for {image_path:?}: {task:?}");
+                    Some(ConversionJob::new(image_path, task))
+                } else {
+                    debug!("skip conversion for {image_path:?}");
+                    None
                 }
             })
             .collect::<VecDeque<_>>();
 
         if job_queue.is_empty() {
-            let msg = format!("No files to convert in {archive:?}");
+            let archive = archive.display();
+            let msg = format!("No files to convert in \"{archive}\"");
             let exn = Exn::new(NothingToDo::new(msg));
             return Ok(Err(exn));
         }
@@ -177,35 +181,31 @@ impl ArchiveJob {
     /// the same file name as the archive itself, without extensions. If the archive already has
     /// this directory, then it can be extracted directly. Otherwise the root directory must be
     /// created first, and the contents are extracted inside of that.
-    fn get_extraction_root_dir(cbz_path: &ArchivePath) -> Result<PathBuf, Exn<ErrorMessage>> {
+    fn get_extraction_root_dir(archive: &ArchivePath) -> Result<PathBuf, Exn<ErrorMessage>> {
         let err = || {
-            let msg = format!("Could not determine the extraction dir for {cbz_path:?}");
+            let archive = archive.display();
+            let msg = format!("Could not determine the extraction dir for \"{archive}\"");
             ErrorMessage::new(msg)
         };
 
-        let archive_name = cbz_path.file_stem().unwrap();
-        let archive_root_dirs = spawn::list_archive_files(cbz_path)
-            .and_then(|c| c.wait_with_output())
+        let name = archive.file_stem().unwrap();
+        let root_dirs = spawn::list_archive_files(archive)
+            .and_then(ManagedChild::wait_with_output)
             .or_raise(err)?
             .stdout
             .lines()
             .filter(|v| v.as_ref().is_ok_and(|line| line.starts_with("Path = ")))
             .map(|v| v.unwrap().strip_prefix("Path = ").unwrap().to_string())
-            .filter(|file| !file.contains("/"))
+            .filter(|file| !file.contains('/'))
             .collect::<Vec<_>>();
 
-        let has_root_within =
-            archive_root_dirs.len() == 1 && *archive_root_dirs[0] == *archive_name;
-        let extract_dir = match has_root_within {
-            true => {
-                let parent_dir = cbz_path.parent().unwrap().to_path_buf();
-                assert_eq!(
-                    parent_dir.join(archive_name),
-                    Self::get_conversion_root_dir(cbz_path)
-                );
-                parent_dir
-            }
-            false => Self::get_conversion_root_dir(cbz_path),
+        let has_root_within = root_dirs.len() == 1 && *root_dirs[0] == *name;
+        let extract_dir = if has_root_within {
+            let parent = archive.parent().unwrap().to_path_buf();
+            assert_eq!(parent.join(name), Self::get_conversion_root_dir(archive));
+            parent
+        } else {
+            Self::get_conversion_root_dir(archive)
         };
         Ok(extract_dir)
     }
@@ -224,8 +224,8 @@ impl ExtractionJob {
     /// Run this job.
     fn run(self) -> Result<TempDirGuard, Exn<ErrorMessage>> {
         let err = || {
-            let path = &self.archive_path;
-            ErrorMessage::new(format!("Failed to extract the archive {path:?}"))
+            let path = self.archive_path.display();
+            ErrorMessage::new(format!("Failed to extract the archive \"{path}\""))
         };
 
         assert!(self.archive_path.is_file());
@@ -233,15 +233,16 @@ impl ExtractionJob {
         let extract_dir = ArchiveJob::get_conversion_root_dir(&self.archive_path);
         assert!(!extract_dir.exists());
 
-        let guard = TempDirGuard::new(extract_dir.to_path_buf());
+        let guard = TempDirGuard::new(extract_dir.clone());
         fs::create_dir_all(&extract_dir)
             .or_raise(|| {
-                let msg = format!("Could not create the target directory at {extract_dir:?}");
+                let extract_dir = extract_dir.display();
+                let msg = format!("Could not create the target directory at \"{extract_dir}\"");
                 ErrorMessage::new(msg)
             })
             .or_raise(err)?;
         spawn::extract_zip(&self.archive_path, &extract_dir)
-            .and_then(|c| c.wait())
+            .and_then(ManagedChild::wait)
             .or_raise(err)?;
         Ok(guard)
     }
@@ -261,8 +262,8 @@ impl CompressionJob {
     /// Run this job.
     fn run(self) -> Result<(), Exn<ErrorMessage>> {
         let err = || {
-            let root = &self.root;
-            ErrorMessage::new(format!("Failed to compress the directory {root:?}"))
+            let root = self.root.display();
+            ErrorMessage::new(format!("Failed to compress the directory \"{root}\""))
         };
 
         let dir = self
@@ -287,7 +288,7 @@ impl CompressionJob {
             .unix_permissions(0o755);
 
         let mut buffer = Vec::new();
-        for entry in WalkDir::new(&self.root).into_iter() {
+        for entry in WalkDir::new(&self.root) {
             let entry = entry.or_raise(err)?;
             let entry = entry.path();
             let root_parent = self
@@ -336,33 +337,36 @@ impl ArchivePath {
     /// Checked constructor to verify the path points to an archive.
     ///
     /// This only checks that the directory exists at the time of creation.
-    pub fn new(archive_path: PathBuf) -> Result<Self, Exn<ErrorMessage, PathBuf>> {
-        let correct_extension = archive_path.extension().is_some_and(|ext| {
+    pub fn new(archive: PathBuf) -> Result<Self, Exn<ErrorMessage, PathBuf>> {
+        let correct_extension = archive.extension().is_some_and(|ext| {
             Self::ARCHIVE_EXTENSIONS
                 .iter()
                 .any(|valid_ext| ext.eq_ignore_ascii_case(valid_ext))
         });
         if !correct_extension {
-            let msg = format!("Archive has an unsupported extension: {archive_path:?}");
-            let exn = Exn::with_recovery(ErrorMessage::new(msg), archive_path);
+            let path = archive.display();
+            let msg = format!("Archive has an unsupported extension: \"{path}\"");
+            let exn = Exn::with_recovery(ErrorMessage::new(msg), archive);
             return Err(exn);
         }
 
-        if !archive_path.is_file() {
-            let msg = format!("Archive does not exist: {archive_path:?}");
-            let exn = Exn::with_recovery(ErrorMessage::new(msg), archive_path);
+        if !archive.is_file() {
+            let path = archive.display();
+            let msg = format!("Archive does not exist: \"{path}\"");
+            let exn = Exn::with_recovery(ErrorMessage::new(msg), archive);
             return Err(exn);
         }
 
-        Ok(ArchivePath(archive_path))
+        Ok(ArchivePath(archive))
     }
 }
 
 impl std::fmt::Debug for ArchivePath {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match f.alternate() {
-            true => f.debug_tuple("ArchivePath").field(&self.0).finish(),
-            false => write!(f, "{:?}", self.0),
+        if f.alternate() {
+            f.debug_tuple("ArchivePath").field(&self.0).finish()
+        } else {
+            write!(f, "{:?}", self.0)
         }
     }
 }

@@ -37,6 +37,8 @@ fn main() -> Result<(), Exn<ErrorMessage>> {
 
 /// The application's entry point.
 fn real_main() -> Result<(), Exn<ErrorMessage>> {
+    const ONE: NonZeroUsize = NonZeroUsize::new(1).unwrap();
+
     let err = || ErrorMessage::new("Failed to run conversion jobs");
 
     let matches = Args::parse();
@@ -53,7 +55,6 @@ fn real_main() -> Result<(), Exn<ErrorMessage>> {
     let cwd = std::env::current_dir().unwrap_or_default();
     info!("working directory: {:?}", cwd);
 
-    const ONE: NonZeroUsize = NonZeroUsize::new(1).unwrap();
     let n_workers = match matches.workers {
         Some(Some(value)) => value,
         Some(None) => ONE,
@@ -107,6 +108,7 @@ struct Args {
     ///
     /// Uses as many processes as you have cores by default. When used as a flag only spawns a
     /// single process at a time.
+    #[allow(clippy::option_option)]
     #[arg(short = 'j', long)]
     workers: Option<Option<NonZeroUsize>>,
 
@@ -149,14 +151,14 @@ enum MainJob {
 }
 
 impl MainJob {
-    /// Create [MainJob::Archives], combining all found archives into a single job collection.
+    /// Create [`MainJob::Archives`], combining all found archives into a single job collection.
     fn collect_archive_jobs(
         paths: VecDeque<PathBuf>,
         config: &Configuration,
     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
         let collect_single = |path| {
             let (path, dir_exn) = match Directory::new(path) {
-                Ok(root) => return archives_in_dir(root, config),
+                Ok(root) => return archives_in_dir(&root, config),
                 Err(exn) => exn.recover(),
             };
 
@@ -165,7 +167,8 @@ impl MainJob {
                 Err(exn) => exn.recover(),
             };
 
-            let msg = format!("Neither an archive nor a directory: {path:?}");
+            let path = path.display();
+            let msg = format!("Neither an archive nor a directory: \"{path}\"");
             let exn = Exn::raise_all(ErrorMessage::new(msg), [dir_exn, archive_exn]);
             Err(exn)
         };
@@ -186,7 +189,7 @@ impl MainJob {
         Ok(jobs)
     }
 
-    /// Create [MainJob::Directories], combining all directories into a single job collection.
+    /// Create [`MainJob::Directories`], combining all directories into a single job collection.
     fn collect_directory_jobs(
         paths: VecDeque<PathBuf>,
         config: &Configuration,
@@ -194,7 +197,7 @@ impl MainJob {
         let err = || ErrorMessage::new("Failed to collect all directories");
 
         let collect_single = |path| {
-            let root = Directory::new(path).map_err(|e| e.discard_recovery())?;
+            let root = Directory::new(path).map_err(Exn::discard_recovery)?;
             images_in_dir_recursively(root, config)
         };
 
@@ -241,15 +244,15 @@ impl MainJob {
     /// Check if all tools needed for this job are actually available.
     fn check_tools(&self) -> Result<(), Exn<ErrorMessage>> {
         let iter: &mut dyn Iterator<Item = _> = match self {
-            MainJob::Archives(jobs) => &mut jobs.jobs().flat_map(|job| job.iter()),
-            MainJob::Directories(jobs) => &mut jobs.jobs().flat_map(|job| job.iter()),
+            MainJob::Archives(jobs) => &mut jobs.jobs().flat_map(Job::iter),
+            MainJob::Directories(jobs) => &mut jobs.jobs().flat_map(Job::iter),
         };
         let required_tools = iter
             .flat_map(|job| job.plan().required_tools())
             .collect::<HashSet<_>>();
         let missing_tools = required_tools
             .into_iter()
-            .flat_map(|tool| match tool.available() {
+            .filter_map(|tool| match tool.available() {
                 Ok(true) => None,
                 Ok(false) => Some(Ok(tool.name())),
                 Err(e) => Some(Err(e)),
@@ -272,8 +275,8 @@ impl MainJob {
         };
 
         let images = match self {
-            MainJob::Archives(jobs) => &mut jobs.jobs().flat_map(|job| job.iter()).count(),
-            MainJob::Directories(jobs) => &mut jobs.jobs().flat_map(|job| job.iter()).count(),
+            MainJob::Archives(jobs) => &mut jobs.jobs().flat_map(Job::iter).count(),
+            MainJob::Directories(jobs) => &mut jobs.jobs().flat_map(Job::iter).count(),
         };
 
         let coll_type = match self {
@@ -285,7 +288,7 @@ impl MainJob {
     }
 }
 
-/// Create a [convert::ArchiveJobs] for a single archive.
+/// Create a [`convert::ArchiveJobs`] for a single archive.
 fn single_archive(
     archive: ArchivePath,
     config: &Configuration,
@@ -296,9 +299,9 @@ fn single_archive(
     ArchiveJobs::single(archive, config).or_raise(err)
 }
 
-/// Create a [convert::ArchiveJobs] for all archives in a directory.
+/// Create a [`convert::ArchiveJobs`] for all archives in a directory.
 fn archives_in_dir(
-    root: Directory,
+    root: &Directory,
     config: &Configuration,
 ) -> Result<Option<ArchiveJobs>, Exn<ErrorMessage>> {
     let err =
@@ -308,7 +311,7 @@ fn archives_in_dir(
     ArchiveJobs::collect(root, config).or_raise(err)
 }
 
-/// Create a [convert::RecursiveDirJobs] for a directory.
+/// Create a [`convert::RecursiveDirJobs`] for a directory.
 fn images_in_dir_recursively(
     root: Directory,
     config: &Configuration,
@@ -336,15 +339,18 @@ fn init_logger(path: &Path, level: tracing::Level) -> Result<(), Exn<ErrorMessag
         exn.raise(err())
     };
     if !directory.is_dir() {
-        let msg = format!("Directory does not exist: {directory:?}");
+        let directory = directory.display();
+        let msg = format!("Directory does not exist: \"{directory}\"");
         return Err(err(msg));
     }
     if path.exists() && !path.is_file() {
-        let msg = format!("The path to the log file is not a regular file: {path:?}");
+        let path = path.display();
+        let msg = format!("The path to the log file is not a regular file: \"{path}\"");
         return Err(err(msg));
     }
     let Some(file_name) = path.file_name() else {
-        let msg = format!("The filename is empty: {path:?}");
+        let path = path.display();
+        let msg = format!("The filename is empty: \"{path}\"");
         return Err(err(msg));
     };
 

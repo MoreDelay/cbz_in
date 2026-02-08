@@ -18,7 +18,7 @@ pub struct ManagedChild {
 }
 
 impl ManagedChild {
-    /// Spawn a new [ManagedChild].
+    /// Spawn a new [`ManagedChild`].
     pub fn spawn(mut cmd: Command) -> Result<ManagedChild, Exn<ErrorMessage>> {
         let cmd_str = format!("{cmd:?}");
 
@@ -84,7 +84,7 @@ impl ManagedChild {
         Ok(output)
     }
 
-    /// Internal constructor for a [ManagedChild].
+    /// Internal constructor for a [`ManagedChild`].
     fn new(cmd: String, child: Child) -> Self {
         Self {
             cmd,
