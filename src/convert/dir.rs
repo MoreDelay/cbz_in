@@ -211,20 +211,27 @@ impl Directory {
     /// Checked constructor to verify the path points to a directory.
     ///
     /// This only checks that the directory exists at the time of creation.
-    pub fn new(path: PathBuf) -> Result<Self, Exn<ErrorMessage, PathBuf>> {
+    pub fn new(
+        path: PathBuf,
+    ) -> Result<Result<Self, Exn<ErrorMessage, PathBuf>>, Exn<ErrorMessage>> {
         if !path.is_dir() {
-            let not_dir = path.display();
-            let msg = format!("Provided path is not a directory: \"{not_dir}\"");
+            let msg = "Provided path is not a directory";
             let err = Exn::with_recovery(ErrorMessage::new(msg), path);
-            return Err(err);
+            return Ok(Err(err));
         }
+
+        let err = {
+            let path = path.display();
+            move || ErrorMessage::new(format!("Could not verify path is a directory: \"{path}\""))
+        };
+        let path = path.canonicalize().or_raise(err)?;
 
         assert!(
             path.file_name().is_some_and(|name| !name.is_empty()),
-            "expect directories to have a name"
+            "expect directories to have a name",
         );
 
-        Ok(Self(path))
+        Ok(Ok(Self(path)))
     }
 
     /// Get the name for this directory.

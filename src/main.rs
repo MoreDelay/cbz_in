@@ -158,7 +158,7 @@ impl MainJob {
         config: &Configuration,
     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
         let collect_single = |path| {
-            let (path, dir_exn) = match Directory::new(path) {
+            let (path, dir_exn) = match Directory::new(path)? {
                 Ok(root) => return archives_in_dir(&root, config),
                 Err(exn) => exn.recover(),
             };
@@ -198,7 +198,7 @@ impl MainJob {
         let err = || ErrorMessage::new("Failed to collect all directories");
 
         let collect_single = |path| {
-            let root = Directory::new(path).map_err(Exn::discard_recovery)?;
+            let root = Directory::new(path)?.map_err(Exn::discard_recovery)?;
             images_in_dir_recursively(root, config)
         };
 
