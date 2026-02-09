@@ -11,10 +11,8 @@ use walkdir::WalkDir;
 
 use crate::convert::Configuration;
 use crate::convert::image::{ConversionJob, ConversionJobs, ImageFormat, Plan};
-use crate::convert::search::DirImages;
+use crate::convert::search::{DirImages, ImageInfo};
 use crate::error::{ErrorMessage, NothingToDo};
-
-use super::search::ImageInfo;
 
 /// Represents the job to convert all images within a directory.
 ///
