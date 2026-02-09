@@ -10,7 +10,8 @@ use exn::{ErrorExt as _, Exn, ResultExt as _, bail};
 use indicatif::ProgressBar;
 use tracing::debug;
 use walkdir::WalkDir;
-use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
+use zip::write::SimpleFileOptions;
+use zip::{CompressionMethod, ZipWriter};
 
 use crate::convert::Configuration;
 use crate::convert::dir::TempDirGuard;

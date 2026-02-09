@@ -6,18 +6,15 @@ pub mod dir;
 pub mod image;
 pub mod search;
 
-use std::{num::NonZeroUsize, path::Path};
+use std::num::NonZeroUsize;
+use std::path::Path;
 
 use exn::Exn;
 use indicatif::{MultiProgress, ProgressBar};
 use tracing::{error, info, warn};
 
-use crate::{
-    convert::image::{ConversionJob, ImageFormat},
-    error::{ErrorMessage, got_interrupted},
-};
-
-pub use collections::{ArchiveJobs, RecursiveDirJobs};
+use crate::convert::image::{ConversionJob, ImageFormat};
+use crate::error::{ErrorMessage, got_interrupted};
 
 /// General configuration for a run of any conversion job.
 #[derive(Debug, Clone, Copy)]

@@ -7,13 +7,11 @@ use exn::{Exn, ResultExt as _};
 use tracing::info;
 use walkdir::WalkDir;
 
-use crate::{
-    convert::{archive::ArchivePath, dir::Directory},
-    error::ErrorMessage,
-    spawn::{self, ManagedChild},
-};
-
-use super::ImageFormat;
+use crate::convert::archive::ArchivePath;
+use crate::convert::dir::Directory;
+pub use crate::convert::image::ImageFormat;
+use crate::error::ErrorMessage;
+use crate::spawn::{self, ManagedChild};
 
 /// Collection of all images found in an archive.
 ///

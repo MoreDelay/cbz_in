@@ -14,9 +14,10 @@ use exn::{ErrorExt as _, Exn, OptionExt as _, ResultExt as _, bail};
 use tracing::info;
 
 use crate::convert::archive::ArchivePath;
+use crate::convert::collections::{ArchiveJobs, RecursiveDirJobs};
 use crate::convert::dir::Directory;
 use crate::convert::image::ImageFormat;
-use crate::convert::{ArchiveJobs, Configuration, Job, JobCollection as _, RecursiveDirJobs};
+use crate::convert::{Configuration, Job, JobCollection as _};
 use crate::error::{ErrorMessage, got_interrupted};
 
 /// The program entry point.

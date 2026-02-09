@@ -16,7 +16,7 @@ enum_glob_use = "allow"
 match_bool = "allow"
 match_same_arms = "allow"
 
-# restiction lints
+# restriction lints
 allow_attributes = "warn"
 clone_on_ref_ptr = "warn"
 dbg_macro = "warn"

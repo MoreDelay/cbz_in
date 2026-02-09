@@ -3,17 +3,11 @@
 use exn::{Exn, ResultExt as _};
 use tracing::{debug, info};
 
-use crate::{
-    convert::{
-        Configuration, JobCollection,
-        archive::ArchivePath,
-        dir::{Directory, RecursiveDirJob},
-        search::{ArchiveImages, DirImages},
-    },
-    error::ErrorMessage,
-};
-
-use super::archive::ArchiveJob;
+use crate::convert::archive::{ArchiveJob, ArchivePath};
+use crate::convert::dir::{Directory, RecursiveDirJob};
+use crate::convert::search::{ArchiveImages, DirImages};
+use crate::convert::{Configuration, JobCollection};
+use crate::error::ErrorMessage;
 
 /// Represents a collection of [`ArchiveJob`]'s, which are all performed in one operation.
 pub struct ArchiveJobs(Vec<ArchiveJob>);
