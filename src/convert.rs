@@ -18,7 +18,7 @@ use crate::error::{ErrorMessage, got_interrupted};
 
 /// General configuration for a run of any conversion job.
 #[derive(Debug, Clone, Copy)]
-pub struct Configuration {
+pub struct ConversionConfig {
     /// The target image format to which all files get converted.
     pub target: ImageFormat,
     /// How many processes to run at most at any given time.
