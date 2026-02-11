@@ -95,14 +95,6 @@ impl ArchiveJob {
             return Ok(Err(exn));
         }
 
-        let extract_dir = Self::get_conversion_root_dir(&archive);
-        if extract_dir.exists() {
-            let archive = archive.display();
-            let msg = format!("Extract directory already exists at \"{archive}\"");
-            let exn = Exn::new(ErrorMessage::new(msg));
-            return Err(exn);
-        }
-
         let root_dir = Self::get_extraction_root_dir(&archive).or_raise(err)?;
         let job_queue = images
             .into_iter()
@@ -234,8 +226,9 @@ impl ExtractionJob {
         let extract_dir = ArchiveJob::get_conversion_root_dir(&self.archive);
 
         if extract_dir.exists() {
-            let exn = ErrorMessage::new("Extraction directory appeared unexpectedly").raise();
-            bail!(exn.raise(err()))
+            let dir = extract_dir.display();
+            let msg = ErrorMessage::new(format!("Extract directory already exists at \"{dir}\""));
+            bail!(Exn::new(msg).raise(err()))
         }
 
         let guard = TempDirGuard::new(extract_dir.clone());
