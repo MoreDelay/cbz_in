@@ -73,7 +73,7 @@ pub struct DirImages {
 
 impl DirImages {
     /// Find all images in a directory.
-    pub fn new(root: Directory) -> Result<Self, Exn<ErrorMessage>> {
+    pub fn search_recursive(root: Directory) -> Result<Self, Exn<ErrorMessage>> {
         let err = || {
             let root = root.display();
             ErrorMessage::new(format!("Could not list files within directory \"{root}\""))

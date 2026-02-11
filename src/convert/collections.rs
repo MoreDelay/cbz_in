@@ -113,7 +113,7 @@ impl RecursiveDirJobs {
         dir: Directory,
         config: &ConversionConfig,
     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
-        let dir = DirImages::new(dir)?;
+        let dir = DirImages::search_recursive(dir)?;
         match RecursiveDirJob::new(dir, config)? {
             Ok(job) => Ok(Some(Self(vec![job]))),
             Err(nothing_to_do) => {
