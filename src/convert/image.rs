@@ -667,7 +667,7 @@ impl RunConversionJobs {
 }
 
 /// All supported image file formats.
-#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ImageFormat {
     /// A JPEG file.
     Jpeg,

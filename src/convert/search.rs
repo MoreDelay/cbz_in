@@ -4,7 +4,7 @@ use std::io::BufRead as _;
 use std::path::PathBuf;
 
 use exn::{Exn, ResultExt as _};
-use tracing::info;
+use tracing::debug;
 use walkdir::WalkDir;
 
 use crate::convert::archive::ArchivePath;
@@ -31,7 +31,7 @@ impl ArchiveImages {
             ErrorMessage::new(format!("Could not list files within archive \"{archive}\""))
         };
 
-        info!("Checking {archive:?}");
+        debug!("Checking \"{}\"", archive.display());
 
         let images = spawn::list_archive_files(&archive)
             .and_then(ManagedChild::wait_with_output)
@@ -49,6 +49,15 @@ impl ArchiveImages {
             .collect::<Result<_, _>>()
             .or_raise(err)?;
         Ok(Self { archive, images })
+    }
+}
+
+impl IntoIterator for ArchiveImages {
+    type Item = ImageInfo;
+    type IntoIter = std::vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.images.into_iter()
     }
 }
 
@@ -70,7 +79,7 @@ impl DirImages {
             ErrorMessage::new(format!("Could not list files within directory \"{root}\""))
         };
 
-        info!("Checking {:?}", root);
+        debug!("Checking \"{}\"", root.display());
 
         let images = WalkDir::new(&root)
             .same_file_system(true)
@@ -93,6 +102,15 @@ impl DirImages {
     }
 }
 
+impl IntoIterator for DirImages {
+    type Item = ImageInfo;
+    type IntoIter = std::vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.images.into_iter()
+    }
+}
+
 /// Information about an image.
 ///
 /// The file path stored here is relative. How to interpret the relative path depends on the
@@ -111,5 +129,10 @@ impl ImageInfo {
         let ext = path.extension()?.to_string_lossy().to_lowercase();
         let format = ext.parse().ok()?;
         Some(Self { path, format })
+    }
+
+    /// Get the image format.
+    pub const fn format(&self) -> ImageFormat {
+        self.format
     }
 }

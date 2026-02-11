@@ -1,7 +1,7 @@
 //! Contains the main jobs that are ready to run when constructed.
 
 use exn::{Exn, ResultExt as _};
-use tracing::{debug, info};
+use tracing::debug;
 
 use crate::convert::archive::{ArchiveJob, ArchivePath};
 use crate::convert::dir::{Directory, RecursiveDirJob};
@@ -59,11 +59,11 @@ impl ArchiveJobs {
                 Self::single_internal(archive, config).transpose()
             })
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(Self::new(jobs))
+        Ok(Self::aggregate(jobs))
     }
 
     /// Combine all [`ArchiveJob`]'s to wrap them up in a new collection.
-    pub fn new(iter: impl IntoIterator<Item = ArchiveJob>) -> Option<Self> {
+    pub fn aggregate(iter: impl IntoIterator<Item = ArchiveJob>) -> Option<Self> {
         let jobs = iter.into_iter().collect::<Vec<_>>();
         if jobs.is_empty() {
             return None;
@@ -80,7 +80,7 @@ impl ArchiveJobs {
         match ArchiveJob::new(archive, config)? {
             Ok(job) => Ok(Some(job)),
             Err(nothing_to_do) => {
-                info!("{nothing_to_do}");
+                debug!("{nothing_to_do}");
                 Ok(None)
             }
         }
@@ -117,14 +117,14 @@ impl RecursiveDirJobs {
         match RecursiveDirJob::new(dir, config)? {
             Ok(job) => Ok(Some(Self(vec![job]))),
             Err(nothing_to_do) => {
-                info!("{nothing_to_do}");
+                debug!("{nothing_to_do}");
                 Ok(None)
             }
         }
     }
 
     /// Combine all [`RecursiveDirJob`]'s to wrap them up in a new collection.
-    pub fn new(iter: impl IntoIterator<Item = RecursiveDirJob>) -> Option<Self> {
+    pub fn aggregate(iter: impl IntoIterator<Item = RecursiveDirJob>) -> Option<Self> {
         let jobs = iter.into_iter().collect::<Vec<_>>();
         if jobs.is_empty() {
             return None;
