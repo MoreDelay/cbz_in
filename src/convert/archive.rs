@@ -13,7 +13,7 @@ use walkdir::WalkDir;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
-use crate::convert::Configuration;
+use crate::convert::ConversionConfig;
 use crate::convert::dir::TempDirGuard;
 use crate::convert::image::{ConversionJob, ConversionJobs, ImageFormat, Plan};
 use crate::convert::search::{ArchiveImages, ImageInfo};
@@ -73,7 +73,7 @@ impl ArchiveJob {
     /// No files get touched until this job is run.
     pub fn new(
         archive: ArchiveImages,
-        config: &Configuration,
+        config: &ConversionConfig,
     ) -> Result<Result<Self, Exn<NothingToDo>>, Exn<ErrorMessage>> {
         let ArchiveImages { archive, images } = archive;
 
@@ -84,7 +84,7 @@ impl ArchiveJob {
             ))
         };
 
-        let &Configuration {
+        let &ConversionConfig {
             target, n_workers, ..
         } = config;
 

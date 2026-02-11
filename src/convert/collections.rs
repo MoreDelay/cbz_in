@@ -1,4 +1,4 @@
-//! Contains the main jobs that are ready to run when constructed.
+//! Contains jobs on collections of images, such as archives or directories
 
 use exn::{Exn, ResultExt as _};
 use tracing::debug;
@@ -6,7 +6,7 @@ use tracing::debug;
 use crate::convert::archive::{ArchiveJob, ArchivePath};
 use crate::convert::dir::{Directory, RecursiveDirJob};
 use crate::convert::search::{ArchiveImages, DirImages};
-use crate::convert::{Configuration, JobCollection};
+use crate::convert::{ConversionConfig, JobCollection};
 use crate::error::ErrorMessage;
 
 /// Represents a collection of [`ArchiveJob`]'s, which are all performed in one operation.
@@ -24,7 +24,7 @@ impl ArchiveJobs {
     /// The constructed [`ArchiveJobs`] will contain only a single [`ArchiveJob`].
     pub fn single(
         archive: ArchivePath,
-        config: &Configuration,
+        config: &ConversionConfig,
     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
         Ok(Self::single_internal(archive, config)?.map(|job| Self(vec![job])))
     }
@@ -32,7 +32,7 @@ impl ArchiveJobs {
     /// Create an [`ArchiveJob`] for all archives found in the provided root directory.
     pub fn collect(
         root: &Directory,
-        config: &Configuration,
+        config: &ConversionConfig,
     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
         let err = || {
             let root = root.display();
@@ -74,7 +74,7 @@ impl ArchiveJobs {
     /// Internal constructor for a single [`ArchiveJobs`].
     fn single_internal(
         archive: ArchivePath,
-        config: &Configuration,
+        config: &ConversionConfig,
     ) -> Result<Option<ArchiveJob>, Exn<ErrorMessage>> {
         let archive = ArchiveImages::new(archive)?;
         match ArchiveJob::new(archive, config)? {
@@ -111,7 +111,7 @@ impl RecursiveDirJobs {
     /// The constructed [`RecursiveDirJobs`] will contain only a single [`RecursiveDirJob`].
     pub fn single(
         dir: Directory,
-        config: &Configuration,
+        config: &ConversionConfig,
     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
         let dir = DirImages::new(dir)?;
         match RecursiveDirJob::new(dir, config)? {

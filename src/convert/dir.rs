@@ -9,7 +9,7 @@ use indicatif::ProgressBar;
 use tracing::{debug, error};
 use walkdir::WalkDir;
 
-use crate::convert::Configuration;
+use crate::convert::ConversionConfig;
 use crate::convert::image::{ConversionJob, ConversionJobs, ImageFormat, Plan};
 use crate::convert::search::{DirImages, ImageInfo};
 use crate::error::{ErrorMessage, NothingToDo};
@@ -66,7 +66,7 @@ impl RecursiveDirJob {
     /// No files get touched until this job is run.
     pub fn new(
         dir: DirImages,
-        config: &Configuration,
+        config: &ConversionConfig,
     ) -> Result<Result<Self, Exn<NothingToDo>>, Exn<ErrorMessage>> {
         let DirImages { root, images } = dir;
         let err = || {
@@ -76,7 +76,7 @@ impl RecursiveDirJob {
             ))
         };
 
-        let &Configuration {
+        let &ConversionConfig {
             target, n_workers, ..
         } = config;
 

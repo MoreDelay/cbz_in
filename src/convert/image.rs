@@ -12,7 +12,7 @@ use signal_hook::consts::{SIGCHLD, SIGINT};
 use signal_hook::iterator::Signals;
 use tracing::debug;
 
-use crate::convert::Configuration;
+use crate::convert::ConversionConfig;
 use crate::error::{ErrorMessage, Interrupted};
 use crate::spawn::{self, ManagedChild, Tool};
 
@@ -348,10 +348,10 @@ pub enum Plan {
 
 impl Plan {
     /// Determine the details for a specific image to reach the goal set out by the configuration.
-    pub fn new(current: ImageFormat, config: &Configuration) -> Option<Self> {
+    pub fn new(current: ImageFormat, config: &ConversionConfig) -> Option<Self> {
         use ImageFormat::*;
 
-        let &Configuration { target, forced, .. } = config;
+        let &ConversionConfig { target, forced, .. } = config;
 
         let out = match (current, target) {
             (a, b) if a == b => return None,
@@ -412,7 +412,7 @@ impl Plan {
         }
     }
 
-    /// Check if these details will always be performed without need of [`Configuration::forced`].
+    /// Check if this plan will always be performed without need of [`ConversionConfig::forced`].
     const fn perform_always(self) -> bool {
         use ImageFormat::*;
 
