@@ -1,7 +1,9 @@
-//! Contains the main, high-level jobs which are chosen by the user
+//! Contains the main, high-level job which performs the command chosen by the user
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
+use std::thread;
 
 use exn::{Exn, ResultExt as _, bail};
 use tracing::{debug, info};
@@ -12,7 +14,7 @@ use crate::convert::dir::Directory;
 use crate::convert::search::{ArchiveImages, DirImages, ImageInfo};
 use crate::convert::{Bars, ConversionConfig, Job, JobCollection as _, JobsBarTitle};
 use crate::error::ErrorMessage;
-use crate::stdout;
+use crate::{Args, stdout};
 
 /// The top-level task of the application, as determined by user arguments.
 pub struct MainJob(MainJobImpl);
@@ -44,14 +46,6 @@ impl MainJob {
     pub fn run(self, dry_run: bool) -> Result<(), Exn<ErrorMessage>> {
         self.0.run(dry_run)
     }
-}
-
-/// Specifies the kind of main job to create, with corresponding configuration
-pub enum MainJobConfig {
-    /// Run a statistics job,
-    Stats,
-    /// Run a conversion job.
-    Convert(ConversionConfig),
 }
 
 /// The different options of top-level tasks.
@@ -114,12 +108,12 @@ impl StatsJob {
     fn on_archives(paths: VecDeque<PathBuf>) -> Result<Self, Exn<ErrorMessage>> {
         let collect_single = |path| {
             let (path, dir_exn) = match Directory::new(path)? {
-                Ok(root) => return stats_for_archives_in_dir(&root),
+                Ok(root) => return Self::for_archives_in_dir(&root),
                 Err(exn) => exn.recover(),
             };
 
             let (path, archive_exn) = match ArchivePath::new(path) {
-                Ok(archive) => return stats_for_single_archive(archive).map(|a| vec![a]),
+                Ok(archive) => return Self::for_single_archive(archive).map(|a| vec![a]),
                 Err(exn) => exn.recover(),
             };
 
@@ -150,7 +144,7 @@ impl StatsJob {
 
         let collect_single = |path| {
             let root = Directory::new(path)?.map_err(Exn::discard_recovery)?;
-            DirImages::new(root)
+            DirImages::search_recursive(root)
         };
 
         stdout("Looking for images to convert in directories...");
@@ -186,7 +180,7 @@ impl StatsJob {
             counts
         });
         let mut counts = Vec::from_iter(counts);
-        counts.sort_by_key(|(f, _)| f.ext());
+        counts.sort_unstable_by_key(|(f, _)| f.ext());
         for (format, count) in &counts {
             let format = format.ext();
             stdout(format!("{format}: {count}"));
@@ -194,6 +188,40 @@ impl StatsJob {
         let total: usize = counts.iter().map(|(_, c)| c).sum();
         stdout("---");
         stdout(format!("total: {total}"));
+    }
+
+    /// Create an [`ArchiveJobs`] for a single archive.
+    fn for_single_archive(archive: ArchivePath) -> Result<ArchiveImages, Exn<ErrorMessage>> {
+        let err = || ErrorMessage::new("Failed to search images in a single archive");
+
+        info!("Checking archive \"{}\"", archive.display());
+        ArchiveImages::new(archive).or_raise(err)
+    }
+
+    /// Create an [`ArchiveJobs`] for all archives in a directory.
+    fn for_archives_in_dir(root: &Directory) -> Result<Vec<ArchiveImages>, Exn<ErrorMessage>> {
+        let err = || ErrorMessage::new("Failed to search images in all archives in a directory");
+
+        info!("Checking archives directory \"{}\"", root.display());
+        let jobs = root
+            .read_dir()
+            .or_raise(err)?
+            .filter_map(|dir_entry| {
+                let path = match dir_entry.or_raise(err) {
+                    Ok(dir_entry) => dir_entry.path(),
+                    Err(e) => return Some(Err(e)),
+                };
+                let archive = match ArchivePath::new(path) {
+                    Ok(archive) => archive,
+                    Err(exn) => {
+                        debug!("skipping: {exn:?}");
+                        return None;
+                    }
+                };
+                Some(ArchiveImages::new(archive))
+            })
+            .collect::<Result<Vec<_>, _>>();
+        jobs.or_raise(err)
     }
 }
 
@@ -213,17 +241,16 @@ impl ConvertJob {
     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
         let collect_single = |path| {
             let (path, dir_exn) = match Directory::new(path)? {
-                Ok(root) => return convert_archives_in_dir(&root, config),
+                Ok(root) => return Self::for_archives_in_dir(&root, config),
                 Err(exn) => exn.recover(),
             };
 
             let (path, archive_exn) = match ArchivePath::new(path) {
-                Ok(archive) => return convert_single_archive(archive, config),
+                Ok(archive) => return Self::for_single_archive(archive, config),
                 Err(exn) => exn.recover(),
             };
 
-            let path = path.display();
-            let msg = format!("Neither an archive nor a directory: \"{path}\"");
+            let msg = format!("Neither an archive nor a directory: \"{}\"", path.display());
             let exn = Exn::raise_all(ErrorMessage::new(msg), [dir_exn, archive_exn]);
             Err(exn)
         };
@@ -253,7 +280,7 @@ impl ConvertJob {
 
         let collect_single = |path| {
             let root = Directory::new(path)?.map_err(Exn::discard_recovery)?;
-            convert_images_in_dir_recursively(root, config)
+            Self::for_images_within_dir(root, config)
         };
 
         stdout("Looking for images to convert in directories...");
@@ -332,6 +359,8 @@ impl ConvertJob {
             .collect::<Result<Vec<_>, _>>()?;
 
         if !missing_tools.is_empty() {
+            let mut missing_tools = missing_tools;
+            missing_tools.sort_unstable();
             let tools = missing_tools.join(", ");
             let msg = format!("Missing tools: {tools}");
             bail!(ErrorMessage::new(msg))
@@ -360,72 +389,67 @@ impl ConvertJob {
             "Found {collections} {coll_type}, with a total of {images} images to convert"
         ));
     }
+
+    /// Create an [`ArchiveJobs`] for a single archive.
+    fn for_single_archive(
+        archive: ArchivePath,
+        config: &ConversionConfig,
+    ) -> Result<Option<ArchiveJobs>, Exn<ErrorMessage>> {
+        let err = || ErrorMessage::new("Failed to create conversion job on a single archive");
+
+        info!("Checking archive \"{}\"", archive.display());
+        ArchiveJobs::single(archive, config).or_raise(err)
+    }
+
+    /// Create an [`ArchiveJobs`] for all archives in a directory.
+    fn for_archives_in_dir(
+        root: &Directory,
+        config: &ConversionConfig,
+    ) -> Result<Option<ArchiveJobs>, Exn<ErrorMessage>> {
+        let err =
+            || ErrorMessage::new("Failed to create conversion job for all archives in a directory");
+
+        info!("Checking archives directory \"{}\"", root.display());
+        ArchiveJobs::collect(root, config).or_raise(err)
+    }
+
+    /// Create a [`RecursiveDirJobs`] for a directory.
+    fn for_images_within_dir(
+        root: Directory,
+        config: &ConversionConfig,
+    ) -> Result<Option<RecursiveDirJobs>, Exn<ErrorMessage>> {
+        let err = || ErrorMessage::new("Failed to create conversion job for a directory");
+
+        info!("Checking root directory recursively \"{}\"", root.display());
+        RecursiveDirJobs::single(root, config).or_raise(err)
+    }
 }
 
-/// Create an [`ArchiveJobs`] for a single archive.
-fn stats_for_single_archive(archive: ArchivePath) -> Result<ArchiveImages, Exn<ErrorMessage>> {
-    let err = || ErrorMessage::new("Failed to search images in a single archive");
-
-    info!("Checking archive {archive:?}");
-    ArchiveImages::new(archive).or_raise(err)
+/// Specifies the kind of main job to create, with corresponding configuration
+pub enum MainJobConfig {
+    /// Run a statistics job,
+    Stats,
+    /// Run a conversion job.
+    Convert(ConversionConfig),
 }
 
-/// Create an [`ArchiveJobs`] for all archives in a directory.
-fn stats_for_archives_in_dir(root: &Directory) -> Result<Vec<ArchiveImages>, Exn<ErrorMessage>> {
-    let err = || ErrorMessage::new("Failed to search images in all archives in a directory");
+impl MainJobConfig {
+    /// Setup the configuration for the main job from user provided arguments.
+    pub fn new(args: &Args) -> Self {
+        const ONE: NonZeroUsize = NonZeroUsize::new(1).unwrap();
 
-    info!("Checking archives directory \"{}\"", root.display());
-    let jobs = root
-        .read_dir()
-        .or_raise(err)?
-        .filter_map(|dir_entry| {
-            let path = match dir_entry.or_raise(err) {
-                Ok(dir_entry) => dir_entry.path(),
-                Err(e) => return Some(Err(e)),
-            };
-            let archive = match ArchivePath::new(path) {
-                Ok(archive) => archive,
-                Err(exn) => {
-                    debug!("skipping: {exn:?}");
-                    return None;
-                }
-            };
-            Some(ArchiveImages::new(archive))
+        let n_workers = match args.workers {
+            Some(Some(value)) => value,
+            Some(None) => ONE,
+            None => thread::available_parallelism().unwrap_or(ONE),
+        };
+
+        args.command.target().map_or(Self::Stats, |target| {
+            Self::Convert(ConversionConfig {
+                target,
+                n_workers,
+                forced: args.force,
+            })
         })
-        .collect::<Result<Vec<_>, _>>();
-    jobs.or_raise(err)
-}
-
-/// Create an [`ArchiveJobs`] for a single archive.
-fn convert_single_archive(
-    archive: ArchivePath,
-    config: &ConversionConfig,
-) -> Result<Option<ArchiveJobs>, Exn<ErrorMessage>> {
-    let err = || ErrorMessage::new("Failed to create conversion job on a single archive");
-
-    info!("Checking archive {archive:?}");
-    ArchiveJobs::single(archive, config).or_raise(err)
-}
-
-/// Create an [`ArchiveJobs`] for all archives in a directory.
-fn convert_archives_in_dir(
-    root: &Directory,
-    config: &ConversionConfig,
-) -> Result<Option<ArchiveJobs>, Exn<ErrorMessage>> {
-    let err =
-        || ErrorMessage::new("Failed to create conversion job for all archives in a directory");
-
-    info!("Checking archives directory \"{}\"", root.display());
-    ArchiveJobs::collect(root, config).or_raise(err)
-}
-
-/// Create a [`RecursiveDirJobs`] for a directory.
-fn convert_images_in_dir_recursively(
-    root: Directory,
-    config: &ConversionConfig,
-) -> Result<Option<RecursiveDirJobs>, Exn<ErrorMessage>> {
-    let err = || ErrorMessage::new("Failed to create conversion job for a directory");
-
-    info!("Checking root directory recursively {root:?}");
-    RecursiveDirJobs::single(root, config).or_raise(err)
+    }
 }

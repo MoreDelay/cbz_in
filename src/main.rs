@@ -8,14 +8,12 @@ mod spawn;
 use std::collections::VecDeque;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use std::thread;
 
 use clap::{self, Parser as _};
 use exn::{ErrorExt as _, Exn, OptionExt as _, ResultExt as _};
 use tracing::{error, info};
 
 use crate::command::{MainJob, MainJobConfig};
-use crate::convert::ConversionConfig;
 use crate::convert::image::ImageFormat;
 use crate::error::{ErrorMessage, got_interrupted};
 
@@ -37,14 +35,12 @@ fn main() -> Result<(), Exn<ErrorMessage>> {
 
 /// The application's entry point.
 fn real_main() -> Result<(), Exn<ErrorMessage>> {
-    const ONE: NonZeroUsize = NonZeroUsize::new(1).unwrap();
-
     let err = || ErrorMessage::new("Error during program execution");
 
-    let matches = Args::parse();
+    let args = Args::parse();
 
-    if let Some(log_path) = matches.log {
-        init_logger(&log_path, matches.level).or_raise(err)?;
+    if let Some(log_path) = &args.log {
+        init_logger(log_path, args.level).or_raise(err)?;
     }
 
     let cmd = std::env::args_os()
@@ -55,24 +51,10 @@ fn real_main() -> Result<(), Exn<ErrorMessage>> {
     let cwd = std::env::current_dir().unwrap_or_default();
     info!("working directory: {:?}", cwd);
 
-    let n_workers = match matches.workers {
-        Some(Some(value)) => value,
-        Some(None) => ONE,
-        None => thread::available_parallelism().unwrap_or(ONE),
-    };
+    let config = MainJobConfig::new(&args);
+    let paths = VecDeque::from(args.paths);
 
-    let paths = VecDeque::from(matches.paths);
-
-    let config = match matches.command.target() {
-        Some(target) => MainJobConfig::Convert(ConversionConfig {
-            target,
-            n_workers,
-            forced: matches.force,
-        }),
-        None => MainJobConfig::Stats,
-    };
-
-    let main_job = match matches.no_archive {
+    let main_job = match args.no_archive {
         true => MainJob::on_directories(paths, &config).or_raise(err)?,
         false => MainJob::on_archives(paths, &config).or_raise(err)?,
     };
@@ -82,7 +64,7 @@ fn real_main() -> Result<(), Exn<ErrorMessage>> {
         return Ok(());
     };
 
-    main_job.run(matches.dry_run).or_raise(err)?;
+    main_job.run(args.dry_run).or_raise(err)?;
     Ok(())
 }
 
@@ -125,7 +107,9 @@ struct Args {
     ///
     /// This will create a copy of your directory structure using hard links. This means your data
     /// is not copied as both structures point to the same underlying files. The only difference
-    /// between both directory structures are the converted images found in a recursive search.
+    /// between both directory structures are the converted images found by a recursive search.
+    ///
+    /// Note that this does not traverse mount points.
     #[arg(long)]
     no_archive: bool,
 
