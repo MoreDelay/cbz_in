@@ -11,6 +11,7 @@ use tracing::{debug, info};
 use crate::convert::archive::ArchivePath;
 use crate::convert::collections::{ArchiveJobs, RecursiveDirJobs};
 use crate::convert::dir::Directory;
+use crate::convert::image::ImageFormat;
 use crate::convert::search::{ArchiveImages, DirImages, ImageInfo};
 use crate::convert::{Bars, ConversionConfig, Job, JobCollection as _, JobsBarTitle};
 use crate::error::ErrorMessage;
@@ -65,7 +66,7 @@ impl MainJobImpl {
         use MainJobConfig::*;
 
         let job = match config {
-            Stats => StatsJob::on_archives(paths).map(Some)?.map(Self::Stats),
+            Stats(config) => StatsJob::on_archives(paths, config)?.map(Self::Stats),
             Convert(config) => ConvertJob::on_archives(paths, config)?.map(Self::Convert),
         };
         Ok(job)
@@ -79,7 +80,7 @@ impl MainJobImpl {
         use MainJobConfig::*;
 
         let job = match config {
-            Stats => StatsJob::on_directories(paths).map(Some)?.map(Self::Stats),
+            Stats(config) => StatsJob::on_directories(paths, config)?.map(Self::Stats),
             Convert(config) => ConvertJob::on_directories(paths, config)?.map(Self::Convert),
         };
         Ok(job)
@@ -98,22 +99,39 @@ impl MainJobImpl {
 /// Our job is to print statistics about the images we find.
 pub enum StatsJob {
     /// We work on archives.
-    Archives(Vec<ArchiveImages>),
+    Archives {
+        /// The (filtered) images found within each archive.
+        images: Vec<ArchiveImages>,
+        /// Whether to print detailed statistics.
+        verbose: bool,
+    },
     /// We work on directories.
-    Directories(Vec<DirImages>),
+    Directories {
+        /// The (filtered) images found within each directory.
+        images: Vec<DirImages>,
+        /// Whether to print detailed statistics.
+        verbose: bool,
+    },
 }
 
 impl StatsJob {
     /// Create a [`StatsJob::Archives`].
-    fn on_archives(paths: VecDeque<PathBuf>) -> Result<Self, Exn<ErrorMessage>> {
+    fn on_archives(
+        paths: VecDeque<PathBuf>,
+        config: &StatsConfig,
+    ) -> Result<Option<Self>, Exn<ErrorMessage>> {
         let collect_single = |path| {
             let (path, dir_exn) = match Directory::new(path)? {
-                Ok(root) => return Self::for_archives_in_dir(&root),
+                Ok(root) => return Self::for_archives_in_dir(&root, config),
                 Err(exn) => exn.recover(),
             };
 
             let (path, archive_exn) = match ArchivePath::new(path) {
-                Ok(archive) => return Self::for_single_archive(archive).map(|a| vec![a]),
+                Ok(archive) => {
+                    let vec = (Self::for_single_archive(archive, config)?)
+                        .map_or_else(Vec::new, |a| vec![a]);
+                    return Ok(vec);
+                }
                 Err(exn) => exn.recover(),
             };
 
@@ -125,9 +143,9 @@ impl StatsJob {
 
         let err = || ErrorMessage::new("Failed to collect all archives");
 
-        stdout("Looking for images to convert in archives...");
+        stdout("Counting images in archives...");
 
-        let archives = paths
+        let images = paths
             .into_iter()
             .map(collect_single)
             .collect::<Result<Vec<_>, Exn<_>>>()
@@ -135,93 +153,159 @@ impl StatsJob {
             .into_iter()
             .flatten()
             .collect();
-        Ok(Self::Archives(archives))
+        let verbose = config.verbose;
+        Ok(Some(Self::Archives { images, verbose }))
     }
 
     /// Create a [`StatsJob::Directories`].
-    fn on_directories(paths: VecDeque<PathBuf>) -> Result<Self, Exn<ErrorMessage>> {
+    fn on_directories(
+        paths: VecDeque<PathBuf>,
+        config: &StatsConfig,
+    ) -> Result<Option<Self>, Exn<ErrorMessage>> {
         let err = || ErrorMessage::new("Failed to collect all directories");
 
         let collect_single = |path| {
             let root = Directory::new(path)?.map_err(Exn::discard_recovery)?;
-            DirImages::search_recursive(root)
+            let images = DirImages::search_recursive(root)?;
+            match config.filter {
+                Some(target) => Ok(images.and_then(|images| images.filter(target))),
+                None => Ok(images),
+            }
         };
 
-        stdout("Looking for images to convert in directories...");
+        stdout("Counting images in directories...");
 
         let images = paths
             .into_iter()
             .map(collect_single)
             .collect::<Result<Vec<_>, Exn<_>>>()
-            .or_raise(err)?;
-        Ok(Self::Directories(images))
+            .or_raise(err)?
+            .into_iter()
+            .flatten()
+            .collect();
+        let verbose = config.verbose;
+        Ok(Some(Self::Directories { images, verbose }))
     }
 
     /// Run this job.
     fn run(self) {
-        let images: &mut dyn Iterator<Item = ImageInfo> = match self {
-            Self::Archives(images) => {
+        match &self {
+            Self::Archives { images, .. } => {
                 let count = images.len();
                 stdout(format!("Searched {count} archives:"));
-                &mut images.into_iter().flatten()
             }
-            Self::Directories(images) => {
+            Self::Directories { images, .. } => {
                 let count = images.len();
                 stdout(format!("Searched {count} directories:"));
-                &mut images.into_iter().flatten()
             }
-        };
-
-        let counts = images.fold(HashMap::new(), |mut counts, info| {
-            counts
-                .entry(info.format())
-                .and_modify(|v| *v += 1)
-                .or_insert(1);
-            counts
-        });
-        let mut counts = Vec::from_iter(counts);
-        counts.sort_unstable_by_key(|(f, _)| f.ext());
-        for (format, count) in &counts {
-            let format = format.ext();
-            stdout(format!("{format}: {count}"));
         }
-        let total: usize = counts.iter().map(|(_, c)| c).sum();
-        stdout("---");
-        stdout(format!("total: {total}"));
+
+        match self {
+            Self::Archives {
+                images,
+                verbose: false,
+            } => Self::print_image_stats(&mut images.into_iter().flatten()),
+            Self::Directories {
+                images,
+                verbose: false,
+            } => Self::print_image_stats(&mut images.into_iter().flatten()),
+            Self::Archives {
+                images,
+                verbose: true,
+            } => Self::print_per_archive(images.into_iter()),
+            Self::Directories {
+                images,
+                verbose: true,
+            } => Self::print_per_dir(&mut images.into_iter()),
+        }
     }
 
-    /// Create an [`ArchiveJobs`] for a single archive.
-    fn for_single_archive(archive: ArchivePath) -> Result<ArchiveImages, Exn<ErrorMessage>> {
+    /// Create an [`ArchiveImages`] for a single archive.
+    fn for_single_archive(
+        archive: ArchivePath,
+        config: &StatsConfig,
+    ) -> Result<Option<ArchiveImages>, Exn<ErrorMessage>> {
         let err = || ErrorMessage::new("Failed to search images in a single archive");
 
         info!("Checking archive \"{}\"", archive.display());
-        ArchiveImages::new(archive).or_raise(err)
+        let images = ArchiveImages::new(archive).or_raise(err)?;
+        match config.filter {
+            Some(target) => Ok(images.and_then(|images| images.filter(target))),
+            None => Ok(images),
+        }
     }
 
-    /// Create an [`ArchiveJobs`] for all archives in a directory.
-    fn for_archives_in_dir(root: &Directory) -> Result<Vec<ArchiveImages>, Exn<ErrorMessage>> {
+    /// Create an [`ArchiveImages`] for all archives in a directory.
+    fn for_archives_in_dir(
+        root: &Directory,
+        config: &StatsConfig,
+    ) -> Result<Vec<ArchiveImages>, Exn<ErrorMessage>> {
         let err = || ErrorMessage::new("Failed to search images in all archives in a directory");
 
         info!("Checking archives directory \"{}\"", root.display());
-        let jobs = root
-            .read_dir()
+        root.read_dir()
             .or_raise(err)?
-            .filter_map(|dir_entry| {
-                let path = match dir_entry.or_raise(err) {
-                    Ok(dir_entry) => dir_entry.path(),
-                    Err(e) => return Some(Err(e)),
-                };
+            .map(|dir_entry| {
+                let path = dir_entry.or_raise(err)?.path();
                 let archive = match ArchivePath::new(path) {
                     Ok(archive) => archive,
                     Err(exn) => {
                         debug!("skipping: {exn:?}");
-                        return None;
+                        return Ok(None);
                     }
                 };
-                Some(ArchiveImages::new(archive))
+                Self::for_single_archive(archive, config)
             })
-            .collect::<Result<Vec<_>, _>>();
-        jobs.or_raise(err)
+            .filter_map(Result::transpose)
+            .collect()
+    }
+
+    /// Execute this job by printing non-verbose statistics.
+    fn print_image_stats(images: &mut dyn Iterator<Item = ImageInfo>) {
+        let stats = Stats::compute(images);
+        stats.print_per_format();
+        stdout("---");
+        stats.print_total();
+    }
+
+    /// Execute this job by printing verbose archive statistics.
+    fn print_per_archive(archives: impl Iterator<Item = ArchiveImages>) {
+        let mut all_stats = Stats::new();
+
+        for archive in archives {
+            stdout(format!("\"{}\":", archive.path().display()));
+            let images = &mut archive.into_iter();
+            let stats = Stats::compute(images);
+            all_stats.combine(&stats);
+
+            stats.print_per_format();
+            stdout("");
+        }
+
+        stdout("");
+        all_stats.print_per_format();
+        stdout("---");
+        all_stats.print_total();
+    }
+
+    /// Execute this job by printing verbose directory statistics.
+    fn print_per_dir(dirs: &mut dyn Iterator<Item = DirImages>) {
+        let mut all_stats = Stats::new();
+
+        for dir in dirs {
+            stdout(format!("\"{}\":", dir.path().display()));
+            let images = &mut dir.into_iter();
+            let stats = Stats::compute(images);
+            all_stats.combine(&stats);
+
+            stats.print_per_format();
+            stdout("");
+        }
+
+        stdout("");
+        all_stats.print_per_format();
+        stdout("---");
+        all_stats.print_total();
     }
 }
 
@@ -428,7 +512,7 @@ impl ConvertJob {
 /// Specifies the kind of main job to create, with corresponding configuration
 pub enum MainJobConfig {
     /// Run a statistics job,
-    Stats,
+    Stats(StatsConfig),
     /// Run a conversion job.
     Convert(ConversionConfig),
 }
@@ -444,12 +528,76 @@ impl MainJobConfig {
             None => thread::available_parallelism().unwrap_or(ONE),
         };
 
-        args.command.target().map_or(Self::Stats, |target| {
-            Self::Convert(ConversionConfig {
+        match args.command {
+            crate::Command::Stats { filter } => Self::Stats(StatsConfig {
+                filter,
+                verbose: args.verbose,
+            }),
+            crate::Command::Convert(target) => Self::Convert(ConversionConfig {
                 target,
                 n_workers,
                 forced: args.force,
-            })
-        })
+            }),
+        }
+    }
+}
+
+/// Configuration for what statistics to collect.
+pub struct StatsConfig {
+    /// Filter for a specific image format.
+    filter: Option<ImageFormat>,
+    /// Print out more detailed information.
+    verbose: bool,
+}
+
+/// Aggregated statistics.
+struct Stats {
+    /// Maps an image format to the number of occurences
+    inner: HashMap<ImageFormat, usize>,
+}
+
+impl Stats {
+    /// Create a new, empty statistics object.
+    fn new() -> Self {
+        let inner = HashMap::new();
+        Self { inner }
+    }
+
+    /// Count the occurences of each image type in the iterator.
+    fn compute(images: &mut dyn Iterator<Item = ImageInfo>) -> Self {
+        let inner = images.fold(HashMap::new(), |mut counts, info| {
+            counts
+                .entry(info.format())
+                .and_modify(|v| *v += 1)
+                .or_insert(1);
+            counts
+        });
+        Self { inner }
+    }
+
+    /// Combine two statistics into one
+    fn combine(&mut self, other: &Self) {
+        for (&format, &count) in &other.inner {
+            self.inner
+                .entry(format)
+                .and_modify(|v| *v += count)
+                .or_insert(count);
+        }
+    }
+
+    /// Print out statistics per image format.
+    fn print_per_format(&self) {
+        let mut counts = Vec::from_iter(self.inner.clone());
+        counts.sort_unstable_by_key(|(f, _)| f.ext());
+        for (format, count) in &counts {
+            let format = format.ext();
+            stdout(format!("{format}: {count}"));
+        }
+    }
+
+    /// Print out the total number of images found.
+    fn print_total(&self) {
+        let total: usize = self.inner.values().sum();
+        stdout(format!("total: {total}"));
     }
 }
