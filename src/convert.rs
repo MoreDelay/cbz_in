@@ -6,15 +6,20 @@ pub mod dir;
 pub mod image;
 pub mod search;
 
+use std::collections::{HashSet, VecDeque};
 use std::num::NonZeroUsize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use exn::Exn;
+use exn::{Exn, ResultExt as _, bail};
 use indicatif::{MultiProgress, ProgressBar};
 use tracing::{error, info, warn};
 
+use crate::convert::archive::ArchivePath;
+use crate::convert::collections::{ArchiveJobs, RecursiveDirJobs};
+use crate::convert::dir::Directory;
 use crate::convert::image::{ConversionJob, ImageFormat};
 use crate::error::{ErrorMessage, got_interrupted};
+use crate::stdout;
 
 /// General configuration for a run of any conversion job.
 #[derive(Debug, Clone, Copy)]
@@ -93,6 +98,206 @@ pub trait JobCollection: IntoIterator<Item = Self::Single> + Sized {
             }
         }
         run_res
+    }
+}
+
+/// Our job is to convert images in archives or directories.
+pub enum ConvertJob {
+    /// We work on archives.
+    Archives(ArchiveJobs),
+    /// We work on directories.
+    Directories(RecursiveDirJobs),
+}
+
+impl ConvertJob {
+    /// Create a [`ConvertJob::Archives`].
+    pub fn on_archives(
+        paths: VecDeque<PathBuf>,
+        config: ConversionConfig,
+    ) -> Result<Option<Self>, Exn<ErrorMessage>> {
+        let collect_single = |path| {
+            let (path, dir_exn) = match Directory::new(path)? {
+                Ok(root) => return Self::for_archives_in_dir(&root, config),
+                Err(exn) => exn.recover(),
+            };
+
+            let (path, archive_exn) = match ArchivePath::new(path) {
+                Ok(archive) => return Self::for_single_archive(archive, config),
+                Err(exn) => exn.recover(),
+            };
+
+            let msg = format!("Neither an archive nor a directory: \"{}\"", path.display());
+            let exn = Exn::raise_all(ErrorMessage::new(msg), [dir_exn, archive_exn]);
+            Err(exn)
+        };
+
+        let err = || ErrorMessage::new("Failed to collect all archives");
+
+        stdout("Looking for images to convert in archives...");
+
+        let jobs = paths
+            .into_iter()
+            .map(collect_single)
+            .collect::<Result<Vec<_>, Exn<_>>>()
+            .or_raise(err)?
+            .into_iter()
+            .flatten()
+            .flatten();
+        let jobs = ArchiveJobs::aggregate(jobs).map(Self::Archives);
+        Ok(jobs)
+    }
+
+    /// Create [`ConvertJob::Directories`].
+    pub fn on_directories(
+        paths: VecDeque<PathBuf>,
+        config: ConversionConfig,
+    ) -> Result<Option<Self>, Exn<ErrorMessage>> {
+        let err = || ErrorMessage::new("Failed to collect all directories");
+
+        let collect_single = |path| {
+            let root = Directory::new(path)?.map_err(Exn::discard_recovery)?;
+            Self::for_images_within_dir(root, config)
+        };
+
+        stdout("Looking for images to convert in directories...");
+
+        let jobs = paths
+            .into_iter()
+            .map(collect_single)
+            .collect::<Result<Vec<_>, Exn<_>>>()
+            .or_raise(err)?
+            .into_iter()
+            .flatten()
+            .flatten();
+        let jobs = RecursiveDirJobs::aggregate(jobs).map(Self::Directories);
+        Ok(jobs)
+    }
+
+    /// Run this job.
+    pub fn run(self, dry_run: bool) -> Result<(), Exn<ErrorMessage>> {
+        let err = || ErrorMessage::new("failed to run conversion job");
+
+        self.dry_run().or_raise(err)?;
+        if dry_run {
+            return Ok(());
+        }
+
+        let collection_type = match self {
+            Self::Archives(_) => JobsBarTitle::Archives,
+            Self::Directories(_) => JobsBarTitle::Directories,
+        };
+        let bars = Bars::new(collection_type);
+
+        match self {
+            Self::Archives(jobs) => jobs.run(&bars)?,
+            Self::Directories(jobs) => jobs.run(&bars)?,
+        }
+
+        bars.finish();
+        Ok(())
+    }
+
+    /// Check if we can run this job, and print out statistics.
+    fn dry_run(&self) -> Result<(), Exn<ErrorMessage>> {
+        let err = || ErrorMessage::new("Issue encountered during dry run");
+
+        self.check_tools().or_raise(err)?;
+        self.print_statistics();
+
+        let paths: &mut dyn Iterator<Item = _> = match self {
+            Self::Archives(jobs) => &mut jobs.jobs().map(Job::path),
+            Self::Directories(jobs) => &mut jobs.jobs().map(Job::path),
+        };
+
+        for path in paths {
+            info!("Got files to convert for \"{}\"", path.display());
+        }
+
+        Ok(())
+    }
+
+    /// Check if all tools needed for this job are actually available.
+    fn check_tools(&self) -> Result<(), Exn<ErrorMessage>> {
+        let iter: &mut dyn Iterator<Item = _> = match self {
+            Self::Archives(jobs) => &mut jobs.jobs().flat_map(Job::iter),
+            Self::Directories(jobs) => &mut jobs.jobs().flat_map(Job::iter),
+        };
+        let required_tools = iter
+            .flat_map(|job| job.plan().required_tools())
+            .collect::<HashSet<_>>();
+        let missing_tools = required_tools
+            .into_iter()
+            .filter_map(|tool| match tool.available() {
+                Ok(true) => None,
+                Ok(false) => Some(Ok(tool.name())),
+                Err(e) => Some(Err(e)),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        if !missing_tools.is_empty() {
+            let mut missing_tools = missing_tools;
+            missing_tools.sort_unstable();
+            let tools = missing_tools.join(", ");
+            let msg = format!("Missing tools: {tools}");
+            bail!(ErrorMessage::new(msg))
+        }
+        Ok(())
+    }
+
+    /// Print out statistics on how many images would get converted by this job.
+    fn print_statistics(&self) {
+        let collections = match self {
+            Self::Archives(jobs) => jobs.jobs().count(),
+            Self::Directories(jobs) => jobs.jobs().count(),
+        };
+
+        let images = match self {
+            Self::Archives(jobs) => &mut jobs.jobs().flat_map(Job::iter).count(),
+            Self::Directories(jobs) => &mut jobs.jobs().flat_map(Job::iter).count(),
+        };
+
+        let coll_type = match self {
+            Self::Archives(_) => "archives",
+            Self::Directories(_) => "directories",
+        };
+
+        stdout(format!(
+            "Found {collections} {coll_type}, with a total of {images} images to convert"
+        ));
+    }
+
+    /// Create an [`ArchiveJobs`] for a single archive.
+    fn for_single_archive(
+        archive: ArchivePath,
+        config: ConversionConfig,
+    ) -> Result<Option<ArchiveJobs>, Exn<ErrorMessage>> {
+        let err = || ErrorMessage::new("Failed to create conversion job on a single archive");
+
+        info!("Checking archive \"{}\"", archive.display());
+        ArchiveJobs::single(archive, config).or_raise(err)
+    }
+
+    /// Create an [`ArchiveJobs`] for all archives in a directory.
+    fn for_archives_in_dir(
+        root: &Directory,
+        config: ConversionConfig,
+    ) -> Result<Option<ArchiveJobs>, Exn<ErrorMessage>> {
+        let err =
+            || ErrorMessage::new("Failed to create conversion job for all archives in a directory");
+
+        info!("Checking archives directory \"{}\"", root.display());
+        ArchiveJobs::collect(root, config).or_raise(err)
+    }
+
+    /// Create a [`RecursiveDirJobs`] for a directory.
+    fn for_images_within_dir(
+        root: Directory,
+        config: ConversionConfig,
+    ) -> Result<Option<RecursiveDirJobs>, Exn<ErrorMessage>> {
+        let err = || ErrorMessage::new("Failed to create conversion job for a directory");
+
+        info!("Checking root directory recursively \"{}\"", root.display());
+        RecursiveDirJobs::single(root, config).or_raise(err)
     }
 }
 

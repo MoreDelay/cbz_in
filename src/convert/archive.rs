@@ -73,7 +73,7 @@ impl ArchiveJob {
     /// No files get touched until this job is run.
     pub fn new(
         archive: ArchiveImages,
-        config: &ConversionConfig,
+        config: ConversionConfig,
     ) -> Result<Result<Self, Exn<NothingToDo>>, Exn<ErrorMessage>> {
         let ArchiveImages { archive, images } = archive;
 
@@ -84,7 +84,7 @@ impl ArchiveJob {
             ))
         };
 
-        let &ConversionConfig {
+        let ConversionConfig {
             target, n_workers, ..
         } = config;
 

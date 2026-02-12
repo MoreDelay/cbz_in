@@ -66,7 +66,7 @@ impl RecursiveDirJob {
     /// No files get touched until this job is run.
     pub fn new(
         dir: DirImages,
-        config: &ConversionConfig,
+        config: ConversionConfig,
     ) -> Result<Result<Self, Exn<NothingToDo>>, Exn<ErrorMessage>> {
         let DirImages { root, images } = dir;
         let err = || {
@@ -76,7 +76,7 @@ impl RecursiveDirJob {
             ))
         };
 
-        let &ConversionConfig {
+        let ConversionConfig {
             target, n_workers, ..
         } = config;
 

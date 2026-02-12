@@ -348,10 +348,10 @@ pub enum Plan {
 
 impl Plan {
     /// Determine the details for a specific image to reach the goal set out by the configuration.
-    pub fn new(current: ImageFormat, config: &ConversionConfig) -> Option<Self> {
+    pub fn new(current: ImageFormat, config: ConversionConfig) -> Option<Self> {
         use ImageFormat::*;
 
-        let &ConversionConfig { target, forced, .. } = config;
+        let ConversionConfig { target, forced, .. } = config;
 
         let out = match (current, target) {
             (a, b) if a == b => return None,
