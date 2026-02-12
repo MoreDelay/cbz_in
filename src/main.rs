@@ -4,6 +4,7 @@ mod command;
 mod convert;
 mod error;
 mod spawn;
+mod stats;
 
 use std::collections::VecDeque;
 use std::num::NonZeroUsize;
@@ -55,8 +56,8 @@ fn real_main() -> Result<(), Exn<ErrorMessage>> {
     let paths = VecDeque::from(args.paths);
 
     let main_job = match args.no_archive {
-        true => MainJob::on_directories(paths, &config).or_raise(err)?,
-        false => MainJob::on_archives(paths, &config).or_raise(err)?,
+        true => MainJob::on_directories(paths, config).or_raise(err)?,
+        false => MainJob::on_archives(paths, config).or_raise(err)?,
     };
 
     let Some(main_job) = main_job else {
@@ -137,7 +138,7 @@ struct Args {
 enum Command {
     /// Collect statistics on the images found.
     Stats {
-        /// Filter for a specific image format
+        /// Filter for a specific image format.
         #[arg(long, default_value = None)]
         filter: Option<ImageFormat>,
     },

@@ -24,7 +24,7 @@ impl ArchiveJobs {
     /// The constructed [`ArchiveJobs`] will contain only a single [`ArchiveJob`].
     pub fn single(
         archive: ArchivePath,
-        config: &ConversionConfig,
+        config: ConversionConfig,
     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
         Ok(Self::single_internal(archive, config)?.map(|job| Self(vec![job])))
     }
@@ -32,7 +32,7 @@ impl ArchiveJobs {
     /// Create an [`ArchiveJob`] for all archives found in the provided root directory.
     pub fn collect(
         root: &Directory,
-        config: &ConversionConfig,
+        config: ConversionConfig,
     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
         let err = || {
             let root = root.display();
@@ -72,7 +72,7 @@ impl ArchiveJobs {
     /// Internal constructor for a single [`ArchiveJobs`].
     fn single_internal(
         archive: ArchivePath,
-        config: &ConversionConfig,
+        config: ConversionConfig,
     ) -> Result<Option<ArchiveJob>, Exn<ErrorMessage>> {
         let archive = ArchiveImages::new(archive)?;
         let Some(archive) = archive else {
@@ -113,7 +113,7 @@ impl RecursiveDirJobs {
     /// The constructed [`RecursiveDirJobs`] will contain only a single [`RecursiveDirJob`].
     pub fn single(
         dir: Directory,
-        config: &ConversionConfig,
+        config: ConversionConfig,
     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
         let dir = DirImages::search_recursive(dir)?;
         let Some(dir) = dir else {
