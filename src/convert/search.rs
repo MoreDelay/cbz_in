@@ -25,7 +25,7 @@ pub struct ArchiveImages {
 
 impl ArchiveImages {
     /// Find all images in an archive.
-    pub fn new(archive: ArchivePath) -> Result<Self, Exn<ErrorMessage>> {
+    pub fn new(archive: ArchivePath) -> Result<Option<Self>, Exn<ErrorMessage>> {
         let err = || {
             let archive = archive.display();
             ErrorMessage::new(format!("Could not list files within archive \"{archive}\""))
@@ -38,17 +38,39 @@ impl ArchiveImages {
             .or_raise(err)?
             .stdout
             .lines()
-            .filter_map(|line| {
-                let line = match line {
-                    Ok(line) => line,
-                    Err(e) => return Some(Err(e)),
-                };
-                let path = line.strip_prefix("Path = ").map(PathBuf::from)?;
-                Some(Ok(ImageInfo::new(path)?))
+            .map(|line| {
+                let info = line?
+                    .strip_prefix("Path = ")
+                    .map(PathBuf::from)
+                    .and_then(ImageInfo::new);
+                Ok(info)
             })
-            .collect::<Result<_, _>>()
+            .filter_map(Result::transpose)
+            .collect::<Result<Vec<_>, std::io::Error>>()
             .or_raise(err)?;
-        Ok(Self { archive, images })
+
+        if images.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(Self { archive, images }))
+    }
+
+    /// Filter out all images that do not have the target image format
+    pub fn filter(self, target: ImageFormat) -> Option<Self> {
+        let images = self
+            .images
+            .into_iter()
+            .filter(|info| info.format() == target)
+            .collect::<Vec<_>>();
+        if images.is_empty() {
+            return None;
+        }
+        Some(Self { images, ..self })
+    }
+
+    /// Get the archive path where these images were found.
+    pub const fn path(&self) -> &ArchivePath {
+        &self.archive
     }
 }
 
@@ -73,7 +95,7 @@ pub struct DirImages {
 
 impl DirImages {
     /// Find all images in a directory.
-    pub fn search_recursive(root: Directory) -> Result<Self, Exn<ErrorMessage>> {
+    pub fn search_recursive(root: Directory) -> Result<Option<Self>, Exn<ErrorMessage>> {
         let err = || {
             let root = root.display();
             ErrorMessage::new(format!("Could not list files within directory \"{root}\""))
@@ -81,24 +103,43 @@ impl DirImages {
 
         debug!("Checking \"{}\"", root.display());
 
-        let images = WalkDir::new(&root)
+        let images: Vec<ImageInfo> = WalkDir::new(&root)
             .same_file_system(true)
             .into_iter()
-            .filter_map(|entry| {
-                let entry = match entry {
-                    Ok(entry) => entry,
-                    Err(e) => return Some(Err(e)),
-                };
-                let path = entry
+            .map(|entry| {
+                let path = entry?
                     .path()
                     .strip_prefix(&root)
                     .expect("all walked files have the root as prefix")
                     .to_path_buf();
-                Some(Ok(ImageInfo::new(path)?))
+                Ok(ImageInfo::new(path))
             })
-            .collect::<Result<_, _>>()
+            .filter_map(Result::transpose)
+            .collect::<Result<Vec<_>, std::io::Error>>()
             .or_raise(err)?;
-        Ok(Self { root, images })
+
+        if images.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(Self { root, images }))
+    }
+
+    /// Filter out all images that do not have the target image format
+    pub fn filter(self, target: ImageFormat) -> Option<Self> {
+        let images = self
+            .images
+            .into_iter()
+            .filter(|info| info.format() == target)
+            .collect::<Vec<_>>();
+        if images.is_empty() {
+            return None;
+        }
+        Some(Self { images, ..self })
+    }
+
+    /// Get the directory where these images were found.
+    pub const fn path(&self) -> &Directory {
+        &self.root
     }
 }
 

@@ -74,17 +74,18 @@ fn real_main() -> Result<(), Exn<ErrorMessage>> {
 /// files. By default only converts Jpeg and Png to the target format or decode any formats to
 /// Png and Jpeg. The new archive with converted images is placed adjacent to the original, so this
 /// operation is non-destructive.
+#[expect(clippy::struct_excessive_bools)]
 #[derive(clap::Parser)]
 #[command(version)]
 struct Args {
     /// All images within the archive(s) are converted to this format
-    #[arg(required = true)]
+    #[command(subcommand)]
     command: Command,
 
     /// Path to cbz files or directories containing cbz files
     ///
     /// When providing directories, only top-level archives are considered for conversion.
-    #[arg(default_value = ".", num_args = 1..)]
+    #[arg(default_value = ".", num_args = 1.., global = true)]
     paths: Vec<PathBuf>,
 
     /// Number of processes spawned
@@ -92,16 +93,20 @@ struct Args {
     /// Uses as many processes as you have cores by default. When used as a flag only spawns a
     /// single process at a time.
     #[expect(clippy::option_option)]
-    #[arg(short = 'j', long)]
+    #[arg(short = 'j', long, global = true)]
     workers: Option<Option<NonZeroUsize>>,
 
     /// Convert all images of all formats.
-    #[arg(short, long)]
+    #[arg(short, long, global = true)]
     force: bool,
 
     /// Check if all tools are available to perform conversions.
-    #[arg(short, long)]
+    #[arg(long, global = true)]
     dry_run: bool,
+
+    /// Check if all tools are available to perform conversions.
+    #[arg(short, long, global = true)]
+    verbose: bool,
 
     /// Convert images in the directory directly (recursively)
     ///
@@ -110,7 +115,7 @@ struct Args {
     /// between both directory structures are the converted images found by a recursive search.
     ///
     /// Note that this does not traverse mount points.
-    #[arg(long)]
+    #[arg(long, global = true)]
     no_archive: bool,
 
     /// Write a log file
@@ -118,46 +123,27 @@ struct Args {
         long ,
         value_name = "LOG_FILE",
         num_args(0..=1),
-        default_missing_value = "./cbz_in.log",
+        default_missing_value = "./cbz_in.log", global = true
     )]
     log: Option<PathBuf>,
 
     /// Detail level of logging
-    #[arg(long, default_value = "info")]
+    #[arg(long, default_value = "info", global = true)]
     level: tracing::Level,
 }
 
 /// The sub command to run on found archives or directories.
-#[derive(clap::ValueEnum, Clone, Copy)]
+#[derive(clap::Subcommand, Clone, Copy)]
 enum Command {
     /// Collect statistics on the images found.
-    Stats,
-    /// Convert to Jpeg.
-    Jpeg,
-    /// Convert to PNG.
-    Png,
-    /// Convert to AVIF.
-    Avif,
-    /// Convert to JXL.
-    Jxl,
-    /// Convert to WebP.
-    Webp,
-}
-
-impl Command {
-    /// Get the target format, if command is to convert.
-    const fn target(self) -> Option<ImageFormat> {
-        use ImageFormat::*;
-
-        match self {
-            Self::Stats => None,
-            Self::Jpeg => Some(Jpeg),
-            Self::Png => Some(Png),
-            Self::Avif => Some(Avif),
-            Self::Jxl => Some(Jxl),
-            Self::Webp => Some(Webp),
-        }
-    }
+    Stats {
+        /// Filter for a specific image format
+        #[arg(long, default_value = None)]
+        filter: Option<ImageFormat>,
+    },
+    /// Convert found images to another image format.
+    #[command(flatten)]
+    Convert(ImageFormat),
 }
 
 /// Initialize the logger as requested.

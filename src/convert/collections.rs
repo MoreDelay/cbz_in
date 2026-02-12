@@ -44,20 +44,18 @@ impl ArchiveJobs {
         let jobs = root
             .read_dir()
             .or_raise(err)?
-            .filter_map(|dir_entry| {
-                let path = match dir_entry.or_raise(err) {
-                    Ok(dir_entry) => dir_entry.path(),
-                    Err(e) => return Some(Err(e)),
-                };
+            .map(|dir_entry| {
+                let path = dir_entry.or_raise(err)?.path();
                 let archive = match ArchivePath::new(path) {
                     Ok(archive) => archive,
                     Err(exn) => {
                         debug!("skipping: {exn:?}");
-                        return None;
+                        return Ok(None);
                     }
                 };
-                Self::single_internal(archive, config).transpose()
+                Self::single_internal(archive, config)
             })
+            .filter_map(Result::transpose)
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self::aggregate(jobs))
     }
@@ -77,6 +75,10 @@ impl ArchiveJobs {
         config: &ConversionConfig,
     ) -> Result<Option<ArchiveJob>, Exn<ErrorMessage>> {
         let archive = ArchiveImages::new(archive)?;
+        let Some(archive) = archive else {
+            return Ok(None);
+        };
+
         match ArchiveJob::new(archive, config)? {
             Ok(job) => Ok(Some(job)),
             Err(nothing_to_do) => {
@@ -114,6 +116,10 @@ impl RecursiveDirJobs {
         config: &ConversionConfig,
     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
         let dir = DirImages::search_recursive(dir)?;
+        let Some(dir) = dir else {
+            return Ok(None);
+        };
+
         match RecursiveDirJob::new(dir, config)? {
             Ok(job) => Ok(Some(Self(vec![job]))),
             Err(nothing_to_do) => {
