@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use exn::{Exn, ResultExt as _, bail};
 use indicatif::{MultiProgress, ProgressBar};
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use crate::convert::archive::ArchivePath;
 use crate::convert::collections::{ArchiveJobs, RecursiveDirJobs};
@@ -87,15 +87,10 @@ pub trait JobCollection: IntoIterator<Item = Self::Single> + Sized {
         bars.println(format!("Converting \"{path}\""));
 
         let run_res = job.run(&bars.images);
+        bars.jobs.inc(1);
         match &run_res {
-            Ok(()) => {
-                bars.jobs.inc(1);
-                info!("Done");
-            }
-            Err(err) => {
-                bars.println(format!("ERROR: {err}"));
-                error!("{err}");
-            }
+            Ok(()) => info!("Done"),
+            Err(err) => bars.println(format!("ERROR: {err}")),
         }
         run_res
     }

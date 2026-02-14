@@ -56,3 +56,85 @@ fn find_error<T: Error + 'static>(exn: &Exn<impl Error + Send + Sync>) -> Option
     }
     walk(exn.frame())
 }
+
+/// Wrapper around the Exn error context to implement custom formatting.
+///
+/// Here we intentionally make the debug format printed with [`Display`] and the less detailed
+/// version part of [`Debug`], such that we can return this type from [`crate::main()`] and give
+/// the user just the information relevant to them.
+pub struct CompactReport<T>(pub Exn<T>)
+where
+    T: Error + Send + Sync + 'static;
+
+impl<T: Error + Send + Sync + 'static> std::fmt::Display for CompactReport<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        const DEBUG: bool = true;
+        Self::format(f, self.0.frame(), "", DEBUG)
+    }
+}
+
+impl<T: Error + Send + Sync + 'static> std::fmt::Debug for CompactReport<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        const DEBUG: bool = false;
+        Self::format(f, self.0.frame(), "", DEBUG)
+    }
+}
+
+impl<T> std::error::Error for CompactReport<T> where T: Error + Send + Sync + 'static {}
+
+impl<T> CompactReport<T>
+where
+    T: Error + Send + Sync + 'static,
+{
+    /// Create a new reporting wrapper.
+    pub const fn new(exn: Exn<T>) -> Self {
+        Self(exn)
+    }
+
+    /// Write out an error report in a compacter format than default.
+    fn format(
+        f: &mut std::fmt::Formatter<'_>,
+        frame: &Frame,
+        prefix: &str,
+        debug: bool,
+    ) -> std::fmt::Result {
+        match debug {
+            true => Self::debug_line(f, frame)?,
+            false => Self::display_line(f, frame)?,
+        }
+
+        match frame.children() {
+            [] => (),
+            [child] => {
+                write!(f, "\n{prefix}-> ")?;
+                Self::format(f, child, prefix, debug)?;
+            }
+            children => {
+                let child_prefix = format!("{prefix}   ");
+                for child in children {
+                    write!(f, "\n{prefix}|> ")?;
+                    Self::format(f, child, &child_prefix, debug)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Write the error for this frame with debug information.
+    fn debug_line(f: &mut std::fmt::Formatter<'_>, frame: &Frame) -> std::fmt::Result {
+        let loc = frame.location();
+        write!(
+            f,
+            "[{}:{}:{}] {}",
+            loc.file(),
+            loc.line(),
+            loc.column(),
+            frame.error()
+        )
+    }
+
+    /// Write the error for this frame without debug information.
+    fn display_line(f: &mut std::fmt::Formatter<'_>, frame: &Frame) -> std::fmt::Result {
+        write!(f, "{}", frame.error())
+    }
+}

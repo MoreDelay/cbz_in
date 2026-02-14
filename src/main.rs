@@ -16,12 +16,12 @@ use tracing::{error, info};
 
 use crate::command::{MainJob, MainJobConfig};
 use crate::convert::image::ImageFormat;
-use crate::error::{ErrorMessage, got_interrupted};
+use crate::error::{CompactReport, ErrorMessage, got_interrupted};
 
 /// The program entry point.
 ///
 /// It's only purpose is to log all errors bubbling up until here.
-fn main() -> Result<(), Exn<ErrorMessage>> {
+fn main() -> Result<(), CompactReport<ErrorMessage>> {
     let ret = real_main();
 
     match ret {
@@ -30,7 +30,11 @@ fn main() -> Result<(), Exn<ErrorMessage>> {
             stderr("Got interrupted");
             Ok(())
         }
-        Err(exn) => Err(exn),
+        Err(exn) => {
+            let report = CompactReport::new(exn);
+            error!("Application error:\n{report}");
+            Err(report)
+        }
     }
 }
 
