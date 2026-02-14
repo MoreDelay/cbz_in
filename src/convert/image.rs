@@ -87,15 +87,14 @@ impl RunConversionJob {
                     Proceeded::Progress(Self { state })
                 }
                 Ok(None) => Proceeded::Finished,
-                Err(exn) => {
-                    let (waiting, exn) = exn.recover();
-                    match waiting {
-                        Some(waiting) => {
-                            let state = State::Waiting(waiting);
-                            Proceeded::Progress(Self { state })
-                        }
-                        None => return Err(exn),
-                    }
+                // we can recover from the error
+                Err(Ok(waiting)) => {
+                    let state = State::Waiting(waiting);
+                    Proceeded::Progress(Self { state })
+                }
+                // we can not recover
+                Err(Err(exn)) => {
+                    return Err(exn);
                 }
             },
         };
@@ -230,7 +229,11 @@ impl StateCompleted {
     ///
     /// Waits on the child process and deletes the original image file. If we completed all
     /// conversions as specified by the details, we stop here.
-    fn complete(self) -> Result<Option<StateWaiting>, Exn<ErrorMessage, Option<StateWaiting>>> {
+    ///
+    /// On success, we either finished or we get the next task in the plan for this image.
+    /// On error, we can either recover by converting with a backup plan, or we failed totally with
+    /// a full error report on all error causes.
+    fn complete(self) -> Result<Option<StateWaiting>, Result<StateWaiting, Exn<ErrorMessage>>> {
         let Self(StateRunning {
             child,
             image_path,
@@ -241,11 +244,8 @@ impl StateCompleted {
         debug!("completed conversion for {image_path:?}: {sequence:?}");
 
         if let Err(exn) = child.wait() {
-            let exn = match Self::try_to_recover(exn, image_path, sequence, tool_use) {
-                Ok(exn) => exn.map(Some),
-                Err(exn) => exn.attach(None),
-            };
-            return Err(exn);
+            let err = Self::try_to_recover(exn, image_path, sequence, tool_use);
+            return Err(err);
         }
         // at this point we have successfully converted the image and prepare the next conversion
         drop(tool_use);
@@ -255,7 +255,7 @@ impl StateCompleted {
             ErrorMessage::new(format!("Could not complete a conversion for \"{path}\""))
         };
 
-        fs::remove_file(&image_path).or_raise_with_recovery(err, None)?;
+        fs::remove_file(&image_path).or_raise(err).map_err(Err)?;
 
         let after = match sequence {
             Sequence::OneStep { .. } | Sequence::Finish { .. } => None,
@@ -280,13 +280,21 @@ impl StateCompleted {
         image_path: PathBuf,
         sequence: Sequence,
         tool_use: ToolUse,
-    ) -> Result<Exn<ErrorMessage, StateWaiting>, Exn<ErrorMessage>> {
-        if let ToolUse::Backup { last_error } = tool_use {
-            let path = image_path.display();
-            let msg = format!("Give up trying to convert \"{path}\"");
-            let err = ErrorMessage::new(msg);
-            return Err(Exn::raise_all(err, [last_error, exn]));
-        }
+    ) -> Result<StateWaiting, Exn<ErrorMessage>> {
+        let exn = match tool_use {
+            ToolUse::Best => {
+                let msg = ErrorMessage::new("Failed to convert with intended tool");
+                exn.raise(msg)
+            }
+            ToolUse::Backup { last_error } => {
+                let msg = ErrorMessage::new("Failed to convert with backup tool");
+                let exn = exn.raise(msg);
+
+                let msg = format!("Give up trying to convert \"{}\"", image_path.display());
+                let msg = ErrorMessage::new(msg);
+                return Err(Exn::raise_all(msg, [last_error, exn]));
+            }
+        };
 
         let sequence = match sequence {
             Sequence::OneStep { from, to } | Sequence::TwoStep { from, to, .. } => {
@@ -303,16 +311,13 @@ impl StateCompleted {
             }
         };
 
-        let path = image_path.display();
-        let msg = format!("Could not complete the conversion for \"{path}\", try to recover");
-
         let waiting = StateWaiting {
             image_path,
             sequence,
             tool_use: ToolUse::Backup { last_error: exn },
         };
 
-        Ok(Exn::with_recovery(ErrorMessage::new(msg), waiting))
+        Ok(waiting)
     }
 }
 
