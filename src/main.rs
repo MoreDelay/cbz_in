@@ -10,6 +10,7 @@ use std::collections::VecDeque;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
+use clap::builder::ArgPredicate;
 use clap::{self, Parser as _};
 use exn::{ErrorExt as _, Exn, OptionExt as _, ResultExt as _};
 use tracing::{error, info};
@@ -21,19 +22,18 @@ use crate::error::{CompactReport, ErrorMessage, got_interrupted};
 /// The program entry point.
 ///
 /// It's only purpose is to log all errors bubbling up until here.
-fn main() -> Result<(), CompactReport<ErrorMessage>> {
+fn main() {
     let ret = real_main();
 
     match ret {
-        Ok(()) => Ok(()),
+        Ok(()) => (),
         Err(exn) if got_interrupted(&exn) => {
             stderr("Got interrupted");
-            Ok(())
         }
         Err(exn) => {
             let report = CompactReport::new(exn);
-            error!("Application error:\n{report}");
-            Err(report)
+            println!("{report}");
+            error!("Application error:\n{report:?}");
         }
     }
 }
@@ -44,8 +44,8 @@ fn real_main() -> Result<(), Exn<ErrorMessage>> {
 
     let args = Args::parse();
 
-    if let Some(log_path) = &args.log {
-        init_logger(log_path, args.level).or_raise(err)?;
+    if args.log {
+        init_logger(&args.log_path, args.level).or_raise(err)?;
     }
 
     let cmd = std::env::args_os()
@@ -125,12 +125,21 @@ struct Args {
 
     /// Write a log file
     #[arg(
-        long ,
-        value_name = "LOG_FILE",
-        num_args(0..=1),
-        default_missing_value = "./cbz_in.log", global = true
+        long,
+        default_value_if("log_path", ArgPredicate::IsPresent, "true"),
+        default_value_if("level", ArgPredicate::IsPresent, "true"),
+        global = true
     )]
-    log: Option<PathBuf>,
+    log: bool,
+
+    /// The path to the log file that gets written
+    #[arg(
+        long,
+        value_name = "LOG_FILE",
+        default_value = "./cbz_in.log",
+        global = true
+    )]
+    log_path: PathBuf,
 
     /// Detail level of logging
     #[arg(long, default_value = "info", global = true)]
@@ -148,7 +157,35 @@ enum Command {
     },
     /// Convert found images to another image format.
     #[command(flatten)]
-    Convert(ImageFormat),
+    Convert(ConversionTarget),
+}
+
+/// The target image format to convert all images to.
+#[derive(clap::Subcommand, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ConversionTarget {
+    /// Convert to JPEG.
+    Jpeg,
+    /// Convert to PNG.
+    Png,
+    /// Convert to AVIF.
+    Avif,
+    /// Convert to JXL.
+    Jxl,
+    /// Convert to WebP.
+    Webp,
+}
+
+impl From<ConversionTarget> for ImageFormat {
+    fn from(value: ConversionTarget) -> Self {
+        use ImageFormat::*;
+        match value {
+            ConversionTarget::Jpeg => Jpeg,
+            ConversionTarget::Png => Png,
+            ConversionTarget::Avif => Avif,
+            ConversionTarget::Jxl => Jxl,
+            ConversionTarget::Webp => Webp,
+        }
+    }
 }
 
 /// Initialize the logger as requested.

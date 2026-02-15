@@ -58,29 +58,23 @@ fn find_error<T: Error + 'static>(exn: &Exn<impl Error + Send + Sync>) -> Option
 }
 
 /// Wrapper around the Exn error context to implement custom formatting.
-///
-/// Here we intentionally make the debug format printed with [`Display`] and the less detailed
-/// version part of [`Debug`], such that we can return this type from [`crate::main()`] and give
-/// the user just the information relevant to them.
 pub struct CompactReport<T>(pub Exn<T>)
 where
     T: Error + Send + Sync + 'static;
 
 impl<T: Error + Send + Sync + 'static> std::fmt::Display for CompactReport<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        const DEBUG: bool = true;
+        const DEBUG: bool = false;
         Self::format(f, self.0.frame(), "", DEBUG)
     }
 }
 
 impl<T: Error + Send + Sync + 'static> std::fmt::Debug for CompactReport<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        const DEBUG: bool = false;
+        const DEBUG: bool = true;
         Self::format(f, self.0.frame(), "", DEBUG)
     }
 }
-
-impl<T> std::error::Error for CompactReport<T> where T: Error + Send + Sync + 'static {}
 
 impl<T> CompactReport<T>
 where
