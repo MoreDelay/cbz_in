@@ -101,7 +101,7 @@ impl ManagedChild {
 impl Drop for ManagedChild {
     fn drop(&mut self) {
         if let Some(child) = self.child.as_mut() {
-            debug!("drop child process running: {}", self.cmd);
+            debug!("kill child process running: {}", self.cmd);
             // ignore errors
             if let Err(e) = child.kill() {
                 error!("error killing child process: {e}");

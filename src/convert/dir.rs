@@ -286,7 +286,7 @@ impl Drop for TempDirGuard {
         let Some(root) = self.temp_root.take() else {
             return;
         };
-        debug!("drop temporary directory {root:?}");
+        debug!("delete temporary directory {root:?}");
         if root.exists()
             && let Err(e) = fs::remove_dir_all(&root)
         {

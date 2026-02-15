@@ -1,13 +1,13 @@
 //! Contains jobs on collections of images, such as archives or directories
 
 use exn::{Exn, ResultExt as _};
-use tracing::debug;
 
 use crate::convert::archive::{ArchiveJob, ArchivePath};
 use crate::convert::dir::{Directory, RecursiveDirJob};
 use crate::convert::search::{ArchiveImages, DirImages};
 use crate::convert::{ConversionConfig, JobCollection};
-use crate::error::ErrorMessage;
+use crate::error::{CompactReport, ErrorMessage};
+use crate::verbose;
 
 /// Represents a collection of [`ArchiveJob`]'s, which are all performed in one operation.
 pub struct ArchiveJobs(Vec<ArchiveJob>);
@@ -49,7 +49,10 @@ impl ArchiveJobs {
                 let archive = match ArchivePath::new(path) {
                     Ok(archive) => archive,
                     Err(exn) => {
-                        debug!("skipping: {exn:?}");
+                        let (path, exn) = exn.recover();
+                        let path = path.display();
+                        let report = CompactReport::new(exn);
+                        verbose(config.verbose, format!("    Skipping \"{path}\": {report}"));
                         return Ok(None);
                     }
                 };
@@ -74,15 +77,23 @@ impl ArchiveJobs {
         archive: ArchivePath,
         config: ConversionConfig,
     ) -> Result<Option<ArchiveJob>, Exn<ErrorMessage>> {
+        let msg = format!("Checking archive \"{}\"", archive.display());
+        verbose(config.verbose, msg);
+
         let archive = ArchiveImages::new(archive)?;
-        let Some(archive) = archive else {
-            return Ok(None);
+        let archive = match archive {
+            Ok(archive) => archive,
+            Err(path) => {
+                let msg = format!("    No images found in \"{}\"", path.display());
+                verbose(config.verbose, msg);
+                return Ok(None);
+            }
         };
 
         match ArchiveJob::new(archive, config)? {
             Ok(job) => Ok(Some(job)),
             Err(nothing_to_do) => {
-                debug!("{nothing_to_do}");
+                verbose(config.verbose, format!("    {nothing_to_do}"));
                 Ok(None)
             }
         }
@@ -123,7 +134,7 @@ impl RecursiveDirJobs {
         match RecursiveDirJob::new(dir, config)? {
             Ok(job) => Ok(Some(Self(vec![job]))),
             Err(nothing_to_do) => {
-                debug!("{nothing_to_do}");
+                verbose(config.verbose, format!("    {nothing_to_do}"));
                 Ok(None)
             }
         }

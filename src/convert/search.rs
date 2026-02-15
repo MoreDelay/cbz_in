@@ -25,13 +25,11 @@ pub struct ArchiveImages {
 
 impl ArchiveImages {
     /// Find all images in an archive.
-    pub fn new(archive: ArchivePath) -> Result<Option<Self>, Exn<ErrorMessage>> {
+    pub fn new(archive: ArchivePath) -> Result<Result<Self, ArchivePath>, Exn<ErrorMessage>> {
         let err = || {
             let archive = archive.display();
             ErrorMessage::new(format!("Could not list files within archive \"{archive}\""))
         };
-
-        debug!("Checking \"{}\"", archive.display());
 
         let images = spawn::list_archive_files(&archive)
             .and_then(ManagedChild::wait_with_output)
@@ -50,9 +48,9 @@ impl ArchiveImages {
             .or_raise(err)?;
 
         if images.is_empty() {
-            return Ok(None);
+            return Ok(Err(archive));
         }
-        Ok(Some(Self { archive, images }))
+        Ok(Ok(Self { archive, images }))
     }
 
     /// Filter out all images that do not have the target image format
