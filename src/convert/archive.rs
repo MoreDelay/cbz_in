@@ -137,7 +137,7 @@ impl ArchiveJob {
     /// Builds the path to the temporary directory where the archive gets extracted to.
     fn get_conversion_root_dir(archive: &ArchivePath) -> PathBuf {
         let dir = archive.parent();
-        let name = archive.name();
+        let name = archive.file_stem();
         dir.join(name)
     }
 
@@ -159,10 +159,10 @@ impl ArchiveJob {
         let conversion_ending = format!(".{}.cbz", target.ext());
 
         let dir = path.parent();
-        let name = path.name().to_str().expect("files should be unicode");
+        let name = path.file_stem();
         let zip_path = dir.join(format!("{name}{conversion_ending}"));
 
-        let is_converted_archive = path.ends_with(&conversion_ending);
+        let is_converted_archive = path.file_name().ends_with(&conversion_ending);
         let has_converted_archive = zip_path.try_exists().or_raise(err)?;
 
         Ok(is_converted_archive || has_converted_archive)
@@ -181,7 +181,7 @@ impl ArchiveJob {
             ErrorMessage::new(msg)
         };
 
-        let name = archive.name();
+        let name = archive.file_stem();
         let root_dirs = spawn::list_archive_files(archive)
             .and_then(ManagedChild::wait_with_output)
             .or_raise(err)?
@@ -375,10 +375,21 @@ impl ArchivePath {
     }
 
     /// Get the file name for this archive.
-    pub fn name(&self) -> &OsStr {
+    pub fn file_stem(&self) -> &str {
         self.archive
             .file_stem()
             .expect("archive has name by construction")
+            .to_str()
+            .expect("files should be unicode")
+    }
+
+    /// Get the full file name including extension for this archive.
+    pub fn file_name(&self) -> &str {
+        self.archive
+            .file_name()
+            .expect("archive has name by construction")
+            .to_str()
+            .expect("files should be unicode")
     }
 }
 

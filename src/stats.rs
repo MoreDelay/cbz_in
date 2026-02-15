@@ -4,14 +4,14 @@ use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 
 use exn::{Exn, ResultExt as _};
-use tracing::{debug, info};
+use tracing::info;
 
 use crate::convert::archive::ArchivePath;
 use crate::convert::dir::Directory;
 use crate::convert::image::ImageFormat;
 use crate::convert::search::{ArchiveImages, DirImages, ImageInfo};
-use crate::error::ErrorMessage;
-use crate::stdout;
+use crate::error::{CompactReport, ErrorMessage};
+use crate::{stdout, verbose};
 
 /// Our job is to print statistics about the images we find.
 pub struct StatsJob {
@@ -184,11 +184,20 @@ impl PerArchiveImages {
     ) -> Result<Option<ArchiveImages>, Exn<ErrorMessage>> {
         let err = || ErrorMessage::new("Failed to search images in a single archive");
 
-        info!("Checking archive \"{}\"", archive.display());
-        let images = ArchiveImages::new(archive).or_raise(err)?;
+        let msg = format!("Checking archive \"{}\"", archive.display());
+        verbose(config.verbose, msg);
+
+        let images = match ArchiveImages::new(archive).or_raise(err)? {
+            Ok(images) => images,
+            Err(path) => {
+                let msg = format!("    No images in \"{}\"", path.display());
+                verbose(config.verbose, msg);
+                return Ok(None);
+            }
+        };
         match config.filter {
-            Some(target) => Ok(images.and_then(|images| images.filter(target))),
-            None => Ok(images),
+            Some(target) => Ok(images.filter(target)),
+            None => Ok(Some(images)),
         }
     }
 
@@ -207,7 +216,10 @@ impl PerArchiveImages {
                 let archive = match ArchivePath::new(path) {
                     Ok(archive) => archive,
                     Err(exn) => {
-                        debug!("skipping: {exn:?}");
+                        let (path, exn) = exn.recover();
+                        let path = path.display();
+                        let report = CompactReport::new(exn);
+                        verbose(config.verbose, format!("Skipping \"{path}\": {report}"));
                         return Ok(None);
                     }
                 };

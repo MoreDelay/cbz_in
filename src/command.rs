@@ -119,6 +119,7 @@ impl MainJobConfig {
                 target: target.into(),
                 n_workers,
                 forced: args.force,
+                verbose: args.verbose,
             }),
         }
     }

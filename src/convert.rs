@@ -30,6 +30,8 @@ pub struct ConversionConfig {
     pub n_workers: NonZeroUsize,
     /// Force conversion of all image files, or just conversion of Jpeg and Png.
     pub forced: bool,
+    /// Print out more detailed information.
+    pub verbose: bool,
 }
 
 /// A trait for jobs that can be run.
@@ -268,7 +270,6 @@ impl ConvertJob {
     ) -> Result<Option<ArchiveJobs>, Exn<ErrorMessage>> {
         let err = || ErrorMessage::new("Failed to create conversion job on a single archive");
 
-        info!("Checking archive \"{}\"", archive.display());
         ArchiveJobs::single(archive, config).or_raise(err)
     }
 

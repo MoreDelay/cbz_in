@@ -234,6 +234,15 @@ fn init_logger(path: &Path, level: tracing::Level) -> Result<(), Exn<ErrorMessag
     Ok(())
 }
 
+/// Conditionally print a message to stdout (and logs)
+fn verbose(show_on_terminal: bool, msg: impl AsRef<str>) {
+    let msg = msg.as_ref();
+    if show_on_terminal {
+        println!("{msg}");
+    }
+    info!("{msg}");
+}
+
 /// Print a message to stdout (and logs)
 fn stdout(msg: impl AsRef<str>) {
     let msg = msg.as_ref();
