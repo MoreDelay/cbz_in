@@ -116,7 +116,7 @@ impl MainJobConfig {
                 verbose: args.verbose,
             }),
             crate::Command::Convert(target) => Self::Convert(ConversionConfig {
-                target,
+                target: target.into(),
                 n_workers,
                 forced: args.force,
             }),
