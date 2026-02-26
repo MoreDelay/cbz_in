@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use exn::{Exn, ResultExt as _, bail};
 use indicatif::{MultiProgress, ProgressBar};
+use itertools::Itertools as _;
 use tracing::{info, warn};
 
 use crate::convert::archive::ArchivePath;
@@ -112,7 +113,7 @@ impl ConvertJob {
         paths: VecDeque<PathBuf>,
         config: ConversionConfig,
     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
-        let collect_single = |path| {
+        let collect_single = |path: PathBuf| {
             let (path, dir_exn) = match Directory::new(path)? {
                 Ok(root) => return Self::for_archives_in_dir(&root, config),
                 Err(exn) => exn.recover(),
@@ -132,14 +133,15 @@ impl ConvertJob {
 
         stdout("Looking for images to convert in archives...");
 
-        let jobs = paths
-            .into_iter()
-            .map(collect_single)
-            .collect::<Result<Vec<_>, Exn<_>>>()
-            .or_raise(err)?
-            .into_iter()
-            .flatten()
-            .flatten();
+        let (jobs, errs): (Vec<_>, Vec<_>) =
+            paths.into_iter().map(collect_single).partition_result();
+
+        if !errs.is_empty() {
+            let exn = Exn::raise_all(err(), errs);
+            return Err(exn);
+        }
+
+        let jobs = jobs.into_iter().flatten().flatten();
         let jobs = ArchiveJobs::aggregate(jobs).map(Self::Archives);
         Ok(jobs)
     }
@@ -158,14 +160,15 @@ impl ConvertJob {
 
         stdout("Looking for images to convert in directories...");
 
-        let jobs = paths
-            .into_iter()
-            .map(collect_single)
-            .collect::<Result<Vec<_>, Exn<_>>>()
-            .or_raise(err)?
-            .into_iter()
-            .flatten()
-            .flatten();
+        let (jobs, errs): (Vec<_>, Vec<_>) =
+            paths.into_iter().map(collect_single).partition_result();
+
+        if !errs.is_empty() {
+            let exn = Exn::raise_all(err(), errs);
+            return Err(exn);
+        }
+
+        let jobs = jobs.into_iter().flatten().flatten();
         let jobs = RecursiveDirJobs::aggregate(jobs).map(Self::Directories);
         Ok(jobs)
     }
@@ -278,11 +281,8 @@ impl ConvertJob {
         root: &Directory,
         config: ConversionConfig,
     ) -> Result<Option<ArchiveJobs>, Exn<ErrorMessage>> {
-        let err =
-            || ErrorMessage::new("Failed to create conversion job for all archives in a directory");
-
         info!("Checking archives directory \"{}\"", root.display());
-        ArchiveJobs::collect(root, config).or_raise(err)
+        ArchiveJobs::collect(root, config)
     }
 
     /// Create a [`RecursiveDirJobs`] for a directory.

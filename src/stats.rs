@@ -27,7 +27,7 @@ impl StatsJob {
         paths: VecDeque<PathBuf>,
         config: StatsConfig,
     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
-        let err = || ErrorMessage::new("Failed to collect all archives");
+        let err = || ErrorMessage::new("Failed to collect statistics on all archives");
 
         stdout("Counting images in archives...");
 
@@ -102,7 +102,7 @@ impl Images {
         paths: VecDeque<PathBuf>,
         config: &StatsConfig,
     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
-        let err = || ErrorMessage::new("Failed to collect all archives");
+        let err = || ErrorMessage::new("Failed to collect images within archives");
 
         let images = PerArchiveImages::collect(paths, config)
             .or_raise(err)?
@@ -115,7 +115,7 @@ impl Images {
         paths: VecDeque<PathBuf>,
         config: &StatsConfig,
     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
-        let err = || ErrorMessage::new("Failed to collect all directories");
+        let err = || ErrorMessage::new("Failed to collect images within directories");
 
         let images = PerDirImages::collect(paths, config)
             .or_raise(err)?
@@ -154,7 +154,7 @@ impl PerArchiveImages {
             Err(exn)
         };
 
-        let err = || ErrorMessage::new("Failed to collect all archives");
+        let err = || ErrorMessage::new("Failed to collect images within all archives");
 
         let images = paths
             .into_iter()

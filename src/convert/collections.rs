@@ -1,6 +1,7 @@
 //! Contains jobs on collections of images, such as archives or directories
 
 use exn::{Exn, ResultExt as _};
+use itertools::Itertools as _;
 
 use crate::convert::archive::{ArchiveJob, ArchivePath};
 use crate::convert::dir::{Directory, RecursiveDirJob};
@@ -41,7 +42,7 @@ impl ArchiveJobs {
             ))
         };
 
-        let jobs = root
+        let (jobs, errs): (Vec<_>, Vec<_>) = root
             .read_dir()
             .or_raise(err)?
             .map(|dir_entry| {
@@ -59,7 +60,13 @@ impl ArchiveJobs {
                 Self::single_internal(archive, config)
             })
             .filter_map(Result::transpose)
-            .collect::<Result<Vec<_>, _>>()?;
+            .partition_result();
+
+        if !errs.is_empty() {
+            let exn = Exn::raise_all(err(), errs);
+            return Err(exn);
+        }
+
         Ok(Self::aggregate(jobs))
     }
 
