@@ -1,6 +1,5 @@
 //! Contains everything related to handling directories.
 
-use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -10,8 +9,8 @@ use tracing::{debug, error};
 use walkdir::WalkDir;
 
 use crate::convert::ConversionConfig;
-use crate::convert::image::{ConversionJob, ConversionJobs, ImageFormat, Plan};
-use crate::convert::search::{DirImages, ImageInfo};
+use crate::convert::image::{ConversionJob, ConversionJobs, ImageFormat};
+use crate::convert::search::DirImages;
 use crate::error::{ErrorMessage, NothingToDo};
 
 /// Represents the job to convert all images within a directory.
@@ -69,16 +68,14 @@ impl RecursiveDirJob {
         config: ConversionConfig,
     ) -> Result<Result<Self, Exn<NothingToDo>>, Exn<ErrorMessage>> {
         let DirImages { root, images } = dir;
-        let err = || {
+        let ctx_str = || {
             let root = root.display();
-            ErrorMessage::new(format!(
-                "Failed to prepare job for recursive image conversion starting at \"{root}\""
-            ))
+            format!("Failed to prepare job for recursive image conversion starting at \"{root}\"")
         };
+        let err = || ErrorMessage::new(ctx_str());
+        let soft_err = || NothingToDo::new(ctx_str());
 
-        let ConversionConfig {
-            target, n_workers, ..
-        } = config;
+        let ConversionConfig { target, .. } = config;
 
         if Self::already_converted(&root, target).or_raise(err)? {
             let root = root.display();
@@ -88,34 +85,16 @@ impl RecursiveDirJob {
         }
 
         let copy_root = Self::get_hardlink_dir(&root, config.target).or_raise(err)?;
-        let job_queue = images
-            .into_iter()
-            .filter_map(|ImageInfo { path, format }| {
-                let copy_path = copy_root.join(path);
-                if let Some(task) = Plan::new(format, config) {
-                    let path = copy_path.display();
-                    debug!("create job for \"{path}\": {task:?}");
-                    Some(ConversionJob::new(copy_path, task))
-                } else {
-                    debug!("skip conversion for {copy_path:?}");
-                    None
-                }
-            })
-            .collect::<VecDeque<_>>();
-
-        if job_queue.is_empty() {
-            let root = root.display();
-            let msg = format!("No files to convert in \"{root}\"");
-            let exn = Exn::new(NothingToDo::new(msg));
-            return Ok(Err(exn));
-        }
 
         let hardlink = RecursiveHardLinkJob {
             root: root.clone(),
             target,
         };
-        let conversion = ConversionJobs::new(job_queue, n_workers);
-        Ok(Ok(Self {
+        let conversion = ConversionJobs::new(images, &copy_root, config)
+            .or_raise(err)?
+            .or_raise(soft_err);
+
+        Ok(conversion.map(|conversion| Self {
             root,
             hardlink,
             conversion,

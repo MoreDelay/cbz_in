@@ -1,6 +1,5 @@
 //! Contains everything related to handling zip archives.
 
-use std::collections::VecDeque;
 use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{BufRead as _, Write as _};
@@ -8,15 +7,14 @@ use std::path::{Path, PathBuf};
 
 use exn::{ErrorExt as _, Exn, ResultExt as _, bail};
 use indicatif::ProgressBar;
-use tracing::debug;
 use walkdir::WalkDir;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
 use crate::convert::ConversionConfig;
 use crate::convert::dir::TempDirGuard;
-use crate::convert::image::{ConversionJob, ConversionJobs, ImageFormat, Plan};
-use crate::convert::search::{ArchiveImages, ImageInfo};
+use crate::convert::image::{ConversionJob, ConversionJobs, ImageFormat};
+use crate::convert::search::ArchiveImages;
 use crate::error::{ErrorMessage, NothingToDo};
 use crate::spawn::{self, ManagedChild};
 
@@ -77,16 +75,14 @@ impl ArchiveJob {
     ) -> Result<Result<Self, Exn<NothingToDo>>, Exn<ErrorMessage>> {
         let ArchiveImages { archive, images } = archive;
 
-        let err = || {
+        let ctx_str = || {
             let archive = archive.display();
-            ErrorMessage::new(format!(
-                "Failed to prepare job for archive conversion \"{archive}\""
-            ))
+            format!("Failed to prepare job for archive conversion \"{archive}\"")
         };
+        let err = || ErrorMessage::new(ctx_str());
+        let soft_err = || NothingToDo::new(ctx_str());
 
-        let ConversionConfig {
-            target, n_workers, ..
-        } = config;
+        let ConversionConfig { target, .. } = config;
 
         if Self::already_converted(&archive, target).or_raise(err)? {
             let archive = archive.display();
@@ -96,37 +92,20 @@ impl ArchiveJob {
         }
 
         let root_dir = Self::get_extraction_root_dir(&archive).or_raise(err)?;
-        let job_queue = images
-            .into_iter()
-            .filter_map(|ImageInfo { path, format }| {
-                let image_path = root_dir.join(path);
-                if let Some(task) = Plan::new(format, config) {
-                    debug!("create job for {image_path:?}: {task:?}");
-                    Some(ConversionJob::new(image_path, task))
-                } else {
-                    debug!("skip conversion for {image_path:?}");
-                    None
-                }
-            })
-            .collect::<VecDeque<_>>();
-
-        if job_queue.is_empty() {
-            let archive = archive.display();
-            let msg = format!("No files to convert in \"{archive}\"");
-            let exn = Exn::new(NothingToDo::new(msg));
-            return Ok(Err(exn));
-        }
 
         let extraction = ExtractionJob {
             archive: archive.clone(),
         };
-        let conversion = ConversionJobs::new(job_queue, n_workers);
+        let conversion = ConversionJobs::new(images, &root_dir, config)
+            .or_raise(err)?
+            .or_raise(soft_err);
+
         let compression = CompressionJob {
             root: Self::get_conversion_root_dir(&archive),
             target,
             extension: archive.extension,
         };
-        Ok(Ok(Self {
+        Ok(conversion.map(|conversion| Self {
             archive,
             extraction,
             conversion,
