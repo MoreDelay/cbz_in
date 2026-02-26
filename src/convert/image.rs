@@ -1,6 +1,6 @@
 //! Contains everything related to dealing with individual images.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io::BufRead as _;
 use std::num::NonZeroUsize;
@@ -8,12 +8,14 @@ use std::path::{Path, PathBuf};
 
 use exn::{ErrorExt as _, Exn, ResultExt as _};
 use indicatif::ProgressBar;
+use itertools::Itertools as _;
 use signal_hook::consts::{SIGCHLD, SIGINT};
 use signal_hook::iterator::Signals;
 use tracing::debug;
 
 use crate::convert::ConversionConfig;
-use crate::error::{ErrorMessage, Interrupted};
+use crate::convert::search::ImageInfo;
+use crate::error::{ErrorMessage, Interrupted, NothingToDo};
 use crate::spawn::{self, ManagedChild, Tool};
 
 /// Represents the task to convert an image from one type to another.
@@ -564,11 +566,52 @@ pub struct ConversionJobs {
 
 impl ConversionJobs {
     /// Initialize a new collection with the given jobs.
-    pub const fn new(job_queue: VecDeque<ConversionJob>, n_workers: NonZeroUsize) -> Self {
-        Self {
-            job_queue,
-            n_workers,
+    pub fn new(
+        images: Vec<ImageInfo>,
+        root_dir: &Path,
+        config: ConversionConfig,
+    ) -> Result<Result<Self, Exn<NothingToDo>>, Exn<ErrorMessage>> {
+        let job_queue = images
+            .into_iter()
+            .filter_map(|ImageInfo { path, format }| {
+                let image_path = root_dir.join(path);
+                if let Some(task) = Plan::new(format, config) {
+                    debug!("create job for {image_path:?}: {task:?}");
+                    Some(ConversionJob::new(image_path, task))
+                } else {
+                    debug!("skip conversion for {image_path:?}");
+                    None
+                }
+            })
+            .collect::<VecDeque<_>>();
+
+        if job_queue.is_empty() {
+            let msg = "No files to convert";
+            let exn = Exn::new(NothingToDo::new(msg));
+            return Ok(Err(exn));
         }
+        let name_occurrences = job_queue
+            .iter()
+            .map(|j| j.image_path.with_extension(""))
+            .fold(HashMap::new(), |mut map, name| {
+                map.entry(name).and_modify(|v| *v += 1).or_insert(1_usize);
+                map
+            });
+
+        if name_occurrences.len() != job_queue.len() {
+            let collisions = name_occurrences
+                .iter()
+                .filter_map(|(path, count)| (*count > 1).then_some(path.to_str()?))
+                .join(", ");
+            let msg = format!("Conversion would create name collisions at: {collisions}");
+            let exn = Exn::new(ErrorMessage::new(msg));
+            return Err(exn);
+        }
+
+        Ok(Ok(Self {
+            job_queue,
+            n_workers: config.n_workers,
+        }))
     }
 
     /// Create an iterator over all image conversion jobs.
