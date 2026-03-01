@@ -58,7 +58,7 @@ impl super::Job for ArchiveJob {
 
         let err = || {
             let archive = archive.display();
-            ErrorMessage::new(format!("Failed to convert images in archive \"{archive}\""))
+            ErrorMessage::new(format!("Converting images in archive \"{archive}\""))
         };
 
         let _guard = extraction.run().or_raise(err)?;
@@ -81,7 +81,7 @@ impl ArchiveJob {
 
         let ctx_str = || {
             let archive = archive.display();
-            format!("Failed to prepare job for archive conversion \"{archive}\"")
+            format!("Preparing job for archive conversion \"{archive}\"")
         };
         let err = || ErrorMessage::new(ctx_str());
         let soft_err = || NothingToDo::new(ctx_str());
@@ -135,7 +135,7 @@ impl ArchiveJob {
         let err = || {
             let path = path.display();
             ErrorMessage::new(format!(
-                "Could not check if archive has been converted before: \"{path}\""
+                "Checking if archive has been converted before: \"{path}\""
             ))
         };
 
@@ -160,7 +160,7 @@ impl ArchiveJob {
     fn get_extraction_root_dir(archive: &ArchivePath) -> Result<PathBuf, Exn<ErrorMessage>> {
         let err = || {
             let archive = archive.display();
-            let msg = format!("Could not determine the extraction dir for \"{archive}\"");
+            let msg = format!("Determining extraction dir for \"{archive}\"");
             ErrorMessage::new(msg)
         };
 
@@ -198,7 +198,7 @@ impl ExtractionJob {
     fn run(self) -> Result<TempDirGuard, Exn<ErrorMessage>> {
         let err = || {
             let path = self.archive.display();
-            ErrorMessage::new(format!("Failed to extract the archive \"{path}\""))
+            ErrorMessage::new(format!("Extracting the archive \"{path}\""))
         };
 
         if !self.archive.is_file() {
@@ -246,7 +246,7 @@ impl CompressionJob {
     fn run(self) -> Result<(), Exn<ErrorMessage>> {
         let err = || {
             let root = self.root.display();
-            ErrorMessage::new(format!("Failed to compress the directory \"{root}\""))
+            ErrorMessage::new(format!("Compressing directory \"{root}\""))
         };
 
         let zip_path = self.get_zip_path();
@@ -414,7 +414,7 @@ impl std::str::FromStr for ZipExtension {
         match s.to_lowercase().as_str() {
             "zip" => Ok(Zip),
             "cbz" => Ok(Cbz),
-            _ => Err(ErrorMessage::new("unsupported archive format")),
+            _ => Err(ErrorMessage::new("Unsupported archive format")),
         }
     }
 }

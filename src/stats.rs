@@ -27,7 +27,7 @@ impl StatsJob {
         paths: VecDeque<PathBuf>,
         config: StatsConfig,
     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
-        let err = || ErrorMessage::new("Failed to collect statistics on all archives");
+        let err = || ErrorMessage::new("Collecting statistics on archives");
 
         stdout("Counting images in archives...");
 
@@ -42,7 +42,7 @@ impl StatsJob {
         paths: VecDeque<PathBuf>,
         config: StatsConfig,
     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
-        let err = || ErrorMessage::new("Failed to collect all directories");
+        let err = || ErrorMessage::new("Collecting statistics on directories");
 
         stdout("Counting images in directories...");
 
@@ -102,7 +102,7 @@ impl Images {
         paths: VecDeque<PathBuf>,
         config: &StatsConfig,
     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
-        let err = || ErrorMessage::new("Failed to collect images within archives");
+        let err = || ErrorMessage::new("Collecting images within archives");
 
         let images = PerArchiveImages::collect(paths, config)
             .or_raise(err)?
@@ -115,7 +115,7 @@ impl Images {
         paths: VecDeque<PathBuf>,
         config: &StatsConfig,
     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
-        let err = || ErrorMessage::new("Failed to collect images within directories");
+        let err = || ErrorMessage::new("Collecting images within directories");
 
         let images = PerDirImages::collect(paths, config)
             .or_raise(err)?
@@ -154,7 +154,7 @@ impl PerArchiveImages {
             Err(exn)
         };
 
-        let err = || ErrorMessage::new("Failed to collect images within all archives");
+        let err = || ErrorMessage::new("Collecting images within all archives");
 
         let images = paths
             .into_iter()
@@ -182,7 +182,7 @@ impl PerArchiveImages {
         archive: ArchivePath,
         config: &StatsConfig,
     ) -> Result<Option<ArchiveImages>, Exn<ErrorMessage>> {
-        let err = || ErrorMessage::new("Failed to search images in a single archive");
+        let err = || ErrorMessage::new("Searching images in a single archive");
 
         let msg = format!("Checking archive \"{}\"", archive.display());
         verbose(config.verbose, msg);
@@ -206,7 +206,7 @@ impl PerArchiveImages {
         root: &Directory,
         config: &StatsConfig,
     ) -> Result<Vec<ArchiveImages>, Exn<ErrorMessage>> {
-        let err = || ErrorMessage::new("Failed to search images in all archives in a directory");
+        let err = || ErrorMessage::new("Searching images in all archives in a directory");
 
         info!("Checking archives directory \"{}\"", root.display());
         root.read_dir()
@@ -259,7 +259,7 @@ impl PerDirImages {
         paths: VecDeque<PathBuf>,
         config: &StatsConfig,
     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
-        let err = || ErrorMessage::new("Failed to collect all directories");
+        let err = || ErrorMessage::new("Collect directories");
 
         let collect_single = |path| {
             let root = Directory::new(path)?.map_err(Exn::discard_recovery)?;

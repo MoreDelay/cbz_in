@@ -99,7 +99,7 @@ pub trait JobCollection: IntoIterator<Item = Self::Single> + Sized {
         bars.jobs.inc(1);
         match &run_res {
             Ok(()) => info!("Done"),
-            Err(err) => bars.println(format!("ERROR: {err}")),
+            Err(_) => bars.println("ERROR during last conversion"),
         }
         run_res
     }
@@ -135,7 +135,7 @@ impl ConvertJob {
             Err(exn)
         };
 
-        let err = || ErrorMessage::new("Failed to collect all archives");
+        let err = || ErrorMessage::new("Building up archive conversion jobs");
 
         stdout("Looking for images to convert in archives...");
 
@@ -157,7 +157,7 @@ impl ConvertJob {
         paths: VecDeque<PathBuf>,
         config: ConversionConfig,
     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
-        let err = || ErrorMessage::new("Failed to collect all directories");
+        let err = || ErrorMessage::new("Building up directory conversion jobs");
 
         let collect_single = |path| {
             let root = Directory::new(path)?.map_err(Exn::discard_recovery)?;
@@ -181,7 +181,7 @@ impl ConvertJob {
 
     /// Run this job.
     pub fn run(self, dry_run: bool) -> Result<(), Exn<ErrorMessage>> {
-        let err = || ErrorMessage::new("failed to run conversion job");
+        let err = || ErrorMessage::new("Running conversion job");
 
         self.dry_run().or_raise(err)?;
         if dry_run {
@@ -205,7 +205,7 @@ impl ConvertJob {
 
     /// Check if we can run this job, and print out statistics.
     fn dry_run(&self) -> Result<(), Exn<ErrorMessage>> {
-        let err = || ErrorMessage::new("Issue encountered during dry run");
+        let err = || ErrorMessage::new("Doing dry run");
 
         self.check_tools().or_raise(err)?;
         self.print_statistics();
@@ -277,7 +277,7 @@ impl ConvertJob {
         archive: ArchivePath,
         config: ConversionConfig,
     ) -> Result<Option<ArchiveJobs>, Exn<ErrorMessage>> {
-        let err = || ErrorMessage::new("Failed to create conversion job on a single archive");
+        let err = || ErrorMessage::new("Creating conversion job on a single archive");
 
         ArchiveJobs::single(archive, config).or_raise(err)
     }
@@ -296,7 +296,7 @@ impl ConvertJob {
         root: Directory,
         config: ConversionConfig,
     ) -> Result<Option<RecursiveDirJobs>, Exn<ErrorMessage>> {
-        let err = || ErrorMessage::new("Failed to create conversion job for a directory");
+        let err = || ErrorMessage::new("Creating conversion job for a directory");
 
         info!("Checking root directory recursively \"{}\"", root.display());
         RecursiveDirJobs::single(root, config).or_raise(err)

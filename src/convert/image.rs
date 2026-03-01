@@ -149,7 +149,7 @@ impl StateWaiting {
         } = self;
         let err = || {
             let path = image_path.display();
-            ErrorMessage::new(format!("Failed image conversion for \"{path}\""))
+            ErrorMessage::new(format!("Converting image \"{path}\""))
         };
 
         debug!("start conversion for {image_path:?}: {sequence:?}");
@@ -176,7 +176,7 @@ impl StateWaiting {
                 Ok(child) => child,
                 Err(exn) => {
                     let last_exn = tool_use
-                        .get_exn()
+                        .into_last_error()
                         .expect("checked by match that we can get exn");
                     let exn = Exn::raise_all(err(), [last_exn, exn]);
                     return Err(exn);
@@ -212,7 +212,7 @@ impl StateRunning {
         let err = || {
             let path = self.image_path.display();
             ErrorMessage::new(format!(
-                "Could not check if a process finished working on \"{path}\"",
+                "Checking if a process finished working on \"{path}\"",
             ))
         };
         self.child.try_wait().or_raise(err)
@@ -254,7 +254,7 @@ impl StateCompleted {
 
         let err = || {
             let path = image_path.display();
-            ErrorMessage::new(format!("Could not complete a conversion for \"{path}\""))
+            ErrorMessage::new(format!("Completing conversion for \"{path}\""))
         };
 
         fs::remove_file(&image_path).or_raise(err).map_err(Err)?;
@@ -285,11 +285,11 @@ impl StateCompleted {
     ) -> Result<StateWaiting, Exn<ErrorMessage>> {
         let exn = match tool_use {
             ToolUse::Best => {
-                let msg = ErrorMessage::new("Failed to convert with intended tool");
+                let msg = ErrorMessage::new("Converting with intended tool");
                 exn.raise(msg)
             }
             ToolUse::Backup { last_error } => {
-                let msg = ErrorMessage::new("Failed to convert with backup tool");
+                let msg = ErrorMessage::new("Converting with backup tool");
                 let exn = exn.raise(msg);
 
                 let msg = format!("Give up trying to convert \"{}\"", image_path.display());
@@ -475,7 +475,7 @@ impl Sequence {
     fn resolve(details: Plan, image_path: &Path) -> Result<Self, Exn<ErrorMessage>> {
         let err = || {
             let path = image_path.display();
-            ErrorMessage::new(format!("Could not resolve how to convert \"{path}\""))
+            ErrorMessage::new(format!("Resolving how to convert \"{path}\""))
         };
 
         match details {
@@ -510,7 +510,7 @@ impl Sequence {
     fn jxl_is_compressed_jpeg(image_path: &Path) -> Result<bool, Exn<ErrorMessage>> {
         let err = || {
             let image_path = image_path.display();
-            ErrorMessage::new(format!("Could not query jxl file \"{image_path}\""))
+            ErrorMessage::new(format!("Querying metadata of jxl file \"{image_path}\""))
         };
 
         let has_box: Result<_, std::io::Error> = spawn::run_jxlinfo(image_path)
@@ -544,7 +544,7 @@ enum ToolUse {
 
 impl ToolUse {
     /// Extract the error context from the previous failure.
-    fn get_exn(self) -> Option<Exn<ErrorMessage>> {
+    fn into_last_error(self) -> Option<Exn<ErrorMessage>> {
         match self {
             Self::Best => None,
             Self::Backup { last_error } => Some(last_error),
@@ -656,7 +656,7 @@ impl RunConversionJobs {
 
     /// Run this job.
     fn run(mut self, bar: &ProgressBar) -> Result<(), Exn<ErrorMessage>> {
-        let err = || ErrorMessage::new("Could not complete conversion jobs");
+        let err = || ErrorMessage::new("Running conversion jobs");
 
         assert!(!self.job_queue.is_empty(), "queue filled by construction");
 

@@ -28,7 +28,7 @@ impl ArchiveImages {
     pub fn new(archive: ArchivePath) -> Result<Result<Self, ArchivePath>, Exn<ErrorMessage>> {
         let err = || {
             let archive = archive.display();
-            ErrorMessage::new(format!("Could not list files within archive \"{archive}\""))
+            ErrorMessage::new(format!("Listing files within archive \"{archive}\""))
         };
 
         let images = spawn::list_archive_files(&archive)
@@ -96,7 +96,7 @@ impl DirImages {
     pub fn search_recursive(root: Directory) -> Result<Option<Self>, Exn<ErrorMessage>> {
         let err = || {
             let root = root.display();
-            ErrorMessage::new(format!("Could not list files within directory \"{root}\""))
+            ErrorMessage::new(format!("Listing files within directory \"{root}\""))
         };
 
         debug!("Checking \"{}\"", root.display());
