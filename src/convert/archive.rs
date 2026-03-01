@@ -43,6 +43,10 @@ impl super::Job for ArchiveJob {
         self.conversion.iter()
     }
 
+    fn count(&self) -> usize {
+        self.conversion.len()
+    }
+
     /// Run this job.
     fn run(self, bar: &ProgressBar) -> Result<(), Exn<ErrorMessage>> {
         let Self {

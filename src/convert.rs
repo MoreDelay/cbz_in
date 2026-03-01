@@ -43,6 +43,9 @@ pub trait Job {
     /// Get an iterator over all image conversion jobs for inspection.
     fn iter(&self) -> impl Iterator<Item = &ConversionJob>;
 
+    /// Get the number of increment steps required for the progress bar.
+    fn count(&self) -> usize;
+
     /// Run this job.
     fn run(self, bar: &ProgressBar) -> Result<(), Exn<ErrorMessage>>;
 }
@@ -89,6 +92,8 @@ pub trait JobCollection: IntoIterator<Item = Self::Single> + Sized {
         info!("Converting \"{path}\"");
         bars.println(format!("Converting \"{path}\""));
 
+        bars.images.reset();
+        bars.images.set_length(job.count() as u64);
         let run_res = job.run(&bars.images);
         bars.jobs.inc(1);
         match &run_res {

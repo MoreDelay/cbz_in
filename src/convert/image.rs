@@ -619,6 +619,11 @@ impl ConversionJobs {
         self.job_queue.iter()
     }
 
+    /// The number of jobs stored.
+    pub fn len(&self) -> usize {
+        self.job_queue.len()
+    }
+
     /// Run this job.
     pub fn run(self, bar: &ProgressBar) -> Result<(), Exn<ErrorMessage>> {
         RunConversionJobs::new(self).run(bar)
@@ -654,9 +659,6 @@ impl RunConversionJobs {
         let err = || ErrorMessage::new("Could not complete conversion jobs");
 
         assert!(!self.job_queue.is_empty(), "queue filled by construction");
-
-        bar.reset();
-        bar.set_length(self.job_queue.len() as u64);
 
         // these signals will be catched from here on out until dropped
         let mut signals = Signals::new([SIGINT, SIGCHLD]).or_raise(err)?;

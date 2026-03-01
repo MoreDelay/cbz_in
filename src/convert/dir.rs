@@ -36,7 +36,10 @@ impl super::Job for RecursiveDirJob {
         self.conversion.iter()
     }
 
-    /// Run this job.
+    fn count(&self) -> usize {
+        self.conversion.len()
+    }
+
     fn run(self, bar: &ProgressBar) -> Result<(), Exn<ErrorMessage>> {
         let Self {
             root,
