@@ -39,7 +39,7 @@ fn main() {
 
 /// The application's entry point.
 fn real_main() -> Result<(), Exn<ErrorMessage>> {
-    let err = || ErrorMessage::new("Error during program execution");
+    let err = || ErrorMessage::new("Executing program");
 
     let args = Args::parse();
 
@@ -180,7 +180,7 @@ impl From<ConversionTarget> for ImageFormat {
 fn init_logger(path: &Path, level: tracing::Level) -> Result<(), Exn<ErrorMessage>> {
     let err = || {
         let path = path.display();
-        ErrorMessage::new(format!("Failed to initialize logging to file \"{path}\""))
+        ErrorMessage::new(format!("Initializing logging to file \"{path}\""))
     };
 
     let path = match path.is_absolute() {

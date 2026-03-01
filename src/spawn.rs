@@ -22,7 +22,7 @@ impl ManagedChild {
     pub fn spawn(mut cmd: Command) -> Result<Self, Exn<ErrorMessage>> {
         let cmd_str = format!("{cmd:?}");
 
-        let err = || ErrorMessage::new(format!("Failed to spawn the process: {cmd_str}"));
+        let err = || ErrorMessage::new(format!("Spawning process: {cmd_str}"));
 
         debug!("spawn process: {cmd_str}");
 
@@ -37,7 +37,7 @@ impl ManagedChild {
     pub fn try_wait(&mut self) -> Result<bool, Exn<ErrorMessage>> {
         let err = || {
             let cmd = &self.cmd;
-            ErrorMessage::new(format!("Error when waiting on a child process: '{cmd}'",))
+            ErrorMessage::new(format!("Waiting on child process: '{cmd}'",))
         };
 
         let waited = self
@@ -65,7 +65,7 @@ impl ManagedChild {
 
         let err = || {
             let cmd = &self.cmd;
-            ErrorMessage::new(format!("Error when waiting on a child process: '{cmd}'",))
+            ErrorMessage::new(format!("Waiting on child process: '{cmd}'",))
         };
 
         let output = child.wait_with_output().or_raise(err)?;
@@ -104,12 +104,12 @@ impl Drop for ManagedChild {
             debug!("kill child process running: {}", self.cmd);
             // ignore errors
             if let Err(e) = child.kill() {
-                error!("error killing child process: {e}");
+                error!("When killing child process: {e}");
             }
 
             // is this necessary?
             if let Err(e) = child.wait() {
-                error!("error waiting for killed child process: {e}");
+                error!("When waiting for killed child process: {e}");
             }
         }
     }
@@ -352,7 +352,7 @@ impl Tool {
 
     /// Check if this tool is available
     pub fn available(self) -> Result<bool, Exn<ErrorMessage>> {
-        let err = || ErrorMessage::new(format!("Error when checking if tool exists: {self}"));
+        let err = || ErrorMessage::new(format!("Checking if tool exists: {self}"));
 
         let mut cmd = Command::new("which");
         cmd.args([self.name()]);

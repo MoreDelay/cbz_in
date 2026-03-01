@@ -50,7 +50,7 @@ impl super::Job for RecursiveDirJob {
         let err = || {
             let root = root.display();
             ErrorMessage::new(format!(
-                "Failed to convert all images recursively within \"{root}\""
+                "Converting all images recursively within \"{root}\""
             ))
         };
 
@@ -73,7 +73,7 @@ impl RecursiveDirJob {
         let DirImages { root, images } = dir;
         let ctx_str = || {
             let root = root.display();
-            format!("Failed to prepare job for recursive image conversion starting at \"{root}\"")
+            format!("Preparing job for recursive image conversion starting at \"{root}\"")
         };
         let err = || ErrorMessage::new(ctx_str());
         let soft_err = || NothingToDo::new(ctx_str());
@@ -125,8 +125,7 @@ impl RecursiveDirJob {
     /// A converted archive either already holds the correct image format suffix in its name, or
     /// there exists another archive with the same name and that suffix in the same directory.
     fn already_converted(root: &Directory, target: ImageFormat) -> Result<bool, Exn<ErrorMessage>> {
-        let err =
-            || ErrorMessage::new("Could not check if this directory has been converted before");
+        let err = || ErrorMessage::new("Checking if this directory has been converted before");
 
         let converted_path = Self::get_hardlink_dir(root, target).or_raise(err)?;
 
@@ -160,7 +159,7 @@ impl RecursiveHardLinkJob {
             let root = self.root.display();
             let copy_root = copy_root.display();
             ErrorMessage::new(format!(
-                "Error while creating hard links from \"{root}\" to \"{copy_root}\""
+                "Creating hard links from \"{root}\" to \"{copy_root}\""
             ))
         };
 
@@ -204,7 +203,7 @@ impl Directory {
 
         let err = {
             let path = path.display();
-            move || ErrorMessage::new(format!("Could not verify path is a directory: \"{path}\""))
+            move || ErrorMessage::new(format!("Verifying path is a directory: \"{path}\""))
         };
         let path = path.canonicalize().or_raise(err)?;
 
@@ -272,7 +271,7 @@ impl Drop for TempDirGuard {
         if root.exists()
             && let Err(e) = fs::remove_dir_all(&root)
         {
-            error!("error on deleting directory {root:?}: {e}");
+            error!("While deleting directory {root:?}: {e}");
         }
     }
 }

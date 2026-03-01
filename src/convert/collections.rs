@@ -38,7 +38,7 @@ impl ArchiveJobs {
         let err = || {
             let root = root.display();
             ErrorMessage::new(format!(
-                "Error while looking for archives needing conversion in directory \"{root}\""
+                "Looking for archives needing conversion in directory \"{root}\""
             ))
         };
 
