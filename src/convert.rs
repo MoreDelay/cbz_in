@@ -13,13 +13,13 @@ use std::path::{Path, PathBuf};
 use exn::{Exn, ResultExt as _, bail};
 use indicatif::{MultiProgress, ProgressBar};
 use itertools::Itertools as _;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::convert::archive::ArchivePath;
 use crate::convert::collections::{ArchiveJobs, RecursiveDirJobs};
 use crate::convert::dir::Directory;
 use crate::convert::image::{ConversionJob, ImageFormat};
-use crate::error::{ErrorMessage, got_interrupted};
+use crate::error::{CompactReport, ErrorMessage, got_interrupted};
 use crate::stdout;
 
 /// General configuration for a run of any conversion job.
@@ -73,6 +73,7 @@ pub trait JobCollection: IntoIterator<Item = Self::Single> + Sized {
                 if got_interrupted(&err) {
                     Some(Err(err))
                 } else {
+                    error!("{:?}", CompactReport::new(&err));
                     Some(Ok(err))
                 }
             })
