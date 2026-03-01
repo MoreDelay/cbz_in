@@ -218,7 +218,7 @@ impl PerArchiveImages {
                     Err(exn) => {
                         let (path, exn) = exn.recover();
                         let path = path.display();
-                        let report = CompactReport::new(exn);
+                        let report = CompactReport::new(&exn);
                         verbose(config.verbose, format!("Skipping \"{path}\": {report}"));
                         return Ok(None);
                     }

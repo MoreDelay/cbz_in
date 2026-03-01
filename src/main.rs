@@ -10,7 +10,6 @@ use std::collections::VecDeque;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
-use clap::builder::ArgPredicate;
 use clap::{self, Parser as _};
 use exn::{ErrorExt as _, Exn, OptionExt as _, ResultExt as _};
 use tracing::{error, info};
@@ -31,7 +30,7 @@ fn main() {
             stderr("Got interrupted");
         }
         Err(exn) => {
-            let report = CompactReport::new(exn);
+            let report = CompactReport::new(&exn);
             println!("{report}");
             error!("Application error:\n{report:?}");
         }
@@ -44,9 +43,7 @@ fn real_main() -> Result<(), Exn<ErrorMessage>> {
 
     let args = Args::parse();
 
-    if args.log {
-        init_logger(&args.log_path, args.level).or_raise(err)?;
-    }
+    init_logger(&args.log_path, args.level).or_raise(err)?;
 
     let cmd = std::env::args_os()
         .map(|s| s.to_string_lossy().to_string())
@@ -123,20 +120,11 @@ struct Args {
     #[arg(long, global = true)]
     no_archive: bool,
 
-    /// Write a log file
-    #[arg(
-        long,
-        default_value_if("log_path", ArgPredicate::IsPresent, "true"),
-        default_value_if("level", ArgPredicate::IsPresent, "true"),
-        global = true
-    )]
-    log: bool,
-
     /// The path to the log file that gets written
     #[arg(
         long,
         value_name = "LOG_FILE",
-        default_value = "./cbz_in.log",
+        default_value = "/tmp/cbz_in.log",
         global = true
     )]
     log_path: PathBuf,

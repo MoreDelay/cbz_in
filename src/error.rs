@@ -47,9 +47,9 @@ pub fn got_interrupted(exn: &Exn<impl Error + Send + Sync>) -> bool {
 }
 
 /// Walk the error context and find a specific error.
-fn find_error<T: Error + 'static>(exn: &Exn<impl Error + Send + Sync>) -> Option<&T> {
-    fn walk<T: Error + 'static>(frame: &Frame) -> Option<&T> {
-        if let Some(e) = frame.error().downcast_ref::<T>() {
+fn find_error<E: Error + 'static>(exn: &Exn<impl Error + Send + Sync>) -> Option<&E> {
+    fn walk<E: Error + 'static>(frame: &Frame) -> Option<&E> {
+        if let Some(e) = frame.error().downcast_ref() {
             return Some(e);
         }
         frame.children().iter().find_map(walk)
@@ -58,30 +58,30 @@ fn find_error<T: Error + 'static>(exn: &Exn<impl Error + Send + Sync>) -> Option
 }
 
 /// Wrapper around the Exn error context to implement custom formatting.
-pub struct CompactReport<T>(pub Exn<T>)
+pub struct CompactReport<'a, E>(pub &'a Exn<E>)
 where
-    T: Error + Send + Sync + 'static;
+    E: Error + Send + Sync + 'static;
 
-impl<T: Error + Send + Sync + 'static> std::fmt::Display for CompactReport<T> {
+impl<E: Error + Send + Sync + 'static> std::fmt::Display for CompactReport<'_, E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         const DEBUG: bool = false;
         Self::format(f, self.0.frame(), "", DEBUG)
     }
 }
 
-impl<T: Error + Send + Sync + 'static> std::fmt::Debug for CompactReport<T> {
+impl<E: Error + Send + Sync + 'static> std::fmt::Debug for CompactReport<'_, E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         const DEBUG: bool = true;
         Self::format(f, self.0.frame(), "", DEBUG)
     }
 }
 
-impl<T> CompactReport<T>
+impl<'a, E> CompactReport<'a, E>
 where
-    T: Error + Send + Sync + 'static,
+    E: Error + Send + Sync + 'static,
 {
     /// Create a new reporting wrapper.
-    pub const fn new(exn: Exn<T>) -> Self {
+    pub const fn new(exn: &'a Exn<E>) -> Self {
         Self(exn)
     }
 
