@@ -259,9 +259,7 @@ impl PerDirImages {
         paths: VecDeque<PathBuf>,
         config: &StatsConfig,
     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
-        let err = || ErrorMessage::new("Collect directories");
-
-        let collect_single = |path| {
+        let collect_single = |path: PathBuf| {
             let root = Directory::new(path)?.map_err(Exn::discard_recovery)?;
             let images = DirImages::search_recursive(root)?;
             match config.filter {
@@ -273,8 +271,7 @@ impl PerDirImages {
         let images = paths
             .into_iter()
             .map(collect_single)
-            .collect::<Result<Vec<_>, Exn<_>>>()
-            .or_raise(err)?
+            .collect::<Result<Vec<_>, Exn<_>>>()?
             .into_iter()
             .flatten()
             .collect();

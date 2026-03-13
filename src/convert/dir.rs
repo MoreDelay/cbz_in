@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use exn::{Exn, OptionExt as _, ResultExt as _};
+use exn::{ErrorExt as _, Exn, OptionExt as _, ResultExt as _};
 use indicatif::ProgressBar;
 use tracing::{debug, error};
 use walkdir::WalkDir;
@@ -77,6 +77,15 @@ impl RecursiveDirJob {
         };
         let err = || ErrorMessage::new(ctx_str());
         let soft_err = || NothingToDo::new(ctx_str());
+
+        let mut components_iter = root.components();
+        if components_iter.next() == Some(std::path::Component::RootDir)
+            && components_iter.next().is_none()
+        {
+            let exn = ErrorMessage::new("Can not convert root directory").raise();
+            let exn = exn.raise(err());
+            return Err(exn);
+        }
 
         let ConversionConfig { target, .. } = config;
 
@@ -206,6 +215,17 @@ impl Directory {
             move || ErrorMessage::new(format!("Verifying path is a directory: \"{path}\""))
         };
         let path = path.canonicalize().or_raise(err)?;
+
+        let mut components_iter = path.components();
+        let root = components_iter.next();
+        assert!(
+            matches!(root, Some(std::path::Component::RootDir)),
+            "absolute path after canonicalizing"
+        );
+        if components_iter.next().is_none() {
+            // got root directory
+            return Ok(Ok(Self(path)));
+        }
 
         assert!(
             path.file_name().is_some_and(|name| !name.is_empty()),

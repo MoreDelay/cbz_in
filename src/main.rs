@@ -39,7 +39,7 @@ fn main() {
 
 /// The application's entry point.
 fn real_main() -> Result<(), Exn<ErrorMessage>> {
-    let err = || ErrorMessage::new("Executing program");
+    let err = || ErrorMessage::new("Error when executing program");
 
     let args = Args::parse();
 
