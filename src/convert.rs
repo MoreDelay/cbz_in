@@ -24,13 +24,13 @@ use crate::stdout;
 
 /// General configuration for a run of any conversion job.
 #[derive(Debug, Clone, Copy)]
-pub struct ConversionConfig {
-    /// The target image format to which all files get converted.
+pub struct ConversionConfig<'a> {
+    /// The source image format from which to convert.
+    pub source: &'a HashSet<ImageFormat>,
+    /// The target image format to which source files get converted.
     pub target: ImageFormat,
     /// How many processes to run at most at any given time.
     pub n_workers: NonZeroUsize,
-    /// Force conversion of all image files, or just conversion of Jpeg and Png.
-    pub forced: bool,
     /// Print out more detailed information.
     pub verbose: bool,
 }

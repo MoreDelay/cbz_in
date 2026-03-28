@@ -1,6 +1,6 @@
 //! Contains items related to gathering statistics about found images.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 
 use exn::{Exn, ResultExt as _};
@@ -17,8 +17,8 @@ use crate::{stdout, verbose};
 pub struct StatsJob {
     /// The images we found, for which will we print statistics.
     images: Images,
-    /// What statistics to print and how.
-    config: StatsConfig,
+    /// How much information to print.
+    verbose: bool,
 }
 
 impl StatsJob {
@@ -31,9 +31,10 @@ impl StatsJob {
 
         stdout("Counting images in archives...");
 
-        let job = Images::within_archives(paths, &config)
+        let verbose = config.verbose;
+        let job = Images::within_archives(paths, config)
             .or_raise(err)?
-            .map(|images| Self { images, config });
+            .map(|images| Self { images, verbose });
         Ok(job)
     }
 
@@ -46,9 +47,10 @@ impl StatsJob {
 
         stdout("Counting images in directories...");
 
-        let job = Images::within_directories(paths, &config)
+        let verbose = config.verbose;
+        let job = Images::within_directories(paths, config)
             .or_raise(err)?
-            .map(|images| Self { images, config });
+            .map(|images| Self { images, verbose });
         Ok(job)
     }
 
@@ -65,7 +67,7 @@ impl StatsJob {
             }
         }
 
-        if self.config.verbose {
+        if self.verbose {
             match self.images {
                 Images::Archives(images) => images.print_per_archive(),
                 Images::Directories(images) => images.print_per_dir(),
@@ -100,7 +102,7 @@ impl Images {
     /// Collect images found within archives.
     fn within_archives(
         paths: VecDeque<PathBuf>,
-        config: &StatsConfig,
+        config: StatsConfig,
     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
         let err = || ErrorMessage::new("Collecting images within archives");
 
@@ -113,7 +115,7 @@ impl Images {
     /// Collect images found within directories.
     fn within_directories(
         paths: VecDeque<PathBuf>,
-        config: &StatsConfig,
+        config: StatsConfig,
     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
         let err = || ErrorMessage::new("Collecting images within directories");
 
@@ -131,7 +133,7 @@ impl PerArchiveImages {
     /// Collect images found in archives.
     fn collect(
         paths: VecDeque<PathBuf>,
-        config: &StatsConfig,
+        config: StatsConfig,
     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
         let collect_single = |path| {
             let (path, dir_exn) = match Directory::new(path)? {
@@ -180,7 +182,7 @@ impl PerArchiveImages {
     /// Create an [`ArchiveImages`] for a single archive.
     fn for_single_archive(
         archive: ArchivePath,
-        config: &StatsConfig,
+        config: StatsConfig,
     ) -> Result<Option<ArchiveImages>, Exn<ErrorMessage>> {
         let err = || ErrorMessage::new("Searching images in a single archive");
 
@@ -195,16 +197,13 @@ impl PerArchiveImages {
                 return Ok(None);
             }
         };
-        match config.filter {
-            Some(target) => Ok(images.filter(target)),
-            None => Ok(Some(images)),
-        }
+        Ok(images.filter(config.filter))
     }
 
     /// Create an [`ArchiveImages`] for all archives in a directory.
     fn for_archives_in_dir(
         root: &Directory,
-        config: &StatsConfig,
+        config: StatsConfig,
     ) -> Result<Vec<ArchiveImages>, Exn<ErrorMessage>> {
         let err = || ErrorMessage::new("Searching images in all archives in a directory");
 
@@ -257,15 +256,13 @@ impl PerDirImages {
     /// Prepare to print statistics for directories.
     fn collect(
         paths: VecDeque<PathBuf>,
-        config: &StatsConfig,
+        config: StatsConfig,
     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
         let collect_single = |path: PathBuf| {
             let root = Directory::new(path)?.map_err(Exn::discard_recovery)?;
             let images = DirImages::search_recursive(root)?;
-            match config.filter {
-                Some(target) => Ok(images.and_then(|images| images.filter(target))),
-                None => Ok(images),
-            }
+            let images = images.and_then(|images| images.filter(config.filter));
+            Ok(images)
         };
 
         let images = paths
@@ -362,9 +359,10 @@ impl Stats {
 }
 
 /// Configuration for what statistics to collect.
-pub struct StatsConfig {
+#[derive(Debug, Clone, Copy)]
+pub struct StatsConfig<'a> {
     /// Filter for a specific image format.
-    pub filter: Option<ImageFormat>,
+    pub filter: &'a HashSet<ImageFormat>,
     /// Print out more detailed information.
     pub verbose: bool,
 }

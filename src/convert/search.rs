@@ -1,5 +1,6 @@
 //! Contains everything related to information gathering.
 
+use std::collections::HashSet;
 use std::io::BufRead as _;
 use std::path::PathBuf;
 
@@ -54,11 +55,11 @@ impl ArchiveImages {
     }
 
     /// Filter out all images that do not have the target image format
-    pub fn filter(self, target: ImageFormat) -> Option<Self> {
+    pub fn filter(self, filter: &HashSet<ImageFormat>) -> Option<Self> {
         let images = self
             .images
             .into_iter()
-            .filter(|info| info.format() == target)
+            .filter(|info| filter.contains(&info.format()))
             .collect::<Vec<_>>();
         if images.is_empty() {
             return None;
@@ -123,11 +124,11 @@ impl DirImages {
     }
 
     /// Filter out all images that do not have the target image format
-    pub fn filter(self, target: ImageFormat) -> Option<Self> {
+    pub fn filter(self, filter: &HashSet<ImageFormat>) -> Option<Self> {
         let images = self
             .images
             .into_iter()
-            .filter(|info| info.format() == target)
+            .filter(|info| filter.contains(&info.format()))
             .collect::<Vec<_>>();
         if images.is_empty() {
             return None;

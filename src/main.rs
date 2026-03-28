@@ -6,7 +6,7 @@ mod error;
 mod spawn;
 mod stats;
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
@@ -53,7 +53,14 @@ fn real_main() -> Result<(), Exn<ErrorMessage>> {
     let cwd = std::env::current_dir().unwrap_or_default();
     info!("working directory: {:?}", cwd);
 
-    let config = MainJobConfig::new(&args);
+    let source = ConversionSource::to_filter_set(&args.from);
+    let config = MainJobConfig::builder()
+        .command(args.command)
+        .source(&source)
+        .workers(args.workers)
+        .verbose(args.verbose)
+        .build();
+
     let paths = VecDeque::from(args.paths);
 
     let main_job = match args.no_archive {
@@ -76,13 +83,25 @@ fn real_main() -> Result<(), Exn<ErrorMessage>> {
 /// files. By default only converts Jpeg and Png to the target format or decode any formats to
 /// Png and Jpeg. The new archive with converted images is placed adjacent to the original, so this
 /// operation is non-destructive.
-#[expect(clippy::struct_excessive_bools)]
 #[derive(clap::Parser)]
 #[command(version)]
 struct Args {
     /// All images within the archive(s) are converted to this format
     #[command(subcommand)]
     command: Command,
+
+    /// Only convert images of this format.
+    ///
+    /// Delimit multiple formats with a comma (,), or specify "all". By default uses "jpeg,png".
+    #[arg(
+        short = 's',
+        long,
+        num_args = 1..,
+        value_delimiter = ',',
+        default_value = "jpeg,png",
+        global = true
+    )]
+    from: Vec<ConversionSource>,
 
     /// Path to cbz files or directories containing cbz files
     ///
@@ -97,10 +116,6 @@ struct Args {
     #[expect(clippy::option_option)]
     #[arg(short = 'j', long, global = true)]
     workers: Option<Option<NonZeroUsize>>,
-
-    /// Convert all images of all formats.
-    #[arg(short, long, global = true)]
-    force: bool,
 
     /// Check if all tools are available to perform conversions.
     #[arg(long, global = true)]
@@ -138,14 +153,59 @@ struct Args {
 #[derive(clap::Subcommand, Clone, Copy)]
 enum Command {
     /// Collect statistics on the images found.
-    Stats {
-        /// Filter for a specific image format.
-        #[arg(long, default_value = None)]
-        filter: Option<ImageFormat>,
-    },
+    Stats,
     /// Convert found images to another image format.
     #[command(flatten)]
     Convert(ConversionTarget),
+}
+
+/// The target image format to convert all images to.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ConversionSource {
+    /// Convert from all formats.
+    All,
+    /// Convert from JPEG.
+    Jpeg,
+    /// Convert from PNG.
+    Png,
+    /// Convert from AVIF.
+    Avif,
+    /// Convert from JXL.
+    Jxl,
+    /// Convert from WebP.
+    Webp,
+}
+
+impl ConversionSource {
+    /// Create the vector
+    fn to_filter_set(sources: &[Self]) -> HashSet<ImageFormat> {
+        assert!(!sources.is_empty(), "never expect empty sources");
+
+        sources
+            .iter()
+            .flat_map(|&s| match s.try_into() {
+                Ok(s) => either::Left(std::iter::once(s)),
+                Err(()) => either::Right(ImageFormat::ALL.iter().copied()),
+            })
+            .collect()
+    }
+}
+
+impl TryFrom<ConversionSource> for ImageFormat {
+    type Error = ();
+
+    fn try_from(value: ConversionSource) -> Result<Self, Self::Error> {
+        use ConversionSource as S;
+
+        match value {
+            S::All => Err(()),
+            S::Jpeg => Ok(Self::Jpeg),
+            S::Png => Ok(Self::Png),
+            S::Avif => Ok(Self::Avif),
+            S::Jxl => Ok(Self::Jxl),
+            S::Webp => Ok(Self::Webp),
+        }
+    }
 }
 
 /// The target image format to convert all images to.

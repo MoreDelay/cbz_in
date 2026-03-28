@@ -358,7 +358,11 @@ impl Plan {
     pub fn new(current: ImageFormat, config: ConversionConfig) -> Option<Self> {
         use ImageFormat::*;
 
-        let ConversionConfig { target, forced, .. } = config;
+        let ConversionConfig { source, target, .. } = config;
+
+        if !source.contains(&current) {
+            return None;
+        }
 
         let out = match (current, target) {
             (a, b) if a == b => return None,
@@ -381,8 +385,7 @@ impl Plan {
                 to: target,
             },
         };
-        let perform = forced || out.perform_always();
-        perform.then_some(out)
+        Some(out)
     }
 
     /// Determine the tools that need to be installed for this conversion to work.
@@ -416,23 +419,6 @@ impl Plan {
             },
             Self::TwoStep { from, to, .. } => vec![decode(from), encode(to)],
             Self::IndeterminateJxl { to, .. } => vec![decode(Jxl), encode(to)],
-        }
-    }
-
-    /// Check if this plan will always be performed without need of [`ConversionConfig::forced`].
-    const fn perform_always(self) -> bool {
-        use ImageFormat::*;
-
-        let tuple = match self {
-            Self::OneStep { from, to, .. } => (from, to),
-            Self::TwoStep { from, to, .. } => (from, to),
-            Self::IndeterminateJxl { .. } => return false,
-        };
-
-        match tuple {
-            (Jpeg | Png, _) => true,
-            (_, Jpeg | Png) => true,
-            (_, _) => false,
         }
     }
 
@@ -732,6 +718,9 @@ pub enum ImageFormat {
 }
 
 impl ImageFormat {
+    /// An array of all image formats.
+    pub const ALL: &'static [Self] = &[Self::Jpeg, Self::Png, Self::Avif, Self::Jxl, Self::Webp];
+
     /// Get the file extension as string.
     pub const fn ext(self) -> &'static str {
         use ImageFormat::*;
