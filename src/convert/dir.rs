@@ -89,18 +89,18 @@ impl RecursiveDirJob {
 
         let ConversionConfig { target, .. } = config;
 
-        if Self::already_converted(&root, target).or_raise(err)? {
+        if Self::already_converted(&root, target.format()).or_raise(err)? {
             let root = root.display();
             let msg = format!("Already converted \"{root}\"");
             let exn = Exn::new(NothingToDo::new(msg));
             return Ok(Err(exn));
         }
 
-        let copy_root = Self::get_hardlink_dir(&root, config.target).or_raise(err)?;
+        let copy_root = Self::get_hardlink_dir(&root, config.target.format()).or_raise(err)?;
 
         let hardlink = RecursiveHardLinkJob {
             root: root.clone(),
-            target,
+            target: target.format(),
         };
         let conversion = ConversionJobs::new(images, &copy_root, config)
             .or_raise(err)?

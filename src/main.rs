@@ -160,6 +160,9 @@ enum Command {
 }
 
 /// The target image format to convert all images to.
+///
+/// This is basically a copy of of [`ImageFormat`], just with the helper variant
+/// [`ConversionSource::All`].
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ConversionSource {
     /// Convert from all formats.
@@ -218,20 +221,28 @@ pub enum ConversionTarget {
     /// Convert to AVIF.
     Avif,
     /// Convert to JXL.
-    Jxl,
+    Jxl {
+        /// Jpegs are reencoded, not compressed.
+        ///
+        /// Does not change conversion behavior for any other file format besides than jpeg.
+        #[arg(long)]
+        lossy: bool,
+    },
     /// Convert to WebP.
     Webp,
 }
 
-impl From<ConversionTarget> for ImageFormat {
-    fn from(value: ConversionTarget) -> Self {
-        use ImageFormat::*;
-        match value {
-            ConversionTarget::Jpeg => Jpeg,
-            ConversionTarget::Png => Png,
-            ConversionTarget::Avif => Avif,
-            ConversionTarget::Jxl => Jxl,
-            ConversionTarget::Webp => Webp,
+impl ConversionTarget {
+    /// Get the target type, discarding conversion metadata.
+    const fn format(self) -> ImageFormat {
+        use ImageFormat as I;
+
+        match self {
+            Self::Jpeg => I::Jpeg,
+            Self::Png => I::Png,
+            Self::Avif => I::Avif,
+            Self::Jxl { .. } => I::Jxl,
+            Self::Webp => I::Webp,
         }
     }
 }

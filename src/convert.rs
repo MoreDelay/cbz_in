@@ -20,7 +20,7 @@ use crate::convert::collections::{ArchiveJobs, RecursiveDirJobs};
 use crate::convert::dir::Directory;
 use crate::convert::image::{ConversionJob, ImageFormat};
 use crate::error::{CompactReport, ErrorMessage, got_interrupted};
-use crate::stdout;
+use crate::{ConversionTarget, stdout};
 
 /// General configuration for a run of any conversion job.
 #[derive(Debug, Clone, Copy)]
@@ -28,7 +28,7 @@ pub struct ConversionConfig<'a> {
     /// The source image format from which to convert.
     pub source: &'a HashSet<ImageFormat>,
     /// The target image format to which source files get converted.
-    pub target: ImageFormat,
+    pub target: ConversionTarget,
     /// How many processes to run at most at any given time.
     pub n_workers: NonZeroUsize,
     /// Print out more detailed information.

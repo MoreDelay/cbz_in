@@ -176,19 +176,21 @@ pub fn encode_avif(
 pub fn encode_jxl(
     input_path: &Path,
     output_path: &Path,
+    lossy: bool,
 ) -> Result<ManagedChild, Exn<ErrorMessage>> {
     const TOOL: Tool = Tool::Cjxl;
 
     let mut cmd = Command::new(TOOL.name());
     let input_path = input_path.to_str().expect("paths are valid utf8");
     let output_path = output_path.to_str().expect("paths are valid utf8");
-    cmd.args([
-        "--effort=9",
-        "--num_threads=1",
-        "--distance=0",
-        input_path,
-        output_path,
-    ]);
+    cmd.arg("--effort=9");
+    cmd.arg("--num_threads=1");
+    cmd.arg("--distance=2");
+    if lossy {
+        cmd.arg("--lossless_jpeg=0");
+    }
+    cmd.arg(input_path);
+    cmd.arg(output_path);
     ManagedChild::spawn(cmd)
 }
 

@@ -13,6 +13,7 @@ use signal_hook::consts::{SIGCHLD, SIGINT};
 use signal_hook::iterator::Signals;
 use tracing::debug;
 
+use crate::ConversionTarget;
 use crate::convert::ConversionConfig;
 use crate::convert::search::ImageInfo;
 use crate::error::{ErrorMessage, Interrupted, NothingToDo};
@@ -140,7 +141,8 @@ struct StateWaiting {
 impl StateWaiting {
     /// State machine transition from [`State::Waiting`] to [`State::Running`].
     fn start_conversion(self) -> Result<StateRunning, Exn<ErrorMessage>> {
-        use ImageFormat::*;
+        use ConversionTarget as C;
+        use ImageFormat as I;
 
         let Self {
             image_path,
@@ -156,20 +158,22 @@ impl StateWaiting {
 
         let (from, to) = sequence.next_step();
         let input = &image_path;
-        let output = &image_path.with_extension(to.ext());
+        let output = &image_path.with_extension(to.format().ext());
 
         let child = match tool_use {
             ToolUse::Best => match (from, to) {
-                (Jpeg, Png) => spawn::convert_jpeg_to_png(input, output).or_raise(err)?,
-                (Png, Jpeg) => spawn::convert_png_to_jpeg(input, output).or_raise(err)?,
-                (Jpeg | Png, Avif) => spawn::encode_avif(input, output).or_raise(err)?,
-                (Jpeg | Png, Jxl) => spawn::encode_jxl(input, output).or_raise(err)?,
-                (Jpeg | Png, Webp) => spawn::encode_webp(input, output).or_raise(err)?,
-                (Avif, Jpeg) => spawn::decode_avif_to_jpeg(input, output).or_raise(err)?,
-                (Avif, Png) => spawn::decode_avif_to_png(input, output).or_raise(err)?,
-                (Jxl, Jpeg) => spawn::decode_jxl_to_jpeg(input, output).or_raise(err)?,
-                (Jxl, Png) => spawn::decode_jxl_to_png(input, output).or_raise(err)?,
-                (Webp, Png) => spawn::decode_webp(input, output).or_raise(err)?,
+                (I::Jpeg, C::Png) => spawn::convert_jpeg_to_png(input, output).or_raise(err)?,
+                (I::Png, C::Jpeg) => spawn::convert_png_to_jpeg(input, output).or_raise(err)?,
+                (I::Jpeg | I::Png, C::Avif) => spawn::encode_avif(input, output).or_raise(err)?,
+                (I::Jpeg | I::Png, C::Jxl { lossy }) => {
+                    spawn::encode_jxl(input, output, lossy).or_raise(err)?
+                }
+                (I::Jpeg | I::Png, C::Webp) => spawn::encode_webp(input, output).or_raise(err)?,
+                (I::Avif, C::Jpeg) => spawn::decode_avif_to_jpeg(input, output).or_raise(err)?,
+                (I::Avif, C::Png) => spawn::decode_avif_to_png(input, output).or_raise(err)?,
+                (I::Jxl, C::Jpeg) => spawn::decode_jxl_to_jpeg(input, output).or_raise(err)?,
+                (I::Jxl, C::Png) => spawn::decode_jxl_to_png(input, output).or_raise(err)?,
+                (I::Webp, C::Png) => spawn::decode_webp(input, output).or_raise(err)?,
                 (_, _) => unreachable!(),
             },
             ToolUse::Backup { .. } => match spawn::convert_with_magick(input, output) {
@@ -261,7 +265,8 @@ impl StateCompleted {
 
         let after = match sequence {
             Sequence::OneStep { .. } | Sequence::Finish { .. } => None,
-            Sequence::TwoStep { over: from, to, .. } => {
+            Sequence::TwoStep { over, to, .. } => {
+                let from = over.format();
                 let waiting = StateWaiting {
                     image_path: image_path.with_extension(from.ext()),
                     sequence: Sequence::Finish { from, to },
@@ -302,7 +307,7 @@ impl StateCompleted {
             Sequence::OneStep { from, to } | Sequence::TwoStep { from, to, .. } => {
                 Sequence::TwoStep {
                     from,
-                    over: ImageFormat::Png,
+                    over: ConversionTarget::Png,
                     to,
                 }
             }
@@ -331,16 +336,16 @@ pub enum Plan {
         /// Initial image format.
         from: ImageFormat,
         /// Target image format.
-        to: ImageFormat,
+        to: ConversionTarget,
     },
     /// The first step in a two-step conversion.
     TwoStep {
         /// Initial image format.
         from: ImageFormat,
         /// Intermediate image format.
-        over: ImageFormat,
+        over: ConversionTarget,
         /// Target image format.
-        to: ImageFormat,
+        to: ConversionTarget,
     },
     /// The concrete details of JXL conversion depend on whether the JXL file is a compressed JPEG
     /// file or not. This is only known when images have been prepared and can not be known
@@ -349,14 +354,15 @@ pub enum Plan {
         /// Initial image format.
         from: ImageFormat,
         /// Target image format.
-        to: ImageFormat,
+        to: ConversionTarget,
     },
 }
 
 impl Plan {
     /// Determine the details for a specific image to reach the goal set out by the configuration.
     pub fn new(current: ImageFormat, config: ConversionConfig) -> Option<Self> {
-        use ImageFormat::*;
+        use ConversionTarget as C;
+        use ImageFormat as I;
 
         let ConversionConfig { source, target, .. } = config;
 
@@ -365,19 +371,19 @@ impl Plan {
         }
 
         let out = match (current, target) {
-            (a, b) if a == b => return None,
-            (Avif, Jxl | Webp) => Self::TwoStep {
+            (a, b) if a == b.format() => return None,
+            (I::Avif, C::Jxl { .. } | C::Webp) => Self::TwoStep {
                 from: current,
-                over: Png,
+                over: C::Png,
                 to: target,
             },
-            (Jxl, Avif | Webp) => Self::IndeterminateJxl {
+            (I::Jxl, C::Avif | C::Webp) => Self::IndeterminateJxl {
                 from: current,
                 to: target,
             },
-            (Webp, Jpeg | Avif | Jxl) => Self::TwoStep {
+            (I::Webp, C::Jpeg | C::Avif | C::Jxl { .. }) => Self::TwoStep {
                 from: current,
-                over: Png,
+                over: C::Png,
                 to: target,
             },
             (_, _) => Self::OneStep {
@@ -390,35 +396,36 @@ impl Plan {
 
     /// Determine the tools that need to be installed for this conversion to work.
     pub fn required_tools(self) -> Vec<Tool> {
-        use ImageFormat::*;
+        use ConversionTarget as C;
+        use ImageFormat as I;
         use Tool::*;
 
         const fn decode(from: ImageFormat) -> Tool {
             match from {
-                Jpeg | Png => Magick,
-                Avif => Avifdec,
-                Jxl => Djxl,
-                Webp => Dwebp,
+                I::Jpeg | I::Png => Magick,
+                I::Avif => Avifdec,
+                I::Jxl => Djxl,
+                I::Webp => Dwebp,
             }
         }
 
-        const fn encode(from: ImageFormat) -> Tool {
-            match from {
-                Jpeg | Png => Magick,
-                Avif => Cavif,
-                Jxl => Cjxl,
-                Webp => Cwebp,
+        const fn encode(to: ImageFormat) -> Tool {
+            match to {
+                I::Jpeg | I::Png => Magick,
+                I::Avif => Cavif,
+                I::Jxl => Cjxl,
+                I::Webp => Cwebp,
             }
         }
 
         match self {
             Self::OneStep { from, to } => match (from, to) {
-                (Jpeg | Png, _) => vec![encode(to)],
-                (_, Jpeg | Png) => vec![decode(from)],
+                (I::Jpeg | I::Png, _) => vec![encode(to.format())],
+                (_, C::Jpeg | C::Png) => vec![decode(from)],
                 (_, _) => unreachable!(),
             },
-            Self::TwoStep { from, to, .. } => vec![decode(from), encode(to)],
-            Self::IndeterminateJxl { to, .. } => vec![decode(Jxl), encode(to)],
+            Self::TwoStep { from, to, .. } => vec![decode(from), encode(to.format())],
+            Self::IndeterminateJxl { to, .. } => vec![decode(I::Jxl), encode(to.format())],
         }
     }
 
@@ -436,23 +443,23 @@ enum Sequence {
         /// Initial image format.
         from: ImageFormat,
         /// Target image format.
-        to: ImageFormat,
+        to: ConversionTarget,
     },
     /// The first step in a two-step conversion.
     TwoStep {
         /// Initial image format.
         from: ImageFormat,
         /// Intermediate image format.
-        over: ImageFormat,
+        over: ConversionTarget,
         /// Target image format.
-        to: ImageFormat,
+        to: ConversionTarget,
     },
     /// The second step in a two-step conversion
     Finish {
         /// Initial image format.
         from: ImageFormat,
         /// Target image format.
-        to: ImageFormat,
+        to: ConversionTarget,
     },
 }
 
@@ -470,10 +477,10 @@ impl Sequence {
             Plan::IndeterminateJxl { from, to } => {
                 let over = if Self::jxl_is_compressed_jpeg(image_path).or_raise(err)? {
                     debug!("jxl is compressed jpeg: {image_path:?}");
-                    ImageFormat::Jpeg
+                    ConversionTarget::Jpeg
                 } else {
                     debug!("jxl is encoded: {image_path:?}");
-                    ImageFormat::Png
+                    ConversionTarget::Png
                 };
                 Ok(Self::TwoStep { from, over, to })
             }
@@ -481,7 +488,7 @@ impl Sequence {
     }
 
     /// Returns the conversion sequence that should be performed next in the current plan.
-    const fn next_step(self) -> (ImageFormat, ImageFormat) {
+    const fn next_step(self) -> (ImageFormat, ConversionTarget) {
         match self {
             Self::OneStep { from, to } => (from, to),
             Self::TwoStep { from, over, .. } => (from, over),

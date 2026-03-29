@@ -11,6 +11,7 @@ use walkdir::WalkDir;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
+use crate::ConversionTarget;
 use crate::convert::ConversionConfig;
 use crate::convert::dir::TempDirGuard;
 use crate::convert::image::{ConversionJob, ConversionJobs, ImageFormat};
@@ -88,7 +89,7 @@ impl ArchiveJob {
 
         let ConversionConfig { target, .. } = config;
 
-        if Self::already_converted(&archive, target).or_raise(err)? {
+        if Self::already_converted(&archive, target.format()).or_raise(err)? {
             let archive = archive.display();
             let msg = format!("Already converted \"{archive}\"");
             let exn = Exn::new(NothingToDo::new(msg));
@@ -236,7 +237,7 @@ struct CompressionJob {
     /// The root directory to compress into a Zip file.
     root: PathBuf,
     /// The target image format which becomes part of the archive's file name.
-    target: ImageFormat,
+    target: ConversionTarget,
     /// The extension to use for the Zip file.
     extension: ZipExtension,
 }
@@ -297,7 +298,7 @@ impl CompressionJob {
             .expect("our file paths are utf8 compliant");
         let zip_ext = self.extension.ext();
 
-        let image_ext = self.target.ext();
+        let image_ext = self.target.format().ext();
         dir.join(format!("{name}.{image_ext}.{zip_ext}"))
     }
 }
