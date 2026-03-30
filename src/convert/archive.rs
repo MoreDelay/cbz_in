@@ -14,7 +14,7 @@ use zip::{CompressionMethod, ZipWriter};
 use crate::ConversionTarget;
 use crate::convert::ConversionConfig;
 use crate::convert::dir::TempDirGuard;
-use crate::convert::image::{ConversionJob, ConversionJobs, ImageFormat};
+use crate::convert::image::{ConversionJob, ConversionJobs};
 use crate::convert::search::ArchiveImages;
 use crate::error::{ErrorMessage, NothingToDo};
 use crate::spawn::{self, ManagedChild};
@@ -89,7 +89,7 @@ impl ArchiveJob {
 
         let ConversionConfig { target, .. } = config;
 
-        if Self::already_converted(&archive, target.format()).or_raise(err)? {
+        if Self::already_converted(&archive, target).or_raise(err)? {
             let archive = archive.display();
             let msg = format!("Already converted \"{archive}\"");
             let exn = Exn::new(NothingToDo::new(msg));
@@ -131,7 +131,7 @@ impl ArchiveJob {
     /// there exists another archive with the same name and that suffix in the same directory.
     fn already_converted(
         path: &ArchivePath,
-        target: ImageFormat,
+        target: ConversionTarget,
     ) -> Result<bool, Exn<ErrorMessage>> {
         let err = || {
             let path = path.display();
@@ -140,7 +140,7 @@ impl ArchiveJob {
             ))
         };
 
-        let conversion_ending = format!(".{}.cbz", target.ext());
+        let conversion_ending = format!(".{}.{}", target.format().ext(), path.extension.ext());
 
         let dir = path.parent();
         let name = path.file_stem();
