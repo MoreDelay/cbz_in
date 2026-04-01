@@ -68,7 +68,7 @@ impl RunConversionJob {
     /// Try to progress on this conversion job.
     ///
     /// As we need to wait for child processes to finish before advancing, we will not always
-    /// succeed, which is encoded into the [Proceeded] return type.
+    /// succeed, which is encoded into the [`Proceeded`] return type.
     fn proceed(self) -> Result<Proceeded, Exn<ErrorMessage>> {
         let proceeded = match self.state {
             State::Waiting(waiting) => {

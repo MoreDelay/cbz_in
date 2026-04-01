@@ -58,7 +58,7 @@ pub trait JobCollection: IntoIterator<Item = Self::Single> + Sized {
     /// Get an iterator over all image conversion jobs for inspection.
     fn jobs(&self) -> impl Iterator<Item = &Self::Single>;
 
-    /// Run all internal jobs, showing the progress in [Bars].
+    /// Run all internal jobs, showing the progress in [`Bars`].
     fn run(self, bars: &Bars) -> Result<(), Exn<ErrorMessage>> {
         bars.jobs.reset();
         bars.jobs.set_length(self.jobs().count() as u64);
@@ -340,7 +340,7 @@ impl Bars {
 
     /// Finish progress on bars for the "happy path".
     ///
-    /// Dropping [Bars] without calling this method indicates we exited irregularly.
+    /// Dropping [`Bars`] without calling this method indicates we exited irregularly.
     pub fn finish(self) {
         self.jobs.finish();
         self.images.finish();

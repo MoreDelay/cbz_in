@@ -261,7 +261,7 @@ impl std::convert::AsRef<Path> for Directory {
 
 /// Deletes the temporary directory when dropped.
 ///
-/// To keep the directory, use [`TempDirGuard::keep()`].
+/// To keep the directory, use [`TempDirGuard::keep`].
 pub struct TempDirGuard {
     /// The guarded directory.
     temp_root: Option<PathBuf>,
