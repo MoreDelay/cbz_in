@@ -1,6 +1,7 @@
 //! Contains everything related to performing conversions.
 
 pub mod archive;
+pub mod collection;
 pub mod dir;
 pub mod image;
 pub mod search;
@@ -14,7 +15,8 @@ use tracing::warn;
 
 use crate::ConversionTarget;
 use crate::convert::image::ConversionJob;
-use crate::error::ErrorMessage;
+use crate::convert::search::ImageCollection;
+use crate::error::{ErrorMessage, NothingToDo};
 
 /// General configuration for a run of any conversion job.
 #[derive(Debug, Clone, Copy)]
@@ -25,8 +27,20 @@ pub struct ConversionConfig {
     pub n_workers: NonZeroUsize,
 }
 
+/// Type alias to reduce type clutter specifying the [`Job`]'s path type.
+type JobPath<J> = <<J as Job>::Images as ImageCollection>::Path;
+
 /// A trait for jobs that can be run.
-pub trait Job {
+pub trait Job: Sized {
+    /// The image collection this job works on
+    type Images: ImageCollection;
+
+    /// Create a new job over a collection of images.
+    fn new(
+        images: Self::Images,
+        config: ConversionConfig,
+    ) -> Result<Result<Self, NothingToDo<JobPath<Self>>>, Exn<ErrorMessage>>;
+
     /// Get a path for this job, that best describes its scope of operation.
     fn path(&self) -> &Path;
 

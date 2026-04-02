@@ -15,7 +15,7 @@ use crate::ConversionTarget;
 use crate::convert::ConversionConfig;
 use crate::convert::dir::TempDirGuard;
 use crate::convert::image::{ConversionJob, ConversionJobs};
-use crate::convert::search::ArchiveImages;
+use crate::convert::search::{ArchiveImages, ImageCollection};
 use crate::error::{ErrorMessage, NothingToDo, NothingToDoReason};
 use crate::spawn::{self, ManagedChild};
 
@@ -36,6 +36,17 @@ pub struct ArchiveJob {
 }
 
 impl super::Job for ArchiveJob {
+    /// The image collection this job works on
+    type Images = ArchiveImages;
+
+    fn new(
+        images: Self::Images,
+        config: ConversionConfig,
+    ) -> Result<Result<Self, NothingToDo<<Self::Images as ImageCollection>::Path>>, Exn<ErrorMessage>>
+    {
+        Self::new_internal(images, config)
+    }
+
     fn path(&self) -> &Path {
         &self.archive
     }
@@ -74,7 +85,7 @@ impl ArchiveJob {
     /// Create a new job to convert all images in an archive.
     ///
     /// No files get touched until this job is run.
-    pub fn new(
+    fn new_internal(
         archive: ArchiveImages,
         config: ConversionConfig,
     ) -> Result<Result<Self, NothingToDo<ArchivePath>>, Exn<ErrorMessage>> {

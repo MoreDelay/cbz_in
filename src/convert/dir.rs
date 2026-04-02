@@ -10,7 +10,7 @@ use walkdir::WalkDir;
 
 use crate::convert::ConversionConfig;
 use crate::convert::image::{ConversionJob, ConversionJobs, ImageFormat};
-use crate::convert::search::DirImages;
+use crate::convert::search::{DirImages, ImageCollection};
 use crate::error::{ErrorMessage, NothingToDo, NothingToDoReason};
 
 /// Represents the job to convert all images within a directory.
@@ -18,7 +18,7 @@ use crate::error::{ErrorMessage, NothingToDo, NothingToDoReason};
 /// When run, this job creates a mirrored directory of hard links to all original files. Then all
 /// images are replaced with the converted image type. This is only intended for regular
 /// directories, and does not traverse mount points.
-pub struct RecursiveDirJob {
+pub struct DirectoryJob {
     /// The root directory from which we start to look for images.
     root: Directory,
     /// The jobs to create a copy of the directory structure.
@@ -27,7 +27,17 @@ pub struct RecursiveDirJob {
     conversion: ConversionJobs,
 }
 
-impl super::Job for RecursiveDirJob {
+impl super::Job for DirectoryJob {
+    type Images = DirImages;
+
+    fn new(
+        images: Self::Images,
+        config: ConversionConfig,
+    ) -> Result<Result<Self, NothingToDo<<Self::Images as ImageCollection>::Path>>, Exn<ErrorMessage>>
+    {
+        Self::new_internal(images, config)
+    }
+
     fn path(&self) -> &Path {
         &self.root
     }
@@ -62,11 +72,11 @@ impl super::Job for RecursiveDirJob {
     }
 }
 
-impl RecursiveDirJob {
+impl DirectoryJob {
     /// Create a new job to convert all images in a directory.
     ///
     /// No files get touched until this job is run.
-    pub fn new(
+    fn new_internal(
         dir: DirImages,
         config: ConversionConfig,
     ) -> Result<Result<Self, NothingToDo<Directory>>, Exn<ErrorMessage>> {
@@ -163,7 +173,7 @@ struct RecursiveHardLinkJob {
 impl RecursiveHardLinkJob {
     /// Run this job.
     fn run(self) -> Result<TempDirGuard, Exn<ErrorMessage>> {
-        let copy_root = RecursiveDirJob::get_hardlink_dir(&self.root, self.target)
+        let copy_root = DirectoryJob::get_hardlink_dir(&self.root, self.target)
             .expect("checked by construction that dir is not root");
 
         let err = || {
