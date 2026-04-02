@@ -52,7 +52,6 @@ wildcard_enum_match_arm = "warn"
 
 [dependencies]
 anyhow = "1.0"
-bon = "3.9"
 clap = { version = "4.5", features = ["derive", "wrap_help"] }
 derive_more = { version = "2.1", features = ["display"] }
 either = "1.15"

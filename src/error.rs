@@ -22,15 +22,28 @@ impl ErrorMessage {
 }
 
 /// Context to why there is nothing to do for us.
-#[derive(Debug, Display)]
-pub struct NothingToDo(String);
+pub struct NothingToDo<T> {
+    /// The original location of the image container.
+    pub path: T,
+    /// The reason why there is nothing to do.
+    pub reason: NothingToDoReason,
+}
 
-impl Error for NothingToDo {}
+/// The reason why we decided there is nothing to do.
+#[derive(Debug)]
+pub enum NothingToDoReason {
+    /// We found the conversion was performed before.
+    AlreadyConverted,
+    /// The requested conversion is not applicable to any image found.
+    NothingToConvert,
+}
 
-impl NothingToDo {
-    /// Create a message with an explanation.
-    pub fn new(msg: impl Into<String>) -> Self {
-        Self(msg.into())
+impl std::fmt::Display for NothingToDoReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AlreadyConverted => f.write_str("Already converted"),
+            Self::NothingToConvert => f.write_str("Nothing to convert"),
+        }
     }
 }
 

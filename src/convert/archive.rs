@@ -16,7 +16,7 @@ use crate::convert::ConversionConfig;
 use crate::convert::dir::TempDirGuard;
 use crate::convert::image::{ConversionJob, ConversionJobs};
 use crate::convert::search::ArchiveImages;
-use crate::error::{ErrorMessage, NothingToDo};
+use crate::error::{ErrorMessage, NothingToDo, NothingToDoReason};
 use crate::spawn::{self, ManagedChild};
 
 /// Represents the job to convert all images within a Zip archive.
@@ -77,23 +77,21 @@ impl ArchiveJob {
     pub fn new(
         archive: ArchiveImages,
         config: ConversionConfig,
-    ) -> Result<Result<Self, Exn<NothingToDo>>, Exn<ErrorMessage>> {
+    ) -> Result<Result<Self, NothingToDo<ArchivePath>>, Exn<ErrorMessage>> {
         let ArchiveImages { archive, images } = archive;
 
-        let ctx_str = || {
+        let err = || {
             let archive = archive.display();
-            format!("Preparing job for archive conversion \"{archive}\"")
+            let msg = format!("Preparing job for archive conversion \"{archive}\"");
+            ErrorMessage::new(msg)
         };
-        let err = || ErrorMessage::new(ctx_str());
-        let soft_err = || NothingToDo::new(ctx_str());
 
-        let ConversionConfig { target, .. } = config;
+        let target = config.target;
 
         if Self::already_converted(&archive, target).or_raise(err)? {
-            let archive = archive.display();
-            let msg = format!("Already converted \"{archive}\"");
-            let exn = Exn::new(NothingToDo::new(msg));
-            return Ok(Err(exn));
+            let reason = NothingToDoReason::AlreadyConverted;
+            let path = archive;
+            return Ok(Err(NothingToDo { path, reason }));
         }
 
         let root_dir = Self::get_extraction_root_dir(&archive).or_raise(err)?;
@@ -101,16 +99,18 @@ impl ArchiveJob {
         let extraction = ExtractionJob {
             archive: archive.clone(),
         };
-        let conversion = ConversionJobs::new(images, &root_dir, config)
-            .or_raise(err)?
-            .or_raise(soft_err);
+        let Some(conversion) = ConversionJobs::new(images, &root_dir, config).or_raise(err)? else {
+            let reason = NothingToDoReason::NothingToConvert;
+            let path = archive;
+            return Ok(Err(NothingToDo { path, reason }));
+        };
 
         let compression = CompressionJob {
             root: Self::get_conversion_root_dir(&archive),
             target,
             extension: archive.extension,
         };
-        Ok(conversion.map(|conversion| Self {
+        Ok(Ok(Self {
             archive,
             extraction,
             conversion,
@@ -129,7 +129,7 @@ impl ArchiveJob {
     ///
     /// A converted archive either already holds the correct image format suffix in its name, or
     /// there exists another archive with the same name and that suffix in the same directory.
-    fn already_converted(
+    pub fn already_converted(
         path: &ArchivePath,
         target: ConversionTarget,
     ) -> Result<bool, Exn<ErrorMessage>> {

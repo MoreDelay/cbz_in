@@ -2,7 +2,8 @@
 
 use std::collections::HashSet;
 use std::io::BufRead as _;
-use std::path::PathBuf;
+use std::ops::Deref;
+use std::path::{Path, PathBuf};
 
 use exn::{Exn, ResultExt as _};
 use tracing::debug;
@@ -14,14 +15,29 @@ pub use crate::convert::image::ImageFormat;
 use crate::error::ErrorMessage;
 use crate::spawn::{self, ManagedChild};
 
+/// Abstraction for collection of images that may be converted later.
+pub trait ImageCollection: Sized {
+    /// The filesystem type where images were collected.
+    type Path: Deref<Target = Path>;
+
+    /// Filter out all images that do not have the target image format
+    fn filter(self, filter: &HashSet<ImageFormat>) -> Result<Self, Self::Path>;
+
+    /// Provide metadata about all images stored in this collection.
+    fn infos(&self) -> impl Iterator<Item = &ImageInfo>;
+
+    /// Filter out all images that do not have the target image format
+    fn path(&self) -> &Self::Path;
+}
+
 /// Collection of all images found in an archive.
 ///
 /// The image paths stored here are relative to the archive root.
 pub struct ArchiveImages {
     /// The archive for which we store information.
-    pub(super) archive: ArchivePath,
+    pub archive: ArchivePath,
     /// All images found.
-    pub(super) images: Vec<ImageInfo>,
+    pub images: Vec<ImageInfo>,
 }
 
 impl ArchiveImages {
@@ -53,22 +69,28 @@ impl ArchiveImages {
         }
         Ok(Ok(Self { archive, images }))
     }
+}
 
-    /// Filter out all images that do not have the target image format
-    pub fn filter(self, filter: &HashSet<ImageFormat>) -> Option<Self> {
+impl ImageCollection for ArchiveImages {
+    type Path = ArchivePath;
+
+    fn filter(self, filter: &HashSet<ImageFormat>) -> Result<Self, Self::Path> {
         let images = self
             .images
             .into_iter()
             .filter(|info| filter.contains(&info.format()))
             .collect::<Vec<_>>();
         if images.is_empty() {
-            return None;
+            return Err(self.archive);
         }
-        Some(Self { images, ..self })
+        Ok(Self { images, ..self })
     }
 
-    /// Get the archive path where these images were found.
-    pub const fn path(&self) -> &ArchivePath {
+    fn infos(&self) -> impl Iterator<Item = &ImageInfo> {
+        self.images.iter()
+    }
+
+    fn path(&self) -> &Self::Path {
         &self.archive
     }
 }
@@ -94,7 +116,7 @@ pub struct DirImages {
 
 impl DirImages {
     /// Find all images in a directory.
-    pub fn search_recursive(root: Directory) -> Result<Option<Self>, Exn<ErrorMessage>> {
+    pub fn search_recursive(root: Directory) -> Result<Result<Self, Directory>, Exn<ErrorMessage>> {
         let err = || {
             let root = root.display();
             ErrorMessage::new(format!("Listing files within directory \"{root}\""))
@@ -118,26 +140,32 @@ impl DirImages {
             .or_raise(err)?;
 
         if images.is_empty() {
-            return Ok(None);
+            return Ok(Err(root));
         }
-        Ok(Some(Self { root, images }))
+        Ok(Ok(Self { root, images }))
     }
+}
 
-    /// Filter out all images that do not have the target image format
-    pub fn filter(self, filter: &HashSet<ImageFormat>) -> Option<Self> {
+impl ImageCollection for DirImages {
+    type Path = Directory;
+
+    fn filter(self, filter: &HashSet<ImageFormat>) -> Result<Self, Self::Path> {
         let images = self
             .images
             .into_iter()
             .filter(|info| filter.contains(&info.format()))
             .collect::<Vec<_>>();
         if images.is_empty() {
-            return None;
+            return Err(self.root);
         }
-        Some(Self { images, ..self })
+        Ok(Self { images, ..self })
     }
 
-    /// Get the directory where these images were found.
-    pub const fn path(&self) -> &Directory {
+    fn infos(&self) -> impl Iterator<Item = &ImageInfo> {
+        self.images.iter()
+    }
+
+    fn path(&self) -> &Self::Path {
         &self.root
     }
 }

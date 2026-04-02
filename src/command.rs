@@ -1,140 +1,128 @@
 //! Contains the main, high-level job which performs the command chosen by the user
 
-use std::collections::{HashSet, VecDeque};
-use std::num::NonZeroUsize;
-use std::path::PathBuf;
-use std::thread;
+// use std::collections::{HashSet, VecDeque};
+// use std::num::NonZeroUsize;
+// use std::path::PathBuf;
+// use std::thread;
+//
+// use exn::Exn;
+//
+// use crate::convert::image::ImageFormat;
+// use crate::convert::{ConversionConfig, ConvertJob};
+// use crate::error::ErrorMessage;
+// use crate::stats::StatsConfig;
 
-use exn::Exn;
+// /// The top-level task of the application, as determined by user arguments.
+// pub struct MainJob(MainJobInner);
+//
+// impl MainJob {
+//     /// Execute the main job on archives.
+//     ///
+//     /// Convert all found images according to `config`. If `config` is `None`, then we only collect
+//     /// statistics.
+//     pub fn on_archives(
+//         paths: VecDeque<PathBuf>,
+//         config: MainJobConfig,
+//     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
+//         MainJobInner::on_archives(paths, config).map(|opt| opt.map(Self))
+//     }
+//
+//     /// Execute the main job on directories.
+//     ///
+//     /// Convert all found images according to `config`. If `config` is `None`, then we only collect
+//     /// statistics.
+//     pub fn on_directories(
+//         paths: VecDeque<PathBuf>,
+//         config: MainJobConfig,
+//     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
+//         MainJobInner::on_directories(paths, config).map(|opt| opt.map(Self))
+//     }
+//
+//     /// Run this job.
+//     pub fn run(self, dry_run: bool) -> Result<(), Exn<ErrorMessage>> {
+//         self.0.run(dry_run)
+//     }
+// }
 
-use crate::convert::image::ImageFormat;
-use crate::convert::{ConversionConfig, ConvertJob};
-use crate::error::ErrorMessage;
-use crate::stats::{StatsConfig, StatsJob};
+// impl MainJobInner {
+//     /// Create the main job on archives.
+//     fn on_archives(
+//         paths: VecDeque<PathBuf>,
+//         config: MainJobConfig,
+//     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
+//         use MainJobConfig::*;
+//
+//         let job = match config {
+//             Stats(config) => StatsJob::on_archives(paths, config)?.map(Self::Stats),
+//             Convert(config) => ConvertJob::on_archives(paths, config)?.map(Self::Convert),
+//         };
+//         Ok(job)
+//     }
+//
+//     /// Create the main job on directories.
+//     fn on_directories(
+//         paths: VecDeque<PathBuf>,
+//         config: MainJobConfig,
+//     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
+//         use MainJobConfig::*;
+//
+//         let job = match config {
+//             Stats(config) => StatsJob::on_directories(paths, config)?.map(Self::Stats),
+//             Convert(config) => ConvertJob::on_directories(paths, config)?.map(Self::Convert),
+//         };
+//         Ok(job)
+//     }
+//
+//     /// Run this job.
+//     pub fn run(self, dry_run: bool) -> Result<(), Exn<ErrorMessage>> {
+//         match self {
+//             Self::Stats(job) => job.run(),
+//             Self::Convert(job) => job.run(dry_run)?,
+//         }
+//         Ok(())
+//     }
+// }
 
-/// The top-level task of the application, as determined by user arguments.
-pub struct MainJob(MainJobImpl);
-
-impl MainJob {
-    /// Execute the main job on archives.
-    ///
-    /// Convert all found images according to `config`. If `config` is `None`, then we only collect
-    /// statistics.
-    pub fn on_archives(
-        paths: VecDeque<PathBuf>,
-        config: MainJobConfig,
-    ) -> Result<Option<Self>, Exn<ErrorMessage>> {
-        MainJobImpl::on_archives(paths, config).map(|opt| opt.map(Self))
-    }
-
-    /// Execute the main job on directories.
-    ///
-    /// Convert all found images according to `config`. If `config` is `None`, then we only collect
-    /// statistics.
-    pub fn on_directories(
-        paths: VecDeque<PathBuf>,
-        config: MainJobConfig,
-    ) -> Result<Option<Self>, Exn<ErrorMessage>> {
-        MainJobImpl::on_directories(paths, config).map(|opt| opt.map(Self))
-    }
-
-    /// Run this job.
-    pub fn run(self, dry_run: bool) -> Result<(), Exn<ErrorMessage>> {
-        self.0.run(dry_run)
-    }
-}
-
-/// The different options of top-level tasks.
-///
-/// This is non-public, so it needs to be wrapped in a tuple struct for outside use. See
-/// [`MainJob`].
-enum MainJobImpl {
-    /// We print statistics.
-    Stats(StatsJob),
-    /// We convert images.
-    Convert(ConvertJob),
-}
-
-impl MainJobImpl {
-    /// Create the main job on archives.
-    fn on_archives(
-        paths: VecDeque<PathBuf>,
-        config: MainJobConfig,
-    ) -> Result<Option<Self>, Exn<ErrorMessage>> {
-        use MainJobConfig::*;
-
-        let job = match config {
-            Stats(config) => StatsJob::on_archives(paths, config)?.map(Self::Stats),
-            Convert(config) => ConvertJob::on_archives(paths, config)?.map(Self::Convert),
-        };
-        Ok(job)
-    }
-
-    /// Create the main job on directories.
-    fn on_directories(
-        paths: VecDeque<PathBuf>,
-        config: MainJobConfig,
-    ) -> Result<Option<Self>, Exn<ErrorMessage>> {
-        use MainJobConfig::*;
-
-        let job = match config {
-            Stats(config) => StatsJob::on_directories(paths, config)?.map(Self::Stats),
-            Convert(config) => ConvertJob::on_directories(paths, config)?.map(Self::Convert),
-        };
-        Ok(job)
-    }
-
-    /// Run this job.
-    pub fn run(self, dry_run: bool) -> Result<(), Exn<ErrorMessage>> {
-        match self {
-            Self::Stats(job) => job.run(),
-            Self::Convert(job) => job.run(dry_run)?,
-        }
-        Ok(())
-    }
-}
-
-/// Specifies the kind of main job to create, with corresponding configuration
-#[derive(Debug, Clone, Copy)]
-pub enum MainJobConfig<'a> {
-    /// Run a statistics job,
-    Stats(StatsConfig<'a>),
-    /// Run a conversion job.
-    Convert(ConversionConfig<'a>),
-}
-
-#[bon::bon]
-impl<'a> MainJobConfig<'a> {
-    /// Setup the configuration for the main job from user provided arguments.
-    ///
-    /// Takes source as a reference to keep the struct Copy.
-    #[expect(clippy::option_option, reason = "passed from clap argument parsing")]
-    #[builder]
-    pub fn new(
-        command: crate::Command,
-        source: &'a HashSet<ImageFormat>,
-        #[builder(required)] workers: Option<Option<NonZeroUsize>>,
-        verbose: bool,
-    ) -> Self {
-        const ONE: NonZeroUsize = NonZeroUsize::new(1).unwrap();
-
-        let n_workers = match workers {
-            Some(Some(value)) => value,
-            Some(None) => ONE,
-            None => thread::available_parallelism().unwrap_or(ONE),
-        };
-
-        match command {
-            crate::Command::Stats => Self::Stats(StatsConfig {
-                filter: source,
-                verbose,
-            }),
-            crate::Command::Convert(target) => Self::Convert(ConversionConfig {
-                source,
-                target,
-                n_workers,
-                verbose,
-            }),
-        }
-    }
-}
+// /// Specifies the kind of main job to create, with corresponding configuration
+// #[derive(Debug, Clone, Copy)]
+// pub enum MainJobConfig<'a> {
+//     /// Run a statistics job,
+//     Stats(StatsConfig<'a>),
+//     /// Run a conversion job.
+//     Convert(ConversionConfig),
+// }
+//
+// #[bon::bon]
+// impl<'a> MainJobConfig<'a> {
+//     /// Setup the configuration for the main job from user provided arguments.
+//     ///
+//     /// Takes source as a reference to keep the struct Copy.
+//     #[expect(clippy::option_option, reason = "passed from clap argument parsing")]
+//     #[builder]
+//     pub fn new(
+//         command: crate::Command,
+//         source: &'a HashSet<ImageFormat>,
+//         #[builder(required)] workers: Option<Option<NonZeroUsize>>,
+//         verbose: bool,
+//     ) -> Self {
+//         const ONE: NonZeroUsize = NonZeroUsize::new(1).unwrap();
+//
+//         let n_workers = match workers {
+//             Some(Some(value)) => value,
+//             Some(None) => ONE,
+//             None => thread::available_parallelism().unwrap_or(ONE),
+//         };
+//
+//         match command {
+//             crate::Command::Stats => Self::Stats(StatsConfig {
+//                 filter: source,
+//                 verbose,
+//             }),
+//             crate::Command::Convert(target) => Self::Convert(ConversionConfig {
+//                 target,
+//                 n_workers,
+//                 verbose,
+//             }),
+//         }
+//     }
+// }

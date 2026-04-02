@@ -11,12 +11,12 @@ use indicatif::ProgressBar;
 use itertools::Itertools as _;
 use signal_hook::consts::{SIGCHLD, SIGINT};
 use signal_hook::iterator::Signals;
-use tracing::debug;
+use tracing::{debug, trace};
 
 use crate::ConversionTarget;
 use crate::convert::ConversionConfig;
 use crate::convert::search::ImageInfo;
-use crate::error::{ErrorMessage, Interrupted, NothingToDo};
+use crate::error::{ErrorMessage, Interrupted};
 use crate::spawn::{self, ManagedChild, Tool};
 
 /// Represents the task to convert an image from one type to another.
@@ -364,11 +364,7 @@ impl Plan {
         use ConversionTarget as C;
         use ImageFormat as I;
 
-        let ConversionConfig { source, target, .. } = config;
-
-        if !source.contains(&current) {
-            return None;
-        }
+        let ConversionConfig { target, .. } = config;
 
         let out = match (current, target) {
             (a, b) if a == b.format() => return None,
@@ -563,25 +559,23 @@ impl ConversionJobs {
         images: Vec<ImageInfo>,
         root_dir: &Path,
         config: ConversionConfig,
-    ) -> Result<Result<Self, Exn<NothingToDo>>, Exn<ErrorMessage>> {
+    ) -> Result<Option<Self>, Exn<ErrorMessage>> {
         let job_queue = images
             .into_iter()
             .filter_map(|ImageInfo { path, format }| {
                 let image_path = root_dir.join(path);
                 if let Some(task) = Plan::new(format, config) {
-                    debug!("create job for {image_path:?}: {task:?}");
+                    trace!("create job for {image_path:?}: {task:?}");
                     Some(ConversionJob::new(image_path, task))
                 } else {
-                    debug!("skip conversion for {image_path:?}");
+                    trace!("skip conversion for {image_path:?}");
                     None
                 }
             })
             .collect::<VecDeque<_>>();
 
         if job_queue.is_empty() {
-            let msg = "No files to convert";
-            let exn = Exn::new(NothingToDo::new(msg));
-            return Ok(Err(exn));
+            return Ok(None);
         }
         let name_occurrences = job_queue
             .iter()
@@ -601,7 +595,7 @@ impl ConversionJobs {
             return Err(exn);
         }
 
-        Ok(Ok(Self {
+        Ok(Some(Self {
             job_queue,
             n_workers: config.n_workers,
         }))
@@ -619,6 +613,8 @@ impl ConversionJobs {
 
     /// Run this job.
     pub fn run(self, bar: &ProgressBar) -> Result<(), Exn<ErrorMessage>> {
+        bar.reset();
+        bar.set_length(self.len() as u64);
         RunConversionJobs::new(self).run(bar)
     }
 }

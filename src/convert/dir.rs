@@ -11,7 +11,7 @@ use walkdir::WalkDir;
 use crate::convert::ConversionConfig;
 use crate::convert::image::{ConversionJob, ConversionJobs, ImageFormat};
 use crate::convert::search::DirImages;
-use crate::error::{ErrorMessage, NothingToDo};
+use crate::error::{ErrorMessage, NothingToDo, NothingToDoReason};
 
 /// Represents the job to convert all images within a directory.
 ///
@@ -69,14 +69,13 @@ impl RecursiveDirJob {
     pub fn new(
         dir: DirImages,
         config: ConversionConfig,
-    ) -> Result<Result<Self, Exn<NothingToDo>>, Exn<ErrorMessage>> {
+    ) -> Result<Result<Self, NothingToDo<Directory>>, Exn<ErrorMessage>> {
         let DirImages { root, images } = dir;
         let ctx_str = || {
             let root = root.display();
             format!("Preparing job for recursive image conversion starting at \"{root}\"")
         };
         let err = || ErrorMessage::new(ctx_str());
-        let soft_err = || NothingToDo::new(ctx_str());
 
         let mut components_iter = root.components();
         if components_iter.next() == Some(std::path::Component::RootDir)
@@ -90,23 +89,26 @@ impl RecursiveDirJob {
         let ConversionConfig { target, .. } = config;
 
         if Self::already_converted(&root, target.format()).or_raise(err)? {
-            let root = root.display();
-            let msg = format!("Already converted \"{root}\"");
-            let exn = Exn::new(NothingToDo::new(msg));
-            return Ok(Err(exn));
+            let reason = NothingToDoReason::AlreadyConverted;
+            let path = root;
+            return Ok(Err(NothingToDo { path, reason }));
         }
 
         let copy_root = Self::get_hardlink_dir(&root, config.target.format()).or_raise(err)?;
+
+        let Some(conversion) = ConversionJobs::new(images, &copy_root, config).or_raise(err)?
+        else {
+            let reason = NothingToDoReason::NothingToConvert;
+            let path = root;
+            return Ok(Err(NothingToDo { path, reason }));
+        };
 
         let hardlink = RecursiveHardLinkJob {
             root: root.clone(),
             target: target.format(),
         };
-        let conversion = ConversionJobs::new(images, &copy_root, config)
-            .or_raise(err)?
-            .or_raise(soft_err);
 
-        Ok(conversion.map(|conversion| Self {
+        Ok(Ok(Self {
             root,
             hardlink,
             conversion,
@@ -201,13 +203,9 @@ impl Directory {
     /// Checked constructor to verify the path points to a directory.
     ///
     /// This only checks that the directory exists at the time of creation.
-    pub fn new(
-        path: PathBuf,
-    ) -> Result<Result<Self, Exn<ErrorMessage, PathBuf>>, Exn<ErrorMessage>> {
+    pub fn new(path: PathBuf) -> Result<Result<Self, PathBuf>, Exn<ErrorMessage>> {
         if !path.is_dir() {
-            let msg = "Provided path is not a directory";
-            let err = Exn::with_recovery(ErrorMessage::new(msg), path);
-            return Ok(Err(err));
+            return Ok(Err(path));
         }
 
         let err = {
