@@ -2,16 +2,16 @@
 
 use std::collections::HashSet;
 use std::ops::Not as _;
-use std::path::PathBuf;
 
-use exn::{ErrorExt as _, Exn};
+use exn::Exn;
 use tracing::debug;
 
 use crate::command::{print_stats_per_format, print_stats_total};
+use crate::convert::archive::ArchivePath;
 use crate::convert::dir::Directory;
 use crate::convert::image::ImageFormat;
 use crate::convert::search::{ArchiveImages, DirectoryImages, Images};
-use crate::convert::{Bars, ConversionConfig, DirOrArchive, Job};
+use crate::convert::{Bars, ConversionConfig, Job};
 use crate::error::{ErrorMessage, NothingToDo};
 use crate::stats::Stats;
 use crate::stdout;
@@ -21,19 +21,32 @@ pub struct ImageCollection<I: Images>(Vec<I>);
 
 impl ImageCollection<ArchiveImages> {
     /// Look for images in archives.
-    pub fn on_archives(
-        paths: impl Iterator<Item = PathBuf>,
+    pub fn in_archives(
+        paths: impl Iterator<Item = ArchivePath>,
     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
+        Self::new(paths)
+    }
+}
+
+impl ImageCollection<DirectoryImages> {
+    /// Look for images in directories.
+    pub fn in_directories(
+        paths: impl Iterator<Item = Directory>,
+    ) -> Result<Option<Self>, Exn<ErrorMessage>> {
+        Self::new(paths)
+    }
+}
+
+impl<I: Images> ImageCollection<I> {
+    /// Generic constructor that relies on [`Images`] behavior to search for images.
+    fn new(paths: impl Iterator<Item = I::Path>) -> Result<Option<Self>, Exn<ErrorMessage>> {
         let found = paths
             .into_iter()
-            .map(|path| DirOrArchive::check(path)?.archive_iter())
-            .collect::<Result<Vec<_>, Exn<_>>>()?
-            .into_iter()
-            .flatten()
-            .map(|path| {
-                let images = ArchiveImages::new(path)?
-                    .inspect_err(|path| {
-                        debug!("Archive has no images: \"{}\"", path.display());
+            .map(|dir| {
+                let images = I::search(dir)?
+                    .inspect_err(|dir| {
+                        let name = I::fs_root().singular();
+                        debug!("{name} has no images: \"{}\"", dir.display());
                     })
                     .ok();
                 Ok(images)
@@ -43,38 +56,7 @@ impl ImageCollection<ArchiveImages> {
 
         Ok(found.is_empty().not().then_some(Self(found)))
     }
-}
 
-impl ImageCollection<DirectoryImages> {
-    /// Look for images in directories.
-    pub fn on_directories(
-        paths: impl Iterator<Item = PathBuf>,
-    ) -> Result<Option<Self>, Exn<ErrorMessage>> {
-        let found = paths
-            .into_iter()
-            .map(|path| {
-                let dir = Directory::new(path)?.map_err(|path| {
-                    let msg = format!("Path is not a directory: \"{}\"", path.display());
-                    ErrorMessage::new(msg).raise()
-                })?;
-
-                let images = DirectoryImages::search_recursive(dir)?
-                    .inspect_err(|dir| {
-                        debug!("Directory has no images: \"{}\"", dir.display());
-                    })
-                    .ok();
-                Ok(images)
-            })
-            .collect::<Result<Vec<_>, Exn<_>>>()?
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>();
-
-        Ok(found.is_empty().not().then_some(Self(found)))
-    }
-}
-
-impl<I: Images> ImageCollection<I> {
     /// Filter out all images such that only those remain that are specified in the filter.
     pub fn filter(self, filter: &HashSet<ImageFormat>) -> Option<Self> {
         let images = self

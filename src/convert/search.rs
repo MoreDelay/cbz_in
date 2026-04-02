@@ -24,6 +24,9 @@ pub trait Images: Sized {
     /// Get the filesystem entry that is the root of the found images.
     fn fs_root() -> FilesystemRoot;
 
+    /// Find all images in the specified root.
+    fn search(root: Self::Path) -> Result<Result<Self, Self::Path>, Exn<ErrorMessage>>;
+
     /// Filter out all images that do not have the target image format.
     fn filter(self, filter: &HashSet<ImageFormat>) -> Result<Self, Self::Path>;
 
@@ -44,12 +47,18 @@ pub struct ArchiveImages {
     pub images: Vec<ImageInfo>,
 }
 
-impl ArchiveImages {
-    /// Find all images in an archive.
-    pub fn new(archive: ArchivePath) -> Result<Result<Self, ArchivePath>, Exn<ErrorMessage>> {
+impl Images for ArchiveImages {
+    type Path = ArchivePath;
+
+    fn fs_root() -> FilesystemRoot {
+        FilesystemRoot::Archive
+    }
+
+    fn search(root: Self::Path) -> Result<Result<Self, Self::Path>, Exn<ErrorMessage>> {
+        let archive = root;
         let err = || {
-            let archive = archive.display();
-            ErrorMessage::new(format!("Listing files within archive \"{archive}\""))
+            let root = archive.display();
+            ErrorMessage::new(format!("Listing files within archive \"{root}\""))
         };
 
         let images = spawn::list_archive_files(&archive)
@@ -72,14 +81,6 @@ impl ArchiveImages {
             return Ok(Err(archive));
         }
         Ok(Ok(Self { archive, images }))
-    }
-}
-
-impl Images for ArchiveImages {
-    type Path = ArchivePath;
-
-    fn fs_root() -> FilesystemRoot {
-        FilesystemRoot::Archive
     }
 
     fn filter(self, filter: &HashSet<ImageFormat>) -> Result<Self, Self::Path> {
@@ -122,9 +123,14 @@ pub struct DirectoryImages {
     pub(super) images: Vec<ImageInfo>,
 }
 
-impl DirectoryImages {
-    /// Find all images in a directory.
-    pub fn search_recursive(root: Directory) -> Result<Result<Self, Directory>, Exn<ErrorMessage>> {
+impl Images for DirectoryImages {
+    type Path = Directory;
+
+    fn fs_root() -> FilesystemRoot {
+        FilesystemRoot::Directory
+    }
+
+    fn search(root: Self::Path) -> Result<Result<Self, Self::Path>, Exn<ErrorMessage>> {
         let err = || {
             let root = root.display();
             ErrorMessage::new(format!("Listing files within directory \"{root}\""))
@@ -151,14 +157,6 @@ impl DirectoryImages {
             return Ok(Err(root));
         }
         Ok(Ok(Self { root, images }))
-    }
-}
-
-impl Images for DirectoryImages {
-    type Path = Directory;
-
-    fn fs_root() -> FilesystemRoot {
-        FilesystemRoot::Directory
     }
 
     fn filter(self, filter: &HashSet<ImageFormat>) -> Result<Self, Self::Path> {

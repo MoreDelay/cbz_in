@@ -7,18 +7,15 @@ pub mod image;
 pub mod search;
 
 use std::num::NonZeroUsize;
-use std::path::PathBuf;
 
-use exn::{ErrorExt as _, Exn, ResultExt as _};
+use exn::Exn;
 use indicatif::{MultiProgress, ProgressBar};
 use tracing::warn;
 
 use crate::ConversionTarget;
-use crate::convert::archive::ArchivePath;
-use crate::convert::dir::Directory;
 use crate::convert::image::ConversionJob;
 use crate::convert::search::Images;
-use crate::error::{CompactReport, ErrorMessage, NothingToDo};
+use crate::error::{ErrorMessage, NothingToDo};
 
 /// General configuration for a run of any conversion job.
 #[derive(Debug, Clone, Copy)]
@@ -111,71 +108,6 @@ impl Bars {
             .with_style(style)
             .with_message(title)
             .with_finish(indicatif::ProgressFinish::Abandon)
-    }
-}
-
-/// A path that points either to a directory or to an archive.
-enum DirOrArchive {
-    /// The path points to a directory
-    Directory(Directory),
-    /// The path points to an archive
-    Archive(ArchivePath),
-}
-
-impl DirOrArchive {
-    /// Verify the path points either to a directory or an archive.
-    pub fn check(path: PathBuf) -> Result<Self, Exn<ErrorMessage>> {
-        let (path, dir_exn) = match Directory::new(path)? {
-            Ok(root) => return Ok(Self::Directory(root)),
-            Err(path) => (path, ErrorMessage::new("Not a directory").raise()),
-        };
-
-        let (path, archive_exn) = match ArchivePath::new(path) {
-            Ok(archive) => return Ok(Self::Archive(archive)),
-            Err(exn) => exn.recover(),
-        };
-
-        let path = path.display();
-        let msg = format!("Neither an archive nor a directory: \"{path}\"");
-        let exn = Exn::raise_all(ErrorMessage::new(msg), [dir_exn, archive_exn]);
-        Err(exn)
-    }
-
-    /// Convert this to a iterator over all applicable archives.
-    ///
-    /// When this is an archive directly, gives back just that one archive. When it is a directory,
-    /// looks for any direct child files that are archives, and iterates over those.
-    pub fn archive_iter(self) -> Result<impl Iterator<Item = ArchivePath>, Exn<ErrorMessage>> {
-        match self {
-            Self::Directory(dir) => {
-                let flattened = Self::flatten_dir(&dir, true)?;
-                Ok(either::Left(flattened.into_iter()))
-            }
-            Self::Archive(file) => Ok(either::Right(std::iter::once(file))),
-        }
-    }
-
-    /// Find all child entries of this directory and collect those those that are archives.
-    fn flatten_dir(dir: &Directory, verbose: bool) -> Result<Vec<ArchivePath>, Exn<ErrorMessage>> {
-        let err = || ErrorMessage::new("finding archives in directory");
-
-        dir.read_dir()
-            .or_raise(err)?
-            .map(|dir_entry| {
-                let path = dir_entry.or_raise(err)?.path();
-                match ArchivePath::new(path) {
-                    Ok(archive) => Ok(Some(archive)),
-                    Err(exn) => {
-                        let (path, exn) = exn.recover();
-                        let path = path.display();
-                        let report = CompactReport::new(&exn);
-                        crate::verbose(verbose, format!("Skipping \"{path}\": {report}"));
-                        Ok(None)
-                    }
-                }
-            })
-            .filter_map(Result::transpose)
-            .collect()
     }
 }
 

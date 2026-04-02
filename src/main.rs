@@ -14,7 +14,8 @@ use clap::{self, Parser as _};
 use exn::{ErrorExt as _, Exn, OptionExt as _, ResultExt as _};
 use tracing::{error, info};
 
-use crate::command::FoundCollections;
+use crate::command::FoundImages;
+use crate::convert::FilesystemRoot;
 use crate::convert::image::ImageFormat;
 use crate::error::{CompactReport, ErrorMessage, got_interrupted};
 
@@ -53,19 +54,19 @@ fn real_main() -> Result<(), Exn<ErrorMessage>> {
     let cwd = std::env::current_dir().unwrap_or_default();
     info!("working directory: {:?}", cwd);
 
-    let source = ConversionSource::to_filter_set(&args.from);
-
     let paths = args.paths.into_iter();
-    let found = match args.no_archive {
-        true => FoundCollections::on_directories(paths)?,
-        false => FoundCollections::on_archives(paths)?,
+    let root = match args.no_archive {
+        true => FilesystemRoot::Directory,
+        false => FilesystemRoot::Archive,
     };
+    let found = FoundImages::search(paths, root)?;
 
     let Some(found) = found else {
         stdout("Nothing to do");
         return Ok(());
     };
 
+    let source = ConversionSource::to_filter_set(&args.from);
     let Some(filtered) = found.filter(&source) else {
         stdout("Nothing to do");
         return Ok(());
