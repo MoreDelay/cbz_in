@@ -2,221 +2,59 @@
 
 use std::collections::HashSet;
 use std::num::NonZeroUsize;
+use std::ops::Deref as _;
 use std::path::PathBuf;
 
 use exn::{ErrorExt as _, Exn, ResultExt as _};
-use tracing::{debug, info};
+use tracing::info;
 
-use crate::convert::archive::{ArchiveJob, ArchivePath};
-use crate::convert::collection::JobCollection;
-use crate::convert::dir::{Directory, DirectoryJob};
+use crate::convert::archive::ArchiveJob;
+use crate::convert::collection::{ImageCollection, JobCollection};
+use crate::convert::dir::DirectoryJob;
 use crate::convert::image::ImageFormat;
-use crate::convert::search::{ArchiveImages, DirImages, ImageCollection};
+use crate::convert::search::{ArchiveImages, DirectoryImages};
 use crate::convert::{ConversionConfig, Job};
-use crate::error::{CompactReport, ErrorMessage};
+use crate::error::ErrorMessage;
 use crate::stats::Stats;
 use crate::{ConversionTarget, stdout};
-
-/// A path that points either to a directory or to an archive.
-pub enum DirOrArchive {
-    /// The path points to a directory
-    Directory(Directory),
-    /// The path points to an archive
-    Archive(ArchivePath),
-}
-
-impl DirOrArchive {
-    /// Verify the path points either to a directory or an archive.
-    pub fn check(path: PathBuf) -> Result<Self, Exn<ErrorMessage>> {
-        let (path, dir_exn) = match Directory::new(path)? {
-            Ok(root) => return Ok(Self::Directory(root)),
-            Err(path) => (path, ErrorMessage::new("Not a directory").raise()),
-        };
-
-        let (path, archive_exn) = match ArchivePath::new(path) {
-            Ok(archive) => return Ok(Self::Archive(archive)),
-            Err(exn) => exn.recover(),
-        };
-
-        let path = path.display();
-        let msg = format!("Neither an archive nor a directory: \"{path}\"");
-        let exn = Exn::raise_all(ErrorMessage::new(msg), [dir_exn, archive_exn]);
-        Err(exn)
-    }
-
-    /// Convert this to a iterator over all applicable archives.
-    ///
-    /// When this is an archive directly, gives back just that one archive. When it is a directory,
-    /// looks for any direct child files that are archives, and iterates over those.
-    pub fn archive_iter(self) -> Result<impl Iterator<Item = ArchivePath>, Exn<ErrorMessage>> {
-        match self {
-            Self::Directory(dir) => {
-                let flattened = Self::flatten_dir(&dir, true)?;
-                Ok(either::Left(flattened.into_iter()))
-            }
-            Self::Archive(file) => Ok(either::Right(std::iter::once(file))),
-        }
-    }
-
-    /// Find all child entries of this directory and collect those those that are archives.
-    fn flatten_dir(dir: &Directory, verbose: bool) -> Result<Vec<ArchivePath>, Exn<ErrorMessage>> {
-        let err = || ErrorMessage::new("finding archives in directory");
-
-        dir.read_dir()
-            .or_raise(err)?
-            .map(|dir_entry| {
-                let path = dir_entry.or_raise(err)?.path();
-                match ArchivePath::new(path) {
-                    Ok(archive) => Ok(Some(archive)),
-                    Err(exn) => {
-                        let (path, exn) = exn.recover();
-                        let path = path.display();
-                        let report = CompactReport::new(&exn);
-                        crate::verbose(verbose, format!("Skipping \"{path}\": {report}"));
-                        Ok(None)
-                    }
-                }
-            })
-            .filter_map(Result::transpose)
-            .collect()
-    }
-}
 
 /// All collections found in the locations specified by the user.
 pub enum FoundCollections {
     /// We looked for images in archives.
-    Archives(Vec<ArchiveImages>),
+    Archives(ImageCollection<ArchiveImages>),
     /// We looked for images in directories.
-    Directories(Vec<DirImages>),
+    Directories(ImageCollection<DirectoryImages>),
 }
 
 impl FoundCollections {
     /// Look for images in archives.
-    pub fn on_archives(paths: impl Iterator<Item = PathBuf>) -> Result<Self, Exn<ErrorMessage>> {
-        let found = paths
-            .into_iter()
-            .map(|path| DirOrArchive::check(path)?.archive_iter())
-            .collect::<Result<Vec<_>, Exn<_>>>()?
-            .into_iter()
-            .flatten()
-            .map(|path| {
-                let images = ArchiveImages::new(path)?
-                    .inspect_err(|path| {
-                        debug!("Archive has no images: \"{}\"", path.display());
-                    })
-                    .ok();
-                Ok(images)
-            })
-            .filter_map(Result::transpose)
-            .collect::<Result<Vec<_>, Exn<_>>>()?;
-        Ok(Self::Archives(found))
+    pub fn on_archives(
+        paths: impl Iterator<Item = PathBuf>,
+    ) -> Result<Option<Self>, Exn<ErrorMessage>> {
+        Ok(ImageCollection::on_archives(paths)?.map(Self::Archives))
     }
 
     /// Look for images in directories.
-    pub fn on_dirs(paths: impl Iterator<Item = PathBuf>) -> Result<Self, Exn<ErrorMessage>> {
-        let found = paths
-            .into_iter()
-            .map(|path| -> Result<Option<DirImages>, Exn<ErrorMessage>> {
-                let dir = Directory::new(path)?.map_err(|path| {
-                    let path = path.display();
-                    let msg = format!("Path is not a directory: \"{path}\"");
-                    ErrorMessage::new(msg).raise()
-                })?;
-
-                let images = DirImages::search_recursive(dir)?
-                    .inspect_err(|dir| {
-                        debug!("Directory has no images: \"{}\"", dir.display());
-                    })
-                    .ok();
-                Ok(images)
-            })
-            .collect::<Result<Vec<_>, Exn<_>>>()?
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>();
-
-        Ok(Self::Directories(found))
+    pub fn on_directories(
+        paths: impl Iterator<Item = PathBuf>,
+    ) -> Result<Option<Self>, Exn<ErrorMessage>> {
+        Ok(ImageCollection::on_directories(paths)?.map(Self::Directories))
     }
 
     /// Filter out all images such that only those remain that are specified in the filter.
     pub fn filter(self, filter: &HashSet<ImageFormat>) -> Option<Self> {
-        fn filter_item<T>(item: T, filter: &HashSet<ImageFormat>) -> Option<T>
-        where
-            T: ImageCollection,
-        {
-            item.filter(filter)
-                .inspect_err(|path| {
-                    debug!(
-                        "Archive has no images left after filtering: \"{}\"",
-                        path.display()
-                    );
-                })
-                .ok()
-        }
-
         match self {
-            Self::Archives(items) => {
-                let vec = items
-                    .into_iter()
-                    .filter_map(|item| filter_item(item, filter))
-                    .collect::<Vec<_>>();
-                Some(vec).filter(|v| !v.is_empty()).map(Self::Archives)
-            }
-            Self::Directories(items) => {
-                let vec = items
-                    .into_iter()
-                    .filter_map(|item| filter_item(item, filter))
-                    .collect::<Vec<_>>();
-                Some(vec).filter(|v| !v.is_empty()).map(Self::Directories)
-            }
+            Self::Archives(images) => images.filter(filter).map(Self::Archives),
+            Self::Directories(images) => images.filter(filter).map(Self::Directories),
         }
     }
 
     /// Print the number of images found per image format to stdout.
     pub fn print_stats(&self, verbose: bool) {
-        let mut all_stats = Stats::new();
-
         match self {
-            Self::Archives(items) => {
-                let count = items.len();
-                stdout(format!("Searched {count} archives:"));
-
-                for item in items {
-                    let stats = Stats::compute(item.infos());
-                    all_stats.combine(&stats);
-
-                    if verbose {
-                        let header = format!("\"{}\":", item.path().display());
-                        stdout(header);
-                        stats.print_per_format();
-                        stdout("---");
-                        stats.print_total();
-                        stdout(""); // new line
-                    }
-                }
-            }
-            Self::Directories(items) => {
-                let count = items.len();
-                stdout(format!("Searched {count} directories:"));
-
-                for item in items {
-                    let stats = Stats::compute(item.infos());
-                    all_stats.combine(&stats);
-
-                    if verbose {
-                        let header = format!("\"{}\":", item.path().display());
-                        stdout(header);
-                        print_stats_per_format(&stats);
-                        stdout(""); // new line
-                    }
-                }
-            }
+            Self::Archives(images) => images.print_stats(verbose),
+            Self::Directories(images) => images.print_stats(verbose),
         }
-
-        stdout("");
-        print_stats_per_format(&all_stats);
-        stdout("---");
-        print_stats_total(&all_stats);
     }
 
     /// Run conversion on the found images.
@@ -296,8 +134,8 @@ impl RunConversion {
         self.print_statistics();
 
         let paths: &mut dyn Iterator<Item = _> = match self {
-            Self::Archives(jobs) => &mut jobs.iter().map(Job::path),
-            Self::Directories(jobs) => &mut jobs.iter().map(Job::path),
+            Self::Archives(jobs) => &mut jobs.iter().map(|j| j.path().deref()),
+            Self::Directories(jobs) => &mut jobs.iter().map(|j| j.path().deref()),
         };
 
         for path in paths {

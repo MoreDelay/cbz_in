@@ -57,8 +57,13 @@ fn real_main() -> Result<(), Exn<ErrorMessage>> {
 
     let paths = args.paths.into_iter();
     let found = match args.no_archive {
-        true => FoundCollections::on_dirs(paths)?,
+        true => FoundCollections::on_directories(paths)?,
         false => FoundCollections::on_archives(paths)?,
+    };
+
+    let Some(found) = found else {
+        stdout("Nothing to do");
+        return Ok(());
     };
 
     let Some(filtered) = found.filter(&source) else {

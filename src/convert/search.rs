@@ -9,24 +9,28 @@ use exn::{Exn, ResultExt as _};
 use tracing::debug;
 use walkdir::WalkDir;
 
+use crate::convert::FilesystemRoot;
 use crate::convert::archive::ArchivePath;
 use crate::convert::dir::Directory;
-pub use crate::convert::image::ImageFormat;
+use crate::convert::image::ImageFormat;
 use crate::error::ErrorMessage;
 use crate::spawn::{self, ManagedChild};
 
 /// Abstraction for collection of images that may be converted later.
-pub trait ImageCollection: Sized {
+pub trait Images: Sized {
     /// The filesystem type where images were collected.
     type Path: Deref<Target = Path>;
 
-    /// Filter out all images that do not have the target image format
+    /// Get the filesystem entry that is the root of the found images.
+    fn fs_root() -> FilesystemRoot;
+
+    /// Filter out all images that do not have the target image format.
     fn filter(self, filter: &HashSet<ImageFormat>) -> Result<Self, Self::Path>;
 
     /// Provide metadata about all images stored in this collection.
     fn infos(&self) -> impl Iterator<Item = &ImageInfo>;
 
-    /// Filter out all images that do not have the target image format
+    /// Filter out all images that do not have the target image format.
     fn path(&self) -> &Self::Path;
 }
 
@@ -71,8 +75,12 @@ impl ArchiveImages {
     }
 }
 
-impl ImageCollection for ArchiveImages {
+impl Images for ArchiveImages {
     type Path = ArchivePath;
+
+    fn fs_root() -> FilesystemRoot {
+        FilesystemRoot::Archive
+    }
 
     fn filter(self, filter: &HashSet<ImageFormat>) -> Result<Self, Self::Path> {
         let images = self
@@ -107,14 +115,14 @@ impl IntoIterator for ArchiveImages {
 /// Collection of all images found in an archive.
 ///
 /// The image paths stored here are relative to the root.
-pub struct DirImages {
+pub struct DirectoryImages {
     /// The directory for which we store information.
     pub(super) root: Directory,
     /// All images found.
     pub(super) images: Vec<ImageInfo>,
 }
 
-impl DirImages {
+impl DirectoryImages {
     /// Find all images in a directory.
     pub fn search_recursive(root: Directory) -> Result<Result<Self, Directory>, Exn<ErrorMessage>> {
         let err = || {
@@ -146,8 +154,12 @@ impl DirImages {
     }
 }
 
-impl ImageCollection for DirImages {
+impl Images for DirectoryImages {
     type Path = Directory;
+
+    fn fs_root() -> FilesystemRoot {
+        FilesystemRoot::Directory
+    }
 
     fn filter(self, filter: &HashSet<ImageFormat>) -> Result<Self, Self::Path> {
         let images = self
@@ -170,7 +182,7 @@ impl ImageCollection for DirImages {
     }
 }
 
-impl IntoIterator for DirImages {
+impl IntoIterator for DirectoryImages {
     type Item = ImageInfo;
     type IntoIter = std::vec::IntoIter<Self::Item>;
 

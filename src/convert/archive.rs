@@ -11,11 +11,12 @@ use walkdir::WalkDir;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
+use super::Job;
 use crate::ConversionTarget;
 use crate::convert::dir::TempDirGuard;
 use crate::convert::image::{ConversionJob, ConversionJobs};
-use crate::convert::search::{ArchiveImages, ImageCollection};
-use crate::convert::{ConversionConfig, JobsBarTitle};
+use crate::convert::search::{ArchiveImages, Images};
+use crate::convert::{ConversionConfig, JobPath};
 use crate::error::{ErrorMessage, NothingToDo, NothingToDoReason};
 use crate::spawn::{self, ManagedChild};
 
@@ -35,23 +36,18 @@ pub struct ArchiveJob {
     compression: CompressionJob,
 }
 
-impl super::Job for ArchiveJob {
+impl Job for ArchiveJob {
     /// The image collection this job works on
     type Images = ArchiveImages;
-
-    fn title() -> JobsBarTitle {
-        JobsBarTitle::Archives
-    }
 
     fn new(
         images: Self::Images,
         config: ConversionConfig,
-    ) -> Result<Result<Self, NothingToDo<<Self::Images as ImageCollection>::Path>>, Exn<ErrorMessage>>
-    {
+    ) -> Result<Result<Self, NothingToDo<<Self::Images as Images>::Path>>, Exn<ErrorMessage>> {
         Self::new_internal(images, config)
     }
 
-    fn path(&self) -> &Path {
+    fn path(&self) -> &JobPath<Self> {
         &self.archive
     }
 

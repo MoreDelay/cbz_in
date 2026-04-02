@@ -8,9 +8,10 @@ use indicatif::ProgressBar;
 use tracing::{debug, error};
 use walkdir::WalkDir;
 
+use super::Job;
 use crate::convert::image::{ConversionJob, ConversionJobs, ImageFormat};
-use crate::convert::search::{DirImages, ImageCollection};
-use crate::convert::{ConversionConfig, JobsBarTitle};
+use crate::convert::search::{DirectoryImages, Images};
+use crate::convert::{ConversionConfig, JobPath};
 use crate::error::{ErrorMessage, NothingToDo, NothingToDoReason};
 
 /// Represents the job to convert all images within a directory.
@@ -27,22 +28,17 @@ pub struct DirectoryJob {
     conversion: ConversionJobs,
 }
 
-impl super::Job for DirectoryJob {
-    type Images = DirImages;
-
-    fn title() -> JobsBarTitle {
-        JobsBarTitle::Directories
-    }
+impl Job for DirectoryJob {
+    type Images = DirectoryImages;
 
     fn new(
         images: Self::Images,
         config: ConversionConfig,
-    ) -> Result<Result<Self, NothingToDo<<Self::Images as ImageCollection>::Path>>, Exn<ErrorMessage>>
-    {
+    ) -> Result<Result<Self, NothingToDo<<Self::Images as Images>::Path>>, Exn<ErrorMessage>> {
         Self::new_internal(images, config)
     }
 
-    fn path(&self) -> &Path {
+    fn path(&self) -> &JobPath<Self> {
         &self.root
     }
 
@@ -81,10 +77,10 @@ impl DirectoryJob {
     ///
     /// No files get touched until this job is run.
     fn new_internal(
-        dir: DirImages,
+        dir: DirectoryImages,
         config: ConversionConfig,
     ) -> Result<Result<Self, NothingToDo<Directory>>, Exn<ErrorMessage>> {
-        let DirImages { root, images } = dir;
+        let DirectoryImages { root, images } = dir;
         let ctx_str = || {
             let root = root.display();
             format!("Preparing job for recursive image conversion starting at \"{root}\"")
