@@ -8,9 +8,9 @@ use indicatif::ProgressBar;
 use tracing::{debug, error};
 use walkdir::WalkDir;
 
-use crate::convert::ConversionConfig;
 use crate::convert::image::{ConversionJob, ConversionJobs, ImageFormat};
 use crate::convert::search::{DirImages, ImageCollection};
+use crate::convert::{ConversionConfig, JobsBarTitle};
 use crate::error::{ErrorMessage, NothingToDo, NothingToDoReason};
 
 /// Represents the job to convert all images within a directory.
@@ -29,6 +29,10 @@ pub struct DirectoryJob {
 
 impl super::Job for DirectoryJob {
     type Images = DirImages;
+
+    fn title() -> JobsBarTitle {
+        JobsBarTitle::Directories
+    }
 
     fn new(
         images: Self::Images,

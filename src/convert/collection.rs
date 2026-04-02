@@ -5,40 +5,22 @@ use std::ops::Not as _;
 use exn::Exn;
 use tracing::debug;
 
-use crate::convert::archive::ArchiveJob;
-use crate::convert::dir::DirectoryJob;
-use crate::convert::{Bars, ConversionConfig, Job, JobsBarTitle};
+use crate::convert::{Bars, ConversionConfig, Job};
 use crate::error::{ErrorMessage, NothingToDo};
 
-/// A trait to specify a collection of [`Job`]'s.
-pub trait JobCollection: Sized {
-    /// The kind of jobs aggregated here.
-    type SubJob: Job;
+/// A collection of jobs that are run sequentially.
+pub struct JobCollection<J: Job>(Vec<J>);
 
-    /// Wrap a vector of sub jobs as the type.
-    fn wrap(jobs: Vec<Self::SubJob>) -> Self;
-
-    /// Unwraps the type again to get back the sub jobs.
-    fn unwrap(self) -> Vec<Self::SubJob>;
-
-    /// Iterate over all jobs for inspection.
-    fn iter(&self) -> impl Iterator<Item = &Self::SubJob>;
-
-    /// Get the number of jobs stored here.
-    fn len(&self) -> usize;
-
-    /// Get the title displayed in the progress bar when run.
-    fn bar_title() -> JobsBarTitle;
-
+impl<J: Job> JobCollection<J> {
     /// Create a new job collection given a set of images.
-    fn new(
-        images: Vec<<Self::SubJob as Job>::Images>,
+    pub fn new(
+        images: Vec<<J as Job>::Images>,
         config: ConversionConfig,
     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
-        let items = images
+        let jobs = images
             .into_iter()
             .map(|item| {
-                let job = Self::SubJob::new(item, config)?
+                let job = J::new(item, config)?
                     .inspect_err(|NothingToDo { path, reason }| {
                         debug!("{reason}: Skip \"{}\"", path.display());
                     })
@@ -48,18 +30,18 @@ pub trait JobCollection: Sized {
             .filter_map(Result::transpose)
             .collect::<Result<Vec<_>, Exn<ErrorMessage>>>()?;
 
-        let wrapped = items.is_empty().not().then_some(Self::wrap(items));
+        let wrapped = jobs.is_empty().not().then_some(Self(jobs));
         Ok(wrapped)
     }
 
     /// Run all jobs in this collection to completion.
-    fn run(self) -> Result<(), Exn<ErrorMessage>> {
-        let items = self.unwrap();
+    pub fn run(self) -> Result<(), Exn<ErrorMessage>> {
+        let Self(jobs) = self;
 
-        let bars = Bars::new(Self::bar_title());
-        bars.jobs.set_length(items.len() as u64);
+        let bars = Bars::new(J::title());
+        bars.jobs.set_length(jobs.len() as u64);
 
-        for item in items {
+        for item in jobs {
             bars.println(format!("Converting \"{}\"", item.path().display()));
             item.run(&bars.images)?;
             bars.jobs.inc(1);
@@ -68,58 +50,14 @@ pub trait JobCollection: Sized {
         bars.finish();
         Ok(())
     }
-}
 
-/// A collection of jobs to convert many archives.
-pub struct ArchiveJobCollection(Vec<ArchiveJob>);
-
-impl JobCollection for ArchiveJobCollection {
-    type SubJob = ArchiveJob;
-
-    fn wrap(jobs: Vec<Self::SubJob>) -> Self {
-        Self(jobs)
-    }
-
-    fn unwrap(self) -> Vec<Self::SubJob> {
-        self.0
-    }
-
-    fn iter(&self) -> impl Iterator<Item = &Self::SubJob> {
+    /// Iterate over all jobs.
+    pub fn iter(&self) -> impl Iterator<Item = &J> {
         self.0.iter()
     }
 
-    fn len(&self) -> usize {
+    /// Get the count of jobs aggregated here.
+    pub const fn len(&self) -> usize {
         self.0.len()
-    }
-
-    fn bar_title() -> JobsBarTitle {
-        JobsBarTitle::Archives
-    }
-}
-
-/// A collection of jobs to convert many directories.
-pub struct DirectoryJobCollection(Vec<DirectoryJob>);
-
-impl JobCollection for DirectoryJobCollection {
-    type SubJob = DirectoryJob;
-
-    fn wrap(jobs: Vec<Self::SubJob>) -> Self {
-        Self(jobs)
-    }
-
-    fn unwrap(self) -> Vec<Self::SubJob> {
-        self.0
-    }
-
-    fn iter(&self) -> impl Iterator<Item = &Self::SubJob> {
-        self.0.iter()
-    }
-
-    fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    fn bar_title() -> JobsBarTitle {
-        JobsBarTitle::Directories
     }
 }

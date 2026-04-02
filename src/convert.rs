@@ -35,6 +35,9 @@ pub trait Job: Sized {
     /// The image collection this job works on
     type Images: ImageCollection;
 
+    /// Get the title that will be displayed on the progress bar.
+    fn title() -> JobsBarTitle;
+
     /// Create a new job over a collection of images.
     fn new(
         images: Self::Images,

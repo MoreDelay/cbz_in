@@ -7,13 +7,9 @@ use std::path::PathBuf;
 use exn::{ErrorExt as _, Exn, ResultExt as _};
 use tracing::{debug, info};
 
-use crate::convert::archive::ArchivePath;
-use crate::convert::collection::{
-    ArchiveJobCollection,
-    DirectoryJobCollection,
-    JobCollection as _,
-};
-use crate::convert::dir::Directory;
+use crate::convert::archive::{ArchiveJob, ArchivePath};
+use crate::convert::collection::JobCollection;
+use crate::convert::dir::{Directory, DirectoryJob};
 use crate::convert::image::ImageFormat;
 use crate::convert::search::{ArchiveImages, DirImages, ImageCollection};
 use crate::convert::{ConversionConfig, Job};
@@ -260,9 +256,9 @@ pub fn print_stats_total(stats: &Stats) {
 /// Helper object to run conversion
 enum RunConversion {
     /// We run conversion on archives.
-    Archives(ArchiveJobCollection),
+    Archives(JobCollection<ArchiveJob>),
     /// We run conversion on directories.
-    Directories(DirectoryJobCollection),
+    Directories(JobCollection<DirectoryJob>),
 }
 
 impl RunConversion {
@@ -273,10 +269,10 @@ impl RunConversion {
     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
         let out = match found {
             FoundCollections::Archives(items) => {
-                ArchiveJobCollection::new(items, config)?.map(Self::Archives)
+                JobCollection::new(items, config)?.map(Self::Archives)
             }
             FoundCollections::Directories(items) => {
-                DirectoryJobCollection::new(items, config)?.map(Self::Directories)
+                JobCollection::new(items, config)?.map(Self::Directories)
             }
         };
 

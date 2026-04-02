@@ -12,10 +12,10 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
 use crate::ConversionTarget;
-use crate::convert::ConversionConfig;
 use crate::convert::dir::TempDirGuard;
 use crate::convert::image::{ConversionJob, ConversionJobs};
 use crate::convert::search::{ArchiveImages, ImageCollection};
+use crate::convert::{ConversionConfig, JobsBarTitle};
 use crate::error::{ErrorMessage, NothingToDo, NothingToDoReason};
 use crate::spawn::{self, ManagedChild};
 
@@ -38,6 +38,10 @@ pub struct ArchiveJob {
 impl super::Job for ArchiveJob {
     /// The image collection this job works on
     type Images = ArchiveImages;
+
+    fn title() -> JobsBarTitle {
+        JobsBarTitle::Archives
+    }
 
     fn new(
         images: Self::Images,
