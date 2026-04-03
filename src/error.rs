@@ -55,6 +55,7 @@ pub struct Interrupted;
 impl Error for Interrupted {}
 
 /// Check if the error is caused by user interruptions.
+#[must_use]
 pub fn got_interrupted(exn: &Exn<impl Error + Send + Sync>) -> bool {
     find_error::<Interrupted>(exn).is_some()
 }
@@ -94,6 +95,7 @@ where
     E: Error + Send + Sync + 'static,
 {
     /// Create a new reporting wrapper.
+    #[must_use]
     pub const fn new(exn: &'a Exn<E>) -> Self {
         Self(exn)
     }
