@@ -758,8 +758,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn check_jxlinfo_installed() {
+        let out = Tool::Jxlinfo.available();
+        assert!(
+            matches!(out, Ok(true)),
+            "WARNING: if this fails, ignore all other tests on jxls, install `jxlinfo` first"
+        );
+    }
+
+    #[test]
     fn check_for_compressed_jxl() {
-        let compressed_path = PathBuf::from("test_data/compressed.jxl");
+        let compressed_path = PathBuf::from("tests/data/compressed.jxl");
         assert!(compressed_path.exists());
         let out = Sequence::jxl_is_compressed_jpeg(&compressed_path);
         assert!(matches!(out, Ok(true)));
@@ -767,7 +776,7 @@ mod tests {
 
     #[test]
     fn check_for_encoded_jxl() {
-        let encoded_path = PathBuf::from("test_data/encoded.jxl");
+        let encoded_path = PathBuf::from("tests/data/encoded.jxl");
         assert!(encoded_path.exists());
         let out = Sequence::jxl_is_compressed_jpeg(&encoded_path);
         assert!(matches!(out, Ok(false)));
