@@ -122,7 +122,7 @@ pub enum FilesystemRoot {
 
 impl FilesystemRoot {
     /// Get the plural name for this root type.
-    const fn singular(self) -> &'static str {
+    pub const fn singular(self) -> &'static str {
         match self {
             Self::Archive => "Archive",
             Self::Directory => "Directory",
@@ -130,7 +130,7 @@ impl FilesystemRoot {
     }
 
     /// Get the plural name for this root type.
-    const fn plural(self) -> &'static str {
+    pub const fn plural(self) -> &'static str {
         match self {
             Self::Archive => "Archives",
             Self::Directory => "Directories",

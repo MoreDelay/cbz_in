@@ -207,12 +207,22 @@ impl RunConversion {
         Ok(())
     }
 
+    /// Get the root type stored in this struct.
+    const fn root(&self) -> FilesystemRoot {
+        match self {
+            Self::Arc(_) => FilesystemRoot::Archive,
+            Self::Dir(_) => FilesystemRoot::Directory,
+        }
+    }
+
     /// Check if we can run this job, and print out statistics.
     fn test(&self) -> Result<(), Exn<ErrorMessage>> {
         let err = || ErrorMessage::new("Doing dry run");
 
         self.check_tools().or_raise(err)?;
-        self.print_statistics();
+        self.print_conversion_header();
+
+        let root = self.root().singular().to_ascii_lowercase();
 
         let paths: &mut dyn Iterator<Item = _> = match self {
             Self::Arc(jobs) => &mut jobs.iter().map(|j| j.path().deref()),
@@ -220,7 +230,7 @@ impl RunConversion {
         };
 
         for path in paths {
-            info!("Got files to convert for \"{}\"", path.display());
+            info!("Got files to convert for {root} \"{}\"", path.display());
         }
 
         Ok(())
@@ -255,25 +265,22 @@ impl RunConversion {
         Ok(())
     }
 
-    /// Print out statistics on how many images would get converted by this job.
-    fn print_statistics(&self) {
-        let collections = match self {
+    /// Print out statistics on how many images will get converted by this job.
+    fn print_conversion_header(&self) {
+        let n_colls = match self {
             Self::Arc(jobs) => jobs.len(),
             Self::Dir(jobs) => jobs.len(),
         };
 
-        let images: usize = match self {
+        let n_images: usize = match self {
             Self::Arc(jobs) => jobs.iter().map(Job::count).sum(),
             Self::Dir(jobs) => jobs.iter().map(Job::count).sum(),
         };
 
-        let coll_type = match self {
-            Self::Arc(_) => "archives",
-            Self::Dir(_) => "directories",
-        };
+        let roots = self.root().plural().to_ascii_lowercase();
 
         stdout(format!(
-            "Found {collections} {coll_type}, with a total of {images} images to convert"
+            "Found {n_colls} {roots}, with a total of {n_images} images to convert"
         ));
     }
 }

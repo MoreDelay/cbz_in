@@ -42,8 +42,8 @@ impl<I: Images> ImageCollection<I> {
     fn new(paths: impl Iterator<Item = I::Path>) -> Result<Option<Self>, Exn<ErrorMessage>> {
         let found = paths
             .into_iter()
-            .map(|dir| {
-                let images = I::search(dir)?
+            .map(|path| {
+                let images = I::search(path)?
                     .inspect_err(|dir| {
                         let name = I::fs_root().singular();
                         debug!("{name} has no images: \"{}\"", dir.display());
@@ -83,7 +83,8 @@ impl<I: Images> ImageCollection<I> {
         let mut all_stats = Stats::new();
 
         let count = self.0.len();
-        stdout(format!("Searched {count} archives:"));
+        let roots = I::fs_root().plural().to_ascii_lowercase();
+        stdout(format!("Searched {count} {roots}:"));
 
         for single in &self.0 {
             let stats = Stats::compute(single.infos());

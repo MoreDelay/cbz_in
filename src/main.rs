@@ -59,9 +59,7 @@ fn real_main() -> Result<(), Exn<ErrorMessage>> {
         true => FilesystemRoot::Directory,
         false => FilesystemRoot::Archive,
     };
-    let found = FoundImages::search(paths, root)?;
-
-    let Some(found) = found else {
+    let Some(found) = FoundImages::search(paths, root)? else {
         stdout("Nothing to do");
         return Ok(());
     };

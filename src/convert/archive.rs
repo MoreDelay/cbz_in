@@ -89,7 +89,8 @@ impl ArchiveJob {
         archive: ArchiveImages,
         config: ConversionConfig,
     ) -> Result<Result<Self, NothingToDo<ArchivePath>>, Exn<ErrorMessage>> {
-        let ArchiveImages { archive, images } = archive;
+        let ArchiveImages { root, images } = archive;
+        let archive = root;
 
         let err = || {
             let archive = archive.display();

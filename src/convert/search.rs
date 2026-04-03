@@ -6,7 +6,6 @@ use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
 use exn::{Exn, ResultExt as _};
-use tracing::debug;
 use walkdir::WalkDir;
 
 use crate::convert::FilesystemRoot;
@@ -42,7 +41,7 @@ pub trait Images: Sized {
 /// The image paths stored here are relative to the archive root.
 pub struct ArchiveImages {
     /// The archive for which we store information.
-    pub archive: ArchivePath,
+    pub root: ArchivePath,
     /// All images found.
     pub images: Vec<ImageInfo>,
 }
@@ -55,13 +54,12 @@ impl Images for ArchiveImages {
     }
 
     fn search(root: Self::Path) -> Result<Result<Self, Self::Path>, Exn<ErrorMessage>> {
-        let archive = root;
         let err = || {
-            let root = archive.display();
+            let root = root.display();
             ErrorMessage::new(format!("Listing files within archive \"{root}\""))
         };
 
-        let images = spawn::list_archive_files(&archive)
+        let images = spawn::list_archive_files(&root)
             .and_then(ManagedChild::wait_with_output)
             .or_raise(err)?
             .stdout
@@ -78,9 +76,9 @@ impl Images for ArchiveImages {
             .or_raise(err)?;
 
         if images.is_empty() {
-            return Ok(Err(archive));
+            return Ok(Err(root));
         }
-        Ok(Ok(Self { archive, images }))
+        Ok(Ok(Self { root, images }))
     }
 
     fn filter(self, filter: &HashSet<ImageFormat>) -> Result<Self, Self::Path> {
@@ -90,7 +88,7 @@ impl Images for ArchiveImages {
             .filter(|info| filter.contains(&info.format()))
             .collect::<Vec<_>>();
         if images.is_empty() {
-            return Err(self.archive);
+            return Err(self.root);
         }
         Ok(Self { images, ..self })
     }
@@ -100,7 +98,7 @@ impl Images for ArchiveImages {
     }
 
     fn path(&self) -> &Self::Path {
-        &self.archive
+        &self.root
     }
 }
 
@@ -135,8 +133,6 @@ impl Images for DirectoryImages {
             let root = root.display();
             ErrorMessage::new(format!("Listing files within directory \"{root}\""))
         };
-
-        debug!("Checking \"{}\"", root.display());
 
         let images: Vec<ImageInfo> = WalkDir::new(&root)
             .same_file_system(true)
