@@ -366,11 +366,13 @@ impl ArchivePath {
     }
 
     /// Get the parent directory of this archive.
+    #[must_use]
     pub fn parent(&self) -> &Path {
         self.archive.parent().expect("file has parent")
     }
 
     /// Get the file name for this archive.
+    #[must_use]
     pub fn file_stem(&self) -> &str {
         self.archive
             .file_stem()
@@ -380,6 +382,7 @@ impl ArchivePath {
     }
 
     /// Get the full file name including extension for this archive.
+    #[must_use]
     pub fn file_name(&self) -> &str {
         self.archive
             .file_name()

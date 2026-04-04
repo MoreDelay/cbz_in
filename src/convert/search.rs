@@ -192,20 +192,22 @@ impl IntoIterator for DirectoryImages {
 /// directory.
 pub struct ImageInfo {
     /// The relative path to the image.
-    pub(super) path: PathBuf,
+    pub path: PathBuf,
     /// The file type of the image.
-    pub(super) format: ImageFormat,
+    pub format: ImageFormat,
 }
 
 impl ImageInfo {
     /// Get image information based on its filename.
-    fn new(path: PathBuf) -> Option<Self> {
+    #[must_use]
+    pub fn new(path: PathBuf) -> Option<Self> {
         let ext = path.extension()?.to_string_lossy().to_lowercase();
         let format = ext.parse().ok()?;
         Some(Self { path, format })
     }
 
     /// Get the image format.
+    #[must_use]
     pub const fn format(&self) -> ImageFormat {
         self.format
     }

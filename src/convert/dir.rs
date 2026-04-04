@@ -244,6 +244,7 @@ impl Directory {
     }
 
     /// Get the name for this directory.
+    #[must_use]
     pub fn name(&self) -> &str {
         self.0
             .file_name()

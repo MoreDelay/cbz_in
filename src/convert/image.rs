@@ -722,6 +722,7 @@ impl ImageFormat {
     pub const ALL: &'static [Self] = &[Self::Jpeg, Self::Png, Self::Avif, Self::Jxl, Self::Webp];
 
     /// Get the file extension as string.
+    #[must_use]
     pub const fn ext(self) -> &'static str {
         use ImageFormat::*;
 

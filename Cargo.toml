@@ -15,6 +15,8 @@ pedantic = { level = "warn", priority = -1 }
 enum_glob_use = "allow"
 match_bool = "allow"
 match_same_arms = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
 
 # restriction lints
 allow_attributes = "warn"
@@ -61,6 +63,7 @@ exn = { git = "https://github.com/MoreDelay/exn", branch = "recovery" }
 indicatif = { git = "https://github.com/MoreDelay/indicatif", branch = "responsive-steady-tick" }
 itertools = "0.14"
 signal-hook = "0.3"
+tempfile = "3"
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = "0.3"

@@ -14,18 +14,20 @@ use tracing::{error, info};
 
 use crate::command::FoundImages;
 use crate::convert::FilesystemRoot;
-use crate::convert::image::ImageFormat;
+pub use crate::convert::archive::ArchivePath;
+pub use crate::convert::dir::Directory;
+pub use crate::convert::image::ImageFormat;
+pub use crate::convert::search::{ArchiveImages, DirectoryImages, ImageInfo, Images};
 pub use crate::error::{CompactReport, ErrorMessage, got_interrupted};
+pub use crate::spawn::{ManagedChild, list_archive_files};
 
 /// The application's entry point.
-///
-/// # Errors
-/// Returns a detailed report of the cause of issues when something went wrong, meant for display to
-/// the user.
 pub fn entry_point(args: Args) -> Result<(), Exn<ErrorMessage>> {
     let err = || ErrorMessage::new("Error when executing program");
 
-    init_logger(&args.log_path, args.level).or_raise(err)?;
+    if !args.no_log {
+        init_logger(&args.log_path, args.level).or_raise(err)?;
+    }
 
     let cmd = std::env::args_os()
         .map(|s| s.to_string_lossy().to_string())
@@ -75,6 +77,7 @@ pub fn entry_point(args: Args) -> Result<(), Exn<ErrorMessage>> {
 /// files. By default only converts Jpeg and Png to the target format or decode any formats to
 /// Png and Jpeg. The new archive with converted images is placed adjacent to the original, so this
 /// operation is non-destructive.
+#[expect(clippy::struct_excessive_bools)]
 #[derive(clap::Parser)]
 #[command(version)]
 pub struct Args {
@@ -138,6 +141,12 @@ pub struct Args {
     /// Detail level of logging
     #[arg(long, default_value = "info", global = true)]
     pub level: tracing::Level,
+
+    /// Disable any logging
+    ///
+    /// Useful for tests
+    #[arg(long, global = true)]
+    pub no_log: bool,
 }
 
 /// The sub command to run on found archives or directories.

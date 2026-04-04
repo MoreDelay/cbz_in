@@ -142,6 +142,7 @@ dependencies = [
  "indicatif",
  "itertools",
  "signal-hook",
+ "tempfile",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
@@ -413,6 +414,12 @@ dependencies = [
 name = "exn"
 version = "0.3.0"
 source = "git+https://github.com/MoreDelay/exn?branch=recovery#92b99d27e65d84706b3b327f82d190ba6cd69b72"
+
+[[package]]
+name = "fastrand"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a043dc74da1e37d6afe657061213aa6f425f855399a11d3463c6ecccc4dfda1f"
 
 [[package]]
 name = "find-msvc-tools"
@@ -835,6 +842,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "tempfile"
+version = "3.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0136791f7c95b1f6dd99f9cc786b91bb81c3800b639b3478e561ddb7be95e5f1"
+dependencies = [
+ "fastrand",
+ "getrandom",
+ "once_cell",
+ "rustix",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
