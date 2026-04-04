@@ -11,7 +11,7 @@ use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
 use exn::{ErrorExt as _, Exn, OptionExt as _, ResultExt as _};
-use tracing::{error, info};
+use tracing::info;
 
 use crate::command::FoundImages;
 use crate::convert::FilesystemRoot;
@@ -310,7 +310,7 @@ fn init_logger(path: &Path, level: tracing::Level) -> Result<(), Exn<ErrorMessag
 }
 
 /// Conditionally print a message to stdout (and logs)
-pub fn verbose(show_on_terminal: bool, msg: impl AsRef<str>) {
+fn verbose(show_on_terminal: bool, msg: impl AsRef<str>) {
     let msg = msg.as_ref();
     if show_on_terminal {
         println!("{msg}");
@@ -319,15 +319,8 @@ pub fn verbose(show_on_terminal: bool, msg: impl AsRef<str>) {
 }
 
 /// Print a message to stdout (and logs)
-pub fn stdout(msg: impl AsRef<str>) {
+fn stdout(msg: impl AsRef<str>) {
     let msg = msg.as_ref();
     println!("{msg}");
     info!("{msg}");
-}
-
-/// Print a message to stderr (and logs)
-pub fn stderr(msg: impl AsRef<str>) {
-    let msg = msg.as_ref();
-    eprintln!("{msg}");
-    error!("{msg}");
 }

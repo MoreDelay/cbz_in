@@ -14,11 +14,13 @@ fn main() {
     match ret {
         Ok(()) => (),
         Err(exn) if cbz_in::got_interrupted(&exn) => {
-            cbz_in::stderr("Got interrupted");
+            let msg = "Got interrupted";
+            eprintln!("{msg}");
+            error!("{msg}");
         }
         Err(exn) => {
             let report = cbz_in::CompactReport::new(&exn);
-            println!("{report}");
+            eprintln!("{report}");
             error!("Application error:\n{report:?}");
         }
     }
