@@ -6,6 +6,7 @@ mod spawn;
 mod stats;
 
 use std::collections::HashSet;
+use std::fmt::Display;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
@@ -208,6 +209,20 @@ impl TryFrom<ConversionSource> for ImageFormat {
             S::Jxl => Ok(Self::Jxl),
             S::Webp => Ok(Self::Webp),
         }
+    }
+}
+
+impl Display for ConversionSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let str = match self {
+            Self::All => "all",
+            Self::Jpeg => "jpeg",
+            Self::Png => "png",
+            Self::Avif => "avif",
+            Self::Jxl => "jxl",
+            Self::Webp => "webp",
+        };
+        f.write_str(str)
     }
 }
 

@@ -7,7 +7,10 @@ use std::fs;
 use std::path::Path;
 use std::str::FromStr as _;
 
-use cbz_in::{ArchiveImages, ArchivePath, Directory, DirectoryImages, ImageFormat, Images};
+use cbz_in::{
+    ArchiveImages, ArchivePath, ConversionSource, ConversionTarget, Directory, DirectoryImages,
+    ImageFormat, Images,
+};
 use clap::Parser as _;
 use tempfile::TempDir;
 
@@ -43,7 +46,7 @@ impl TestDir {
 }
 
 #[expect(clippy::struct_excessive_bools)]
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 struct ConversionExpectation {
     target: ImageFormat,
     jpeg: bool,
@@ -94,7 +97,7 @@ impl ConversionExpectation {
         self.jpeg().png().avif().jxl().webp()
     }
 
-    fn any_wrong_format_in(&self, images: &impl Images) -> Option<ImageFormat> {
+    fn any_wrong_format_in(self, images: &impl Images) -> Option<ImageFormat> {
         for info in images.infos() {
             let (prev, cur) = if let Some(name) = info.path.file_stem()
                 && let Some(name) = name.to_str()
@@ -130,86 +133,146 @@ impl ConversionExpectation {
     }
 }
 
-#[test]
-fn convert_zip() {
-    let test_dir = TestDir::new("convert_zip").expect("can create temp dirs");
-    let zip = test_dir.root.path().join("zip.zip");
+#[derive(Debug, Clone, Copy)]
+enum TestFile {
+    Zip,
+    Cbz,
+    Dir,
+}
 
-    let cmd = [
+enum OutImages {
+    Arc(ArchiveImages),
+    Dir(DirectoryImages),
+}
+
+impl OutImages {
+    fn check_against(&self, expectation: ConversionExpectation) -> Option<ImageFormat> {
+        match self {
+            Self::Arc(images) => expectation.any_wrong_format_in(images),
+            Self::Dir(images) => expectation.any_wrong_format_in(images),
+        }
+    }
+}
+
+fn run_test(test_file: TestFile, target: ConversionTarget, source: ConversionSource) {
+    let test_dir = TestDir::new("test-cbz_in-").expect("can create temp dirs");
+    let file = match test_file {
+        TestFile::Zip => "zip.zip",
+        TestFile::Cbz => "cbz.cbz",
+        TestFile::Dir => "dir",
+    };
+    let file = test_dir.root.path().join(file);
+
+    let source_arg = format!("--from={source}");
+    let mut cmd = vec![
         OsStr::new("cbz_in"),
-        OsStr::new("jpeg"),
         OsStr::new("--no-log"),
-        zip.as_os_str(),
+        OsStr::new(&source_arg),
+        OsStr::new(target.format().ext()),
     ];
-    let expectation = ConversionExpectation::target(ImageFormat::Jpeg)
-        .jpeg()
-        .png();
+    if target == (ConversionTarget::Jxl { lossy: true }) {
+        cmd.push(OsStr::new("--lossy"));
+    }
+    if matches!(test_file, TestFile::Dir) {
+        cmd.push(OsStr::new("--no-archive"));
+    }
+    cmd.push(file.as_os_str());
+    println!("{cmd:#?}");
 
     let args = cbz_in::Args::try_parse_from(cmd).expect("correct command");
     cbz_in::entry_point(args).expect("converts without issues");
 
-    let zip = test_dir.root.path().join("zip.jpeg.zip");
-    assert!(zip.exists());
-    let zip = ArchivePath::new(zip).expect("is zip");
-    let images = ArchiveImages::search(zip)
-        .expect("can read zip")
-        .expect("has images");
+    let expectation = ConversionExpectation::target(target.format()).jpeg().png();
+    let expectation = match source {
+        ConversionSource::All => expectation.all(),
+        ConversionSource::Jpeg => expectation.jpeg(),
+        ConversionSource::Png => expectation.png(),
+        ConversionSource::Avif => expectation.avif(),
+        ConversionSource::Jxl => expectation.jxl(),
+        ConversionSource::Webp => expectation.webp(),
+    };
 
-    assert_eq!(expectation.any_wrong_format_in(&images), None);
+    let out_file = match test_file {
+        TestFile::Zip => format!("zip.{}.zip", target.format().ext()),
+        TestFile::Cbz => format!("cbz.{}.cbz", target.format().ext()),
+        TestFile::Dir => format!("dir-{}", target.format().ext()),
+    };
+    let out_file = test_dir.root.path().join(out_file);
+    assert!(
+        out_file.exists(),
+        "This file should be produced by the program"
+    );
+
+    let images = match test_file {
+        TestFile::Zip | TestFile::Cbz => {
+            let out_file = ArchivePath::new(out_file).expect("is zip");
+            let images = ArchiveImages::search(out_file)
+                .expect("can read cbz")
+                .expect("has images");
+            OutImages::Arc(images)
+        }
+        TestFile::Dir => {
+            let out_file = Directory::new(out_file)
+                .expect("can read dir")
+                .expect("is dir");
+            let images = DirectoryImages::search(out_file)
+                .expect("can read dir")
+                .expect("has images");
+            OutImages::Dir(images)
+        }
+    };
+
+    assert_eq!(
+        images.check_against(expectation),
+        None,
+        "If not none, then this image format is not converted as expected"
+    );
+}
+
+#[test]
+fn convert_zip() {
+    let test_file = TestFile::Zip;
+    let target = ConversionTarget::Jpeg;
+    let source = ConversionSource::Png;
+    run_test(test_file, target, source);
 }
 
 #[test]
 fn convert_cbz() {
-    let test_dir = TestDir::new("convert_cbz").expect("can create temp dirs");
-    let cbz = test_dir.root.path().join("cbz.cbz");
-
-    let cmd = [
-        OsStr::new("cbz_in"),
-        OsStr::new("png"),
-        OsStr::new("--no-log"),
-        cbz.as_os_str(),
-    ];
-    let expectation = ConversionExpectation::target(ImageFormat::Png).jpeg().png();
-
-    let args = cbz_in::Args::try_parse_from(cmd).expect("correct command");
-    cbz_in::entry_point(args).expect("converts without issues");
-
-    let cbz = test_dir.root.path().join("cbz.png.cbz");
-    assert!(cbz.exists());
-    let cbz = ArchivePath::new(cbz).expect("is zip");
-    let images = ArchiveImages::search(cbz)
-        .expect("can read cbz")
-        .expect("has images");
-
-    assert_eq!(expectation.any_wrong_format_in(&images), None);
+    let test_file = TestFile::Cbz;
+    let target = ConversionTarget::Png;
+    let source = ConversionSource::Jpeg;
+    run_test(test_file, target, source);
 }
 
 #[test]
 fn convert_dir() {
-    let test_dir = TestDir::new("convert_dir").expect("can create temp dirs");
-    let dir = test_dir.root.path().join("dir");
+    let test_file = TestFile::Dir;
+    let target = ConversionTarget::Png;
+    let source = ConversionSource::All;
+    run_test(test_file, target, source);
+}
 
-    let cmd = [
-        OsStr::new("cbz_in"),
-        OsStr::new("png"),
-        OsStr::new("--from=all"),
-        OsStr::new("--no-archive"),
-        OsStr::new("--no-log"),
-        dir.as_os_str(),
-    ];
-    let expectation = ConversionExpectation::target(ImageFormat::Png).all();
+#[test]
+fn two_step_webp() {
+    let test_file = TestFile::Cbz;
+    let target = ConversionTarget::Webp;
+    let source = ConversionSource::All;
+    run_test(test_file, target, source);
+}
 
-    let args = cbz_in::Args::try_parse_from(cmd).expect("correct command");
-    cbz_in::entry_point(args).expect("converts without issues");
+#[test]
+fn two_step_avif() {
+    let test_file = TestFile::Cbz;
+    let target = ConversionTarget::Avif;
+    let source = ConversionSource::All;
+    run_test(test_file, target, source);
+}
 
-    let dir = test_dir.root.path().join("dir-png");
-    assert!(dir.exists());
-    let dir = Directory::new(dir)
-        .expect("can read file system")
-        .expect("is dir");
-    let images = DirectoryImages::search(dir)
-        .expect("can read zip")
-        .expect("has images");
-
-    assert_eq!(expectation.any_wrong_format_in(&images), None);
+#[test]
+fn jxl_lossy() {
+    let test_file = TestFile::Cbz;
+    let target = ConversionTarget::Jxl { lossy: true };
+    let source = ConversionSource::All;
+    run_test(test_file, target, source);
 }
