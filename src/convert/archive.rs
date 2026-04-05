@@ -11,7 +11,7 @@ use walkdir::WalkDir;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
-use super::Job;
+use super::ImagesJob;
 use crate::ConversionTarget;
 use crate::convert::dir::TempDirGuard;
 use crate::convert::image::{ConversionJob, ConversionJobs};
@@ -36,7 +36,7 @@ pub struct ArchiveJob {
     compression: CompressionJob,
 }
 
-impl Job for ArchiveJob {
+impl ImagesJob for ArchiveJob {
     /// The image collection this job works on
     type Images = ArchiveImages;
 

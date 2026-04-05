@@ -27,10 +27,10 @@ pub struct ConversionConfig {
 }
 
 /// Type alias to reduce type clutter specifying the [`Job`]'s path type.
-type JobPath<J> = <<J as Job>::Images as Images>::Path;
+type JobPath<J> = <<J as ImagesJob>::Images as Images>::Path;
 
-/// A trait for jobs that can be run.
-pub trait Job: Sized {
+/// A trait for jobs that converts some [`Images`].
+pub trait ImagesJob: Sized {
     /// The image collection this job works on
     type Images: Images;
 

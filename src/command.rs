@@ -13,7 +13,7 @@ use crate::convert::collection::{ImageCollection, JobCollection};
 use crate::convert::dir::{Directory, DirectoryJob};
 use crate::convert::image::ImageFormat;
 use crate::convert::search::{ArchiveImages, DirectoryImages};
-use crate::convert::{ConversionConfig, FilesystemRoot, Job};
+use crate::convert::{ConversionConfig, FilesystemRoot, ImagesJob};
 use crate::error::{CompactReport, ErrorMessage};
 use crate::stats::Stats;
 use crate::{ConversionTarget, stdout};
@@ -239,8 +239,8 @@ impl RunConversion {
     /// Check if all tools needed for this job are actually available.
     fn check_tools(&self) -> Result<(), Exn<ErrorMessage>> {
         let iter: &mut dyn Iterator<Item = _> = match self {
-            Self::Arc(jobs) => &mut jobs.iter().flat_map(Job::iter),
-            Self::Dir(jobs) => &mut jobs.iter().flat_map(Job::iter),
+            Self::Arc(jobs) => &mut jobs.iter().flat_map(ImagesJob::iter),
+            Self::Dir(jobs) => &mut jobs.iter().flat_map(ImagesJob::iter),
         };
         let required_tools = iter
             .flat_map(|job| job.plan().required_tools())
@@ -273,8 +273,8 @@ impl RunConversion {
         };
 
         let n_images: usize = match self {
-            Self::Arc(jobs) => jobs.iter().map(Job::count).sum(),
-            Self::Dir(jobs) => jobs.iter().map(Job::count).sum(),
+            Self::Arc(jobs) => jobs.iter().map(ImagesJob::count).sum(),
+            Self::Dir(jobs) => jobs.iter().map(ImagesJob::count).sum(),
         };
 
         let roots = self.root().plural().to_ascii_lowercase();

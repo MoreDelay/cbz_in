@@ -11,7 +11,7 @@ use crate::convert::archive::ArchivePath;
 use crate::convert::dir::Directory;
 use crate::convert::image::ImageFormat;
 use crate::convert::search::{ArchiveImages, DirectoryImages, Images};
-use crate::convert::{Bars, ConversionConfig, Job};
+use crate::convert::{Bars, ConversionConfig, ImagesJob};
 use crate::error::{ErrorMessage, NothingToDo};
 use crate::stats::Stats;
 use crate::stdout;
@@ -108,12 +108,12 @@ impl<I: Images> ImageCollection<I> {
 }
 
 /// A collection of jobs that are run sequentially.
-pub struct JobCollection<J: Job>(Vec<J>);
+pub struct JobCollection<J: ImagesJob>(Vec<J>);
 
-impl<J: Job> JobCollection<J> {
+impl<J: ImagesJob> JobCollection<J> {
     /// Create a new job collection given a set of images.
     pub fn new(
-        images: ImageCollection<<J as Job>::Images>,
+        images: ImageCollection<<J as ImagesJob>::Images>,
         config: ConversionConfig,
     ) -> Result<Option<Self>, Exn<ErrorMessage>> {
         let jobs = images

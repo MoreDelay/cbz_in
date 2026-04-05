@@ -8,7 +8,7 @@ use indicatif::ProgressBar;
 use tracing::{debug, error};
 use walkdir::WalkDir;
 
-use super::Job;
+use super::ImagesJob;
 use crate::convert::image::{ConversionJob, ConversionJobs, ImageFormat};
 use crate::convert::search::{DirectoryImages, Images};
 use crate::convert::{ConversionConfig, JobPath};
@@ -28,7 +28,7 @@ pub struct DirectoryJob {
     conversion: ConversionJobs,
 }
 
-impl Job for DirectoryJob {
+impl ImagesJob for DirectoryJob {
     type Images = DirectoryImages;
 
     fn new(
