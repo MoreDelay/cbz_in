@@ -4,7 +4,7 @@ use std::error::Error;
 
 use derive_more::Display;
 use exn::{Exn, Frame};
-use tracing::debug;
+use tracing::error;
 
 /// General error object with a message for its context.
 #[derive(Debug, Display)]
@@ -16,7 +16,7 @@ impl ErrorMessage {
     /// Create a error message by providing some context.
     pub fn new(msg: impl Into<String>) -> Self {
         let msg = msg.into();
-        debug!("{msg}");
+        error!("{msg}");
         Self(msg)
     }
 }

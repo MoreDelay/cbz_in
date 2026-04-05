@@ -185,9 +185,9 @@ pub fn encode_jxl(
     let output_path = output_path.to_str().expect("paths are valid utf8");
     cmd.arg("--effort=9");
     cmd.arg("--num_threads=1");
-    cmd.arg("--distance=2");
     if lossy {
         cmd.arg("--lossless_jpeg=0");
+        cmd.arg("--distance=2");
     }
     cmd.arg(input_path);
     cmd.arg(output_path);

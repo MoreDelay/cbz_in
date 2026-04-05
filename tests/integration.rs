@@ -8,8 +8,14 @@ use std::path::Path;
 use std::str::FromStr as _;
 
 use cbz_in::{
-    ArchiveImages, ArchivePath, ConversionSource, ConversionTarget, Directory, DirectoryImages,
-    ImageFormat, Images,
+    ArchiveImages,
+    ArchivePath,
+    ConversionSource,
+    ConversionTarget,
+    Directory,
+    DirectoryImages,
+    ImageFormat,
+    Images,
 };
 use clap::Parser as _;
 use tempfile::TempDir;
@@ -154,7 +160,7 @@ impl OutImages {
     }
 }
 
-fn run_test(test_file: TestFile, target: ConversionTarget, source: ConversionSource) {
+fn run_test(test_file: TestFile, target: ConversionTarget, source: ConversionSource) -> TestDir {
     let test_dir = TestDir::new("test-cbz_in-").expect("can create temp dirs");
     let file = match test_file {
         TestFile::Zip => "zip.zip",
@@ -164,9 +170,13 @@ fn run_test(test_file: TestFile, target: ConversionTarget, source: ConversionSou
     let file = test_dir.root.path().join(file);
 
     let source_arg = format!("--from={source}");
+    // let log_path = test_dir.root.path().join("log.log");
     let mut cmd = vec![
         OsStr::new("cbz_in"),
         OsStr::new("--no-log"),
+        // OsStr::new("--log-path"),
+        // log_path.as_os_str(),
+        // OsStr::new("--level=debug"),
         OsStr::new(&source_arg),
         OsStr::new(target.format().ext()),
     ];
@@ -179,10 +189,12 @@ fn run_test(test_file: TestFile, target: ConversionTarget, source: ConversionSou
     cmd.push(file.as_os_str());
     println!("{cmd:#?}");
 
-    let args = cbz_in::Args::try_parse_from(cmd).expect("correct command");
+    let args = cbz_in::Args::try_parse_from(cmd)
+        .map_err(|s| s.to_string())
+        .expect("correct command");
     cbz_in::entry_point(args).expect("converts without issues");
 
-    let expectation = ConversionExpectation::target(target.format()).jpeg().png();
+    let expectation = ConversionExpectation::target(target.format());
     let expectation = match source {
         ConversionSource::All => expectation.all(),
         ConversionSource::Jpeg => expectation.jpeg(),
@@ -227,6 +239,8 @@ fn run_test(test_file: TestFile, target: ConversionTarget, source: ConversionSou
         None,
         "If not none, then this image format is not converted as expected"
     );
+
+    test_dir
 }
 
 #[test]
@@ -271,8 +285,32 @@ fn two_step_avif() {
 
 #[test]
 fn jxl_lossy() {
-    let test_file = TestFile::Cbz;
+    let test_file = TestFile::Dir;
     let target = ConversionTarget::Jxl { lossy: true };
-    let source = ConversionSource::All;
-    run_test(test_file, target, source);
+    let source = ConversionSource::Jpeg;
+    let test_dir = run_test(test_file, target, source);
+
+    let out_dir = format!("dir-{}", target.format().ext());
+    let out_file = "jpeg.jxl";
+    let out_file = test_dir.root.path().join(out_dir).join(out_file);
+    assert!(out_file.exists(), "Expect converted jxl to exist");
+
+    let compressed = cbz_in::jxl_is_compressed_jpeg(&out_file).expect("can read metadata");
+    assert!(!compressed);
+}
+
+#[test]
+fn jxl_lossless() {
+    let test_file = TestFile::Dir;
+    let target = ConversionTarget::Jxl { lossy: false };
+    let source = ConversionSource::Jpeg;
+    let test_dir = run_test(test_file, target, source);
+
+    let out_dir = format!("dir-{}", target.format().ext());
+    let out_file = "jpeg.jxl";
+    let out_file = test_dir.root.path().join(out_dir).join(out_file);
+    assert!(out_file.exists(), "Expect converted jxl to exist");
+
+    let compressed = cbz_in::jxl_is_compressed_jpeg(&out_file).expect("can read metadata");
+    assert!(compressed);
 }

@@ -11,13 +11,13 @@ use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 
 use exn::{ErrorExt as _, Exn, OptionExt as _, ResultExt as _};
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::command::FoundImages;
 use crate::convert::FilesystemRoot;
 pub use crate::convert::archive::ArchivePath;
 pub use crate::convert::dir::Directory;
-pub use crate::convert::image::ImageFormat;
+pub use crate::convert::image::{ImageFormat, jxl_is_compressed_jpeg};
 pub use crate::convert::search::{ArchiveImages, DirectoryImages, ImageInfo, Images};
 pub use crate::error::{CompactReport, ErrorMessage, got_interrupted};
 pub use crate::spawn::{ManagedChild, list_archive_files};
@@ -49,6 +49,7 @@ pub fn entry_point(args: Args) -> Result<(), Exn<ErrorMessage>> {
     };
 
     let source = ConversionSource::to_filter_set(&args.from);
+    debug!("sources: {source:?}");
     let Some(filtered) = found.filter(&source) else {
         stdout("Nothing to do");
         return Ok(());
@@ -239,7 +240,7 @@ pub enum ConversionTarget {
     Jxl {
         /// Jpegs are reencoded, not compressed.
         ///
-        /// Does not change conversion behavior for any other file format besides than jpeg.
+        /// Does not change conversion behavior for any other file format besides jpeg.
         #[arg(long)]
         lossy: bool,
     },

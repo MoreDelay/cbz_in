@@ -164,9 +164,10 @@ impl StateWaiting {
                 (I::Jpeg, C::Png) => spawn::convert_jpeg_to_png(input, output).or_raise(err)?,
                 (I::Png, C::Jpeg) => spawn::convert_png_to_jpeg(input, output).or_raise(err)?,
                 (I::Jpeg | I::Png, C::Avif) => spawn::encode_avif(input, output).or_raise(err)?,
-                (I::Jpeg | I::Png, C::Jxl { lossy }) => {
+                (I::Jpeg, C::Jxl { lossy }) => {
                     spawn::encode_jxl(input, output, lossy).or_raise(err)?
                 }
+                (I::Png, C::Jxl { .. }) => spawn::encode_jxl(input, output, true).or_raise(err)?,
                 (I::Jpeg | I::Png, C::Webp) => spawn::encode_webp(input, output).or_raise(err)?,
                 (I::Avif, C::Jpeg) => spawn::decode_avif_to_jpeg(input, output).or_raise(err)?,
                 (I::Avif, C::Png) => spawn::decode_avif_to_png(input, output).or_raise(err)?,
@@ -289,11 +290,11 @@ impl StateCompleted {
     ) -> Result<StateWaiting, Exn<ErrorMessage>> {
         let exn = match tool_use {
             ToolUse::Best => {
-                let msg = ErrorMessage::new("Converting with intended tool");
+                let msg = ErrorMessage::new("Failed converting with intended tool");
                 exn.raise(msg)
             }
             ToolUse::Backup { last_error } => {
-                let msg = ErrorMessage::new("Converting with backup tool");
+                let msg = ErrorMessage::new("Failed converting with backup tool");
                 let exn = exn.raise(msg);
 
                 let msg = format!("Give up trying to convert \"{}\"", image_path.display());
@@ -468,7 +469,7 @@ impl Sequence {
             Plan::OneStep { from, to } => Ok(Self::OneStep { from, to }),
             Plan::TwoStep { from, over, to } => Ok(Self::TwoStep { from, over, to }),
             Plan::IndeterminateJxl { from, to } => {
-                let over = if Self::jxl_is_compressed_jpeg(image_path).or_raise(err)? {
+                let over = if jxl_is_compressed_jpeg(image_path).or_raise(err)? {
                     debug!("jxl is compressed jpeg: {image_path:?}");
                     ConversionTarget::Jpeg
                 } else {
@@ -488,28 +489,28 @@ impl Sequence {
             Self::Finish { from, to } => (from, to),
         }
     }
+}
 
-    /// Check if a Jxl file is actually a re-encoded Jpeg.
-    ///
-    /// If that is the case, then we would prefer to simple decode it again, instead of routing
-    /// over Png.
-    fn jxl_is_compressed_jpeg(image_path: &Path) -> Result<bool, Exn<ErrorMessage>> {
-        let err = || {
-            let image_path = image_path.display();
-            ErrorMessage::new(format!("Querying metadata of jxl file \"{image_path}\""))
-        };
+/// Check if a Jxl file is actually a re-encoded Jpeg.
+///
+/// If that is the case, then we would prefer to simple decode it again, instead of routing
+/// over Png.
+pub fn jxl_is_compressed_jpeg(image_path: &Path) -> Result<bool, Exn<ErrorMessage>> {
+    let err = || {
+        let image_path = image_path.display();
+        ErrorMessage::new(format!("Querying metadata of jxl file \"{image_path}\""))
+    };
 
-        let has_box: Result<_, std::io::Error> = spawn::run_jxlinfo(image_path)
-            .and_then(ManagedChild::wait_with_output)
-            .or_raise(err)?
-            .stdout
-            .lines()
-            .try_fold(false, |mut acc, line| {
-                acc |= line?.starts_with("box: type: \"jbrd\"");
-                Ok(acc)
-            });
-        has_box.or_raise(err)
-    }
+    let has_box: Result<_, std::io::Error> = spawn::run_jxlinfo(image_path)
+        .and_then(ManagedChild::wait_with_output)
+        .or_raise(err)?
+        .stdout
+        .lines()
+        .try_fold(false, |mut acc, line| {
+            acc |= line?.starts_with("box: type: \"jbrd\"");
+            Ok(acc)
+        });
+    has_box.or_raise(err)
 }
 
 /// Indicates what tool to use for the next conversion.
@@ -771,7 +772,7 @@ mod tests {
     fn check_for_compressed_jxl() {
         let compressed_path = PathBuf::from("tests/data/compressed.jxl");
         assert!(compressed_path.exists());
-        let out = Sequence::jxl_is_compressed_jpeg(&compressed_path);
+        let out = jxl_is_compressed_jpeg(&compressed_path);
         assert!(matches!(out, Ok(true)));
     }
 
@@ -779,7 +780,7 @@ mod tests {
     fn check_for_encoded_jxl() {
         let encoded_path = PathBuf::from("tests/data/encoded.jxl");
         assert!(encoded_path.exists());
-        let out = Sequence::jxl_is_compressed_jpeg(&encoded_path);
+        let out = jxl_is_compressed_jpeg(&encoded_path);
         assert!(matches!(out, Ok(false)));
     }
 }
