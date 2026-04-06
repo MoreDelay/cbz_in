@@ -60,7 +60,7 @@ impl ImagesJob for ArchiveJob {
     }
 
     /// Run this job.
-    fn run(self, bar: &ProgressBar) -> Result<(), Exn<ErrorMessage>> {
+    fn run(self, bar: Option<&ProgressBar>) -> Result<(), Exn<ErrorMessage>> {
         let Self {
             archive,
             extraction,

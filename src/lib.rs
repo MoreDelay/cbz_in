@@ -66,7 +66,7 @@ pub fn entry_point(args: Args) -> Result<(), Exn<ErrorMessage>> {
                 Some(None) => ONE,
                 None => std::thread::available_parallelism().unwrap_or(ONE),
             };
-            filtered.convert(target, workers)?;
+            filtered.convert(target, workers, args.no_log)?;
         }
     }
 

@@ -135,20 +135,34 @@ impl<J: ImagesJob> JobCollection<J> {
     }
 
     /// Run all jobs in this collection to completion.
-    pub fn run(self) -> Result<(), Exn<ErrorMessage>> {
+    pub fn run(self, no_log: bool) -> Result<(), Exn<ErrorMessage>> {
         let Self(jobs) = self;
 
         let root = <J::Images as Images>::fs_root();
-        let bars = Bars::new(root);
-        bars.jobs.set_length(jobs.len() as u64);
+        let bars = if no_log {
+            None
+        } else {
+            let bars = Bars::new(root);
+            bars.jobs.set_length(jobs.len() as u64);
+            Some(bars)
+        };
 
         for job in jobs {
-            bars.println(format!("Converting \"{}\"", job.path().display()));
-            job.run(&bars.images)?;
-            bars.jobs.inc(1);
+            if let Some(bars) = &bars {
+                bars.println(format!("Converting \"{}\"", job.path().display()));
+            }
+
+            let images = bars.as_ref().map(|b| &b.images);
+            job.run(images)?;
+
+            if let Some(bars) = &bars {
+                bars.jobs.inc(1);
+            }
         }
 
-        bars.finish();
+        if let Some(bars) = bars {
+            bars.finish();
+        }
         Ok(())
     }
 

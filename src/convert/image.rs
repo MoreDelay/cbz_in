@@ -610,9 +610,11 @@ impl ConversionJobs {
     }
 
     /// Run this job.
-    pub fn run(self, bar: &ProgressBar) -> Result<(), Exn<ErrorMessage>> {
-        bar.reset();
-        bar.set_length(self.len() as u64);
+    pub fn run(self, bar: Option<&ProgressBar>) -> Result<(), Exn<ErrorMessage>> {
+        if let Some(bar) = bar {
+            bar.reset();
+            bar.set_length(self.len() as u64);
+        }
         RunConversionJobs::new(self).run(bar)
     }
 }
@@ -642,7 +644,7 @@ impl RunConversionJobs {
     }
 
     /// Run this job.
-    fn run(mut self, bar: &ProgressBar) -> Result<(), Exn<ErrorMessage>> {
+    fn run(mut self, bar: Option<&ProgressBar>) -> Result<(), Exn<ErrorMessage>> {
         let err = || ErrorMessage::new("Running conversion jobs");
 
         assert!(!self.job_queue.is_empty(), "queue filled by construction");
@@ -675,7 +677,7 @@ impl RunConversionJobs {
     }
 
     /// Try to proceed as many jobs as possible, until none are doing any more progress.
-    fn proceed_jobs(&mut self, bar: &ProgressBar) -> Result<(), Exn<ErrorMessage>> {
+    fn proceed_jobs(&mut self, bar: Option<&ProgressBar>) -> Result<(), Exn<ErrorMessage>> {
         for slot in &mut self.jobs_in_progress {
             loop {
                 match slot.take() {
@@ -685,7 +687,11 @@ impl RunConversionJobs {
                             break;
                         }
                         Proceeded::Progress(job) => *slot = Some(job),
-                        Proceeded::Finished => bar.inc(1),
+                        Proceeded::Finished => {
+                            if let Some(bar) = bar {
+                                bar.inc(1);
+                            }
+                        }
                     },
                     None => match self.job_queue.pop_front() {
                         Some(job) => *slot = Some(job.init()?),

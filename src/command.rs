@@ -82,6 +82,7 @@ impl FoundImages {
         self,
         target: ConversionTarget,
         n_workers: NonZeroUsize,
+        no_log: bool,
     ) -> Result<(), Exn<ErrorMessage>> {
         let config = ConversionConfig { target, n_workers };
 
@@ -91,7 +92,7 @@ impl FoundImages {
         };
 
         run.test()?;
-        run.run()
+        run.run(no_log)
     }
 }
 
@@ -199,10 +200,10 @@ impl RunConversion {
     }
 
     /// Run the conversion for real.
-    fn run(self) -> Result<(), Exn<ErrorMessage>> {
+    fn run(self, no_log: bool) -> Result<(), Exn<ErrorMessage>> {
         match self {
-            Self::Arc(coll) => coll.run()?,
-            Self::Dir(coll) => coll.run()?,
+            Self::Arc(coll) => coll.run(no_log)?,
+            Self::Dir(coll) => coll.run(no_log)?,
         }
         Ok(())
     }

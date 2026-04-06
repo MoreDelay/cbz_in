@@ -50,7 +50,7 @@ pub trait ImagesJob: Sized {
     fn count(&self) -> usize;
 
     /// Run this job.
-    fn run(self, bar: &ProgressBar) -> Result<(), Exn<ErrorMessage>>;
+    fn run(self, bar: Option<&ProgressBar>) -> Result<(), Exn<ErrorMessage>>;
 }
 
 /// A set of progress bars used to indicate the progress of the conversion.

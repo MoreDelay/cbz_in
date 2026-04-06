@@ -50,7 +50,7 @@ impl ImagesJob for DirectoryJob {
         self.conversion.len()
     }
 
-    fn run(self, bar: &ProgressBar) -> Result<(), Exn<ErrorMessage>> {
+    fn run(self, bar: Option<&ProgressBar>) -> Result<(), Exn<ErrorMessage>> {
         let Self {
             root,
             hardlink,
