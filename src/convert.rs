@@ -67,8 +67,14 @@ impl Bars {
     /// Create a new set of progress bars that will immediately be displayed on the terminal.
     pub fn new(name: FilesystemRoot) -> Self {
         let multi = indicatif::MultiProgress::new();
-        let jobs = multi.add(Self::create_progress_bar(name.plural()));
-        let images = multi.add(Self::create_progress_bar("Images"));
+
+        let jobs = name.plural();
+        let images = "Images";
+
+        let n = jobs.chars().count().max(images.chars().count());
+
+        let jobs = multi.add(Self::create_progress_bar(jobs, n));
+        let images = multi.add(Self::create_progress_bar(images, n));
 
         jobs.enable_responsive_tick(std::time::Duration::from_millis(250));
         images.enable_responsive_tick(std::time::Duration::from_millis(250));
@@ -97,11 +103,10 @@ impl Bars {
     }
 
     /// Create a new progress bar with hard-coded style.
-    fn create_progress_bar(title: &'static str) -> indicatif::ProgressBar {
-        #[expect(clippy::literal_string_with_formatting_args)]
-        let style = indicatif::ProgressStyle::with_template(
-            "[{elapsed_precise}] {msg}: {wide_bar} {pos:>5}/{len:5}",
-        )
+    fn create_progress_bar(title: &'static str, pad: usize) -> indicatif::ProgressBar {
+        let style = indicatif::ProgressStyle::with_template(&format!(
+            "[{{elapsed_precise}}] {{msg:>{pad}}}: {{wide_bar}} {{pos:>5}}/{{len:5}}"
+        ))
         .expect("valid template");
 
         indicatif::ProgressBar::new(0)
