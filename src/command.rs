@@ -126,7 +126,7 @@ impl DirOrArchive {
 
         let (path, archive_exn) = match ArchivePath::new(path) {
             Ok(archive) => return Ok(Self::Arc(archive)),
-            Err(exn) => exn.recover(),
+            Err(recover) => recover,
         };
 
         let path = path.display();
@@ -159,8 +159,7 @@ impl DirOrArchive {
                 let path = dir_entry.or_raise(err)?.path();
                 match ArchivePath::new(path) {
                     Ok(archive) => Ok(Some(archive)),
-                    Err(exn) => {
-                        let (path, exn) = exn.recover();
+                    Err((path, exn)) => {
                         let path = path.display();
                         let report = CompactReport::new(&exn);
                         crate::verbose(verbose, format!("Skipping \"{path}\": {report}"));

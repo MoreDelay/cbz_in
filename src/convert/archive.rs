@@ -328,11 +328,10 @@ impl ArchivePath {
     /// Checked constructor to verify the path points to an archive.
     ///
     /// This only checks that the directory exists at the time of creation.
-    pub fn new(archive: PathBuf) -> Result<Self, Exn<Msg<Self>, PathBuf>> {
+    pub fn new(archive: PathBuf) -> Result<Self, (PathBuf, Exn<Msg<Self>>)> {
         let Some(extension) = archive.extension() else {
             let msg = Msg::new("File is missing a file extension for archives.");
-            let exn = Exn::with_recovery(msg, archive);
-            return Err(exn);
+            return Err((archive, msg.raise()));
         };
         let extension = match extension
             .to_str()
@@ -343,23 +342,20 @@ impl ArchivePath {
             Err(err) => {
                 let exn = err.raise();
                 let msg = Msg::new("Archive has an unsupported extension");
-                let exn = exn.raise_with_recovery(msg, archive);
-                return Err(exn);
+                return Err((archive, exn.raise(msg)));
             }
         };
 
         if !archive.is_file() {
             let path = archive.display();
-            let msg = format!("Archive does not exist: \"{path}\"");
-            let exn = Exn::with_recovery(Msg::new(msg), archive);
-            return Err(exn);
+            let msg = Msg::new(format!("Archive does not exist: \"{path}\""));
+            return Err((archive, msg.raise()));
         }
 
         if archive.file_name().is_none_or(OsStr::is_empty) {
             let path = archive.display();
-            let msg = format!("Archive has empty file name: \"{path}\"");
-            let exn = Exn::with_recovery(Msg::new(msg), archive);
-            return Err(exn);
+            let msg = Msg::new(format!("Archive has empty file name: \"{path}\""));
+            return Err((archive, msg.raise()));
         }
 
         Ok(Self { archive, extension })

@@ -37,7 +37,7 @@ impl ManagedChild {
     pub fn try_wait(&mut self) -> Result<bool, Exn<Msg<Self>>> {
         let err = || {
             let cmd = &self.cmd;
-            Msg::new(format!("Waiting on child process: '{cmd}'",))
+            Msg::new(format!("Waiting on child process: '{cmd}'"))
         };
 
         let waited = self
@@ -65,7 +65,7 @@ impl ManagedChild {
 
         let err = || {
             let cmd = &self.cmd;
-            Msg::new(format!("Waiting on child process: '{cmd}'",))
+            Msg::new(format!("Waiting on child process: '{cmd}'"))
         };
 
         let output = child.wait_with_output().or_raise(err)?;
