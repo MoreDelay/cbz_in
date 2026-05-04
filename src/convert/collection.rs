@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::ops::Not as _;
 
-use exn::Exn;
+use exn::{Exn, ResultExt as _};
 use tracing::debug;
 
 use crate::command::{print_stats_per_format, print_stats_total};
@@ -12,7 +12,7 @@ use crate::convert::dir::Directory;
 use crate::convert::image::ImageFormat;
 use crate::convert::search::{ArchiveImages, DirectoryImages, Images};
 use crate::convert::{Bars, ConversionConfig, ImagesJob};
-use crate::error::{ErrorMessage, NothingToDo};
+use crate::error::{Msg, NothingToDo};
 use crate::stats::Stats;
 use crate::stdout;
 
@@ -23,7 +23,7 @@ impl ImageCollection<ArchiveImages> {
     /// Look for images in archives.
     pub fn in_archives(
         paths: impl Iterator<Item = ArchivePath>,
-    ) -> Result<Option<Self>, Exn<ErrorMessage>> {
+    ) -> Result<Option<Self>, Exn<Msg<Self>>> {
         Self::new(paths)
     }
 }
@@ -32,14 +32,16 @@ impl ImageCollection<DirectoryImages> {
     /// Look for images in directories.
     pub fn in_directories(
         paths: impl Iterator<Item = Directory>,
-    ) -> Result<Option<Self>, Exn<ErrorMessage>> {
+    ) -> Result<Option<Self>, Exn<Msg<Self>>> {
         Self::new(paths)
     }
 }
 
 impl<I: Images> ImageCollection<I> {
     /// Generic constructor that relies on [`Images`] behavior to search for images.
-    fn new(paths: impl Iterator<Item = I::Path>) -> Result<Option<Self>, Exn<ErrorMessage>> {
+    fn new(paths: impl Iterator<Item = I::Path>) -> Result<Option<Self>, Exn<Msg<Self>>> {
+        let err = || Msg::new("Collecting images");
+
         let found = paths
             .into_iter()
             .map(|path| {
@@ -52,7 +54,8 @@ impl<I: Images> ImageCollection<I> {
                 Ok(images)
             })
             .filter_map(Result::transpose)
-            .collect::<Result<Vec<_>, Exn<_>>>()?;
+            .collect::<Result<Vec<_>, Exn<_>>>()
+            .or_raise(err)?;
 
         Ok(found.is_empty().not().then_some(Self(found)))
     }
@@ -115,7 +118,7 @@ impl<J: ImagesJob> JobCollection<J> {
     pub fn new(
         images: ImageCollection<<J as ImagesJob>::Images>,
         config: ConversionConfig,
-    ) -> Result<Option<Self>, Exn<ErrorMessage>> {
+    ) -> Result<Option<Self>, Exn<Msg<J>>> {
         let jobs = images
             .0
             .into_iter()
@@ -128,14 +131,16 @@ impl<J: ImagesJob> JobCollection<J> {
                 Ok(job)
             })
             .filter_map(Result::transpose)
-            .collect::<Result<Vec<_>, Exn<ErrorMessage>>>()?;
+            .collect::<Result<Vec<_>, Exn<Msg<J>>>>()?;
 
         let wrapped = jobs.is_empty().not().then_some(Self(jobs));
         Ok(wrapped)
     }
 
     /// Run all jobs in this collection to completion.
-    pub fn run(self, no_log: bool) -> Result<(), Exn<ErrorMessage>> {
+    pub fn run(self, no_log: bool) -> Result<(), Exn<Msg<Self>>> {
+        let err = || Msg::new("Running all conversion jobs in a collection");
+
         let Self(jobs) = self;
 
         let root = <J::Images as Images>::fs_root();
@@ -153,7 +158,7 @@ impl<J: ImagesJob> JobCollection<J> {
             }
 
             let images = bars.as_ref().map(|b| &b.images);
-            job.run(images)?;
+            job.run(images).or_raise(err)?;
 
             if let Some(bars) = &bars {
                 bars.jobs.inc(1);

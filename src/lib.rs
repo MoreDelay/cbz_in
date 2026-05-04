@@ -19,12 +19,15 @@ pub use crate::convert::archive::ArchivePath;
 pub use crate::convert::dir::Directory;
 pub use crate::convert::image::{ImageFormat, jxl_is_compressed_jpeg};
 pub use crate::convert::search::{ArchiveImages, DirectoryImages, ImageInfo, Images};
-pub use crate::error::{CompactReport, ErrorMessage, got_interrupted};
+pub use crate::error::{CompactReport, Msg, got_interrupted};
 pub use crate::spawn::{ManagedChild, list_archive_files};
 
+/// Top level library error tag.
+pub struct AppError;
+
 /// The application's entry point.
-pub fn entry_point(args: Args) -> Result<(), Exn<ErrorMessage>> {
-    let err = || ErrorMessage::new("Error when executing program");
+pub fn entry_point(args: Args) -> Result<(), Exn<Msg<AppError>>> {
+    let err = || Msg::new("Error when executing program");
 
     if !args.no_log {
         init_logger(&args.log_path, args.level).or_raise(err)?;
@@ -43,7 +46,7 @@ pub fn entry_point(args: Args) -> Result<(), Exn<ErrorMessage>> {
         true => FilesystemRoot::Directory,
         false => FilesystemRoot::Archive,
     };
-    let Some(found) = FoundImages::search(paths, root)? else {
+    let Some(found) = FoundImages::search(paths, root).or_raise(err)? else {
         stdout("Nothing to do");
         return Ok(());
     };
@@ -66,7 +69,9 @@ pub fn entry_point(args: Args) -> Result<(), Exn<ErrorMessage>> {
                 Some(None) => ONE,
                 None => std::thread::available_parallelism().unwrap_or(ONE),
             };
-            filtered.convert(target, workers, args.no_log)?;
+            filtered
+                .convert(target, workers, args.no_log)
+                .or_raise(err)?;
         }
     }
 
@@ -265,10 +270,10 @@ impl ConversionTarget {
 }
 
 /// Initialize the logger as requested.
-fn init_logger(path: &Path, level: tracing::Level) -> Result<(), Exn<ErrorMessage>> {
+fn init_logger(path: &Path, level: tracing::Level) -> Result<(), Exn<Msg<()>>> {
     let err = || {
         let path = path.display();
-        ErrorMessage::new(format!("Initializing logging to file \"{path}\""))
+        Msg::new(format!("Initializing logging to file \"{path}\""))
     };
 
     let path = match path.is_absolute() {
@@ -280,7 +285,7 @@ fn init_logger(path: &Path, level: tracing::Level) -> Result<(), Exn<ErrorMessag
 
     // add another layer for error context
     let err = |msg| {
-        let exn = ErrorMessage::new(msg).raise();
+        let exn = Msg::no_tag(msg).raise();
         exn.raise(err())
     };
     if !directory.is_dir() {

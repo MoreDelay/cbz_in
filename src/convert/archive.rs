@@ -17,7 +17,7 @@ use crate::convert::dir::TempDirGuard;
 use crate::convert::image::{ConversionJob, ConversionJobs};
 use crate::convert::search::{ArchiveImages, Images};
 use crate::convert::{ConversionConfig, JobPath};
-use crate::error::{ErrorMessage, NothingToDo, NothingToDoReason};
+use crate::error::{Msg, NothingToDo, NothingToDoReason};
 use crate::spawn::{self, ManagedChild};
 
 /// Represents the job to convert all images within a Zip archive.
@@ -43,7 +43,7 @@ impl ImagesJob for ArchiveJob {
     fn new(
         images: Self::Images,
         config: ConversionConfig,
-    ) -> Result<Result<Self, NothingToDo<<Self::Images as Images>::Path>>, Exn<ErrorMessage>> {
+    ) -> Result<Result<Self, NothingToDo<<Self::Images as Images>::Path>>, Exn<Msg<Self>>> {
         Self::new_internal(images, config)
     }
 
@@ -60,7 +60,7 @@ impl ImagesJob for ArchiveJob {
     }
 
     /// Run this job.
-    fn run(self, bar: Option<&ProgressBar>) -> Result<(), Exn<ErrorMessage>> {
+    fn run(self, bar: Option<&ProgressBar>) -> Result<(), Exn<Msg<Self>>> {
         let Self {
             archive,
             extraction,
@@ -70,7 +70,7 @@ impl ImagesJob for ArchiveJob {
 
         let err = || {
             let archive = archive.display();
-            ErrorMessage::new(format!("Converting images in archive \"{archive}\""))
+            Msg::new(format!("Converting images in archive \"{archive}\""))
         };
 
         let _guard = extraction.run().or_raise(err)?;
@@ -88,14 +88,14 @@ impl ArchiveJob {
     fn new_internal(
         archive: ArchiveImages,
         config: ConversionConfig,
-    ) -> Result<Result<Self, NothingToDo<ArchivePath>>, Exn<ErrorMessage>> {
+    ) -> Result<Result<Self, NothingToDo<ArchivePath>>, Exn<Msg<Self>>> {
         let ArchiveImages { root, images } = archive;
         let archive = root;
 
         let err = || {
             let archive = archive.display();
             let msg = format!("Preparing job for archive conversion \"{archive}\"");
-            ErrorMessage::new(msg)
+            Msg::new(msg)
         };
 
         let target = config.target;
@@ -144,10 +144,10 @@ impl ArchiveJob {
     pub fn already_converted(
         path: &ArchivePath,
         target: ConversionTarget,
-    ) -> Result<bool, Exn<ErrorMessage>> {
+    ) -> Result<bool, Exn<Msg<Self>>> {
         let err = || {
             let path = path.display();
-            ErrorMessage::new(format!(
+            Msg::new(format!(
                 "Checking if archive has been converted before: \"{path}\""
             ))
         };
@@ -170,11 +170,11 @@ impl ArchiveJob {
     /// the same file name as the archive itself, without extensions. If the archive already has
     /// this directory, then it can be extracted directly. Otherwise the root directory must be
     /// created first, and the contents are extracted inside of that.
-    fn get_extraction_root_dir(archive: &ArchivePath) -> Result<PathBuf, Exn<ErrorMessage>> {
+    fn get_extraction_root_dir(archive: &ArchivePath) -> Result<PathBuf, Exn<Msg<Self>>> {
         let err = || {
             let archive = archive.display();
             let msg = format!("Determining extraction dir for \"{archive}\"");
-            ErrorMessage::new(msg)
+            Msg::new(msg)
         };
 
         let name = archive.file_stem();
@@ -208,14 +208,14 @@ struct ExtractionJob {
 
 impl ExtractionJob {
     /// Run this job.
-    fn run(self) -> Result<TempDirGuard, Exn<ErrorMessage>> {
+    fn run(self) -> Result<TempDirGuard, Exn<Msg<Self>>> {
         let err = || {
             let path = self.archive.display();
-            ErrorMessage::new(format!("Extracting the archive \"{path}\""))
+            Msg::new(format!("Extracting the archive \"{path}\""))
         };
 
         if !self.archive.is_file() {
-            let exn = ErrorMessage::new("Archive disappeared").raise();
+            let exn = Msg::no_tag("Archive disappeared").raise();
             bail!(exn.raise(err()))
         }
 
@@ -223,7 +223,7 @@ impl ExtractionJob {
 
         if extract_dir.exists() {
             let dir = extract_dir.display();
-            let msg = ErrorMessage::new(format!("Extract directory already exists at \"{dir}\""));
+            let msg = Msg::no_tag(format!("Extract directory already exists at \"{dir}\""));
             bail!(Exn::new(msg).raise(err()))
         }
 
@@ -232,7 +232,7 @@ impl ExtractionJob {
             .or_raise(|| {
                 let extract_dir = extract_dir.display();
                 let msg = format!("Could not create the target directory at \"{extract_dir}\"");
-                ErrorMessage::new(msg)
+                Msg::no_tag(msg)
             })
             .or_raise(err)?;
         spawn::extract_zip(&self.archive, &extract_dir)
@@ -256,10 +256,10 @@ struct CompressionJob {
 
 impl CompressionJob {
     /// Run this job.
-    fn run(self) -> Result<(), Exn<ErrorMessage>> {
+    fn run(self) -> Result<(), Exn<Msg<Self>>> {
         let err = || {
             let root = self.root.display();
-            ErrorMessage::new(format!("Compressing directory \"{root}\""))
+            Msg::new(format!("Compressing directory \"{root}\""))
         };
 
         let zip_path = self.get_zip_path();
@@ -328,9 +328,9 @@ impl ArchivePath {
     /// Checked constructor to verify the path points to an archive.
     ///
     /// This only checks that the directory exists at the time of creation.
-    pub fn new(archive: PathBuf) -> Result<Self, Exn<ErrorMessage, PathBuf>> {
+    pub fn new(archive: PathBuf) -> Result<Self, Exn<Msg<Self>, PathBuf>> {
         let Some(extension) = archive.extension() else {
-            let msg = ErrorMessage::new("File is missing a file extension for archives.");
+            let msg = Msg::new("File is missing a file extension for archives.");
             let exn = Exn::with_recovery(msg, archive);
             return Err(exn);
         };
@@ -342,7 +342,7 @@ impl ArchivePath {
             Ok(ext) => ext,
             Err(err) => {
                 let exn = err.raise();
-                let msg = ErrorMessage::new("Archive has an unsupported extension");
+                let msg = Msg::new("Archive has an unsupported extension");
                 let exn = exn.raise_with_recovery(msg, archive);
                 return Err(exn);
             }
@@ -351,14 +351,14 @@ impl ArchivePath {
         if !archive.is_file() {
             let path = archive.display();
             let msg = format!("Archive does not exist: \"{path}\"");
-            let exn = Exn::with_recovery(ErrorMessage::new(msg), archive);
+            let exn = Exn::with_recovery(Msg::new(msg), archive);
             return Err(exn);
         }
 
         if archive.file_name().is_none_or(OsStr::is_empty) {
             let path = archive.display();
             let msg = format!("Archive has empty file name: \"{path}\"");
-            let exn = Exn::with_recovery(ErrorMessage::new(msg), archive);
+            let exn = Exn::with_recovery(Msg::new(msg), archive);
             return Err(exn);
         }
 
@@ -422,7 +422,7 @@ impl ZipExtension {
 }
 
 impl std::str::FromStr for ZipExtension {
-    type Err = ErrorMessage;
+    type Err = Msg<Self>;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         use ZipExtension::*;
@@ -430,7 +430,7 @@ impl std::str::FromStr for ZipExtension {
         match s.to_lowercase().as_str() {
             "zip" => Ok(Zip),
             "cbz" => Ok(Cbz),
-            _ => Err(ErrorMessage::new("Unsupported archive format")),
+            _ => Err(Msg::new("Unsupported archive format")),
         }
     }
 }

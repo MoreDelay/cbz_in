@@ -1,23 +1,46 @@
 //! Error structs used in this app.
 
-use std::error::Error;
+use std::{error::Error, marker::PhantomData};
 
 use derive_more::Display;
 use exn::{Exn, Frame};
 use tracing::error;
 
 /// General error object with a message for its context.
-#[derive(Debug, Display)]
-pub struct ErrorMessage(String);
+pub struct Msg<T>(String, PhantomData<T>);
 
-impl Error for ErrorMessage {}
+// Safety: `T` is only used as in a phantom field, and `String` is Send + Sync
+unsafe impl<T> Send for Msg<T> {}
+// Safety: `T` is only used as in a phantom field, and `String` is Send + Sync
+unsafe impl<T> Sync for Msg<T> {}
 
-impl ErrorMessage {
-    /// Create a error message by providing some context.
+impl<T> std::fmt::Display for Msg<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl<T> std::fmt::Debug for Msg<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ErrorMessage").field(&self.0).finish()
+    }
+}
+
+impl<T> Error for Msg<T> {}
+
+impl Msg<()> {
+    /// Create a tag-less error message by providing some context.
+    pub fn no_tag(msg: impl Into<String>) -> Self {
+        Self::new(msg)
+    }
+}
+
+impl<T> Msg<T> {
+    /// Create a type checked error message by providing some context.
     pub fn new(msg: impl Into<String>) -> Self {
         let msg = msg.into();
         error!("{msg}");
-        Self(msg)
+        Self(msg, PhantomData)
     }
 }
 

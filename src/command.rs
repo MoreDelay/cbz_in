@@ -14,7 +14,7 @@ use crate::convert::dir::{Directory, DirectoryJob};
 use crate::convert::image::ImageFormat;
 use crate::convert::search::{ArchiveImages, DirectoryImages};
 use crate::convert::{ConversionConfig, FilesystemRoot, ImagesJob};
-use crate::error::{CompactReport, ErrorMessage};
+use crate::error::{CompactReport, Msg};
 use crate::stats::Stats;
 use crate::{ConversionTarget, stdout};
 
@@ -31,17 +31,22 @@ impl FoundImages {
     pub fn search(
         paths: impl Iterator<Item = PathBuf>,
         root: FilesystemRoot,
-    ) -> Result<Option<Self>, Exn<ErrorMessage>> {
+    ) -> Result<Option<Self>, Exn<Msg<Self>>> {
+        let err = || Msg::new("failed to find images");
+
         match root {
             FilesystemRoot::Archive => {
                 let arcs = paths
                     .into_iter()
                     .map(|path| DirOrArchive::check(path)?.archive_iter())
-                    .collect::<Result<Vec<_>, Exn<_>>>()?
+                    .collect::<Result<Vec<_>, Exn<_>>>()
+                    .or_raise(err)?
                     .into_iter()
                     .flatten();
 
-                Ok(ImageCollection::in_archives(arcs)?.map(Self::Arc))
+                Ok(ImageCollection::in_archives(arcs)
+                    .or_raise(err)?
+                    .map(Self::Arc))
             }
             FilesystemRoot::Directory => {
                 let dirs = paths
@@ -49,14 +54,17 @@ impl FoundImages {
                     .map(|path| {
                         let dir = Directory::new(path)?.map_err(|path| {
                             let msg = format!("Path is not a directory: \"{}\"", path.display());
-                            ErrorMessage::new(msg).raise()
+                            Msg::new(msg).raise()
                         })?;
                         Ok(dir)
                     })
-                    .collect::<Result<Vec<_>, Exn<_>>>()?
+                    .collect::<Result<Vec<_>, Exn<_>>>()
+                    .or_raise(err)?
                     .into_iter();
 
-                Ok(ImageCollection::in_directories(dirs)?.map(Self::Dir))
+                Ok(ImageCollection::in_directories(dirs)
+                    .or_raise(err)?
+                    .map(Self::Dir))
             }
         }
     }
@@ -83,16 +91,18 @@ impl FoundImages {
         target: ConversionTarget,
         n_workers: NonZeroUsize,
         no_log: bool,
-    ) -> Result<(), Exn<ErrorMessage>> {
+    ) -> Result<(), Exn<Msg<Self>>> {
+        let err = || Msg::new("Converting images");
+
         let config = ConversionConfig { target, n_workers };
 
-        let Some(run) = RunConversion::new(self, config)? else {
+        let Some(run) = RunConversion::new(self, config).or_raise(err)? else {
             stdout("Nothing to do");
             return Ok(());
         };
 
-        run.test()?;
-        run.run(no_log)
+        run.test().or_raise(err)?;
+        run.run(no_log).or_raise(err)
     }
 }
 
@@ -106,10 +116,12 @@ enum DirOrArchive {
 
 impl DirOrArchive {
     /// Verify the path points either to a directory or an archive.
-    pub fn check(path: PathBuf) -> Result<Self, Exn<ErrorMessage>> {
-        let (path, dir_exn) = match Directory::new(path)? {
+    pub fn check(path: PathBuf) -> Result<Self, Exn<Msg<Self>>> {
+        let err = || Msg::new("Checking if path is a directory or an archive");
+
+        let (path, dir_exn) = match Directory::new(path).or_raise(err)? {
             Ok(root) => return Ok(Self::Dir(root)),
-            Err(path) => (path, ErrorMessage::new("Not a directory").raise()),
+            Err(path) => (path, Msg::new("Not a directory").raise()),
         };
 
         let (path, archive_exn) = match ArchivePath::new(path) {
@@ -119,7 +131,7 @@ impl DirOrArchive {
 
         let path = path.display();
         let msg = format!("Neither an archive nor a directory: \"{path}\"");
-        let exn = Exn::raise_all(ErrorMessage::new(msg), [dir_exn, archive_exn]);
+        let exn = Exn::raise_all(Msg::new(msg), [dir_exn, archive_exn]);
         Err(exn)
     }
 
@@ -127,7 +139,7 @@ impl DirOrArchive {
     ///
     /// When this is an archive directly, gives back just that one archive. When it is a directory,
     /// looks for any direct child files that are archives, and iterates over those.
-    pub fn archive_iter(self) -> Result<impl Iterator<Item = ArchivePath>, Exn<ErrorMessage>> {
+    pub fn archive_iter(self) -> Result<impl Iterator<Item = ArchivePath>, Exn<Msg<Self>>> {
         match self {
             Self::Dir(dir) => {
                 let flattened = Self::flatten_dir(&dir, true)?;
@@ -138,8 +150,8 @@ impl DirOrArchive {
     }
 
     /// Find all child entries of this directory and collect those that are archives.
-    fn flatten_dir(dir: &Directory, verbose: bool) -> Result<Vec<ArchivePath>, Exn<ErrorMessage>> {
-        let err = || ErrorMessage::new("finding archives in directory");
+    fn flatten_dir(dir: &Directory, verbose: bool) -> Result<Vec<ArchivePath>, Exn<Msg<Self>>> {
+        let err = || Msg::new("finding archives in directory");
 
         dir.read_dir()
             .or_raise(err)?
@@ -187,23 +199,28 @@ enum RunConversion {
 
 impl RunConversion {
     /// Prepare conversion jobs.
-    fn new(
-        found: FoundImages,
-        config: ConversionConfig,
-    ) -> Result<Option<Self>, Exn<ErrorMessage>> {
+    fn new(found: FoundImages, config: ConversionConfig) -> Result<Option<Self>, Exn<Msg<Self>>> {
+        let err = || Msg::new("Preparing conversion job");
+
         let out = match found {
-            FoundImages::Arc(items) => JobCollection::new(items, config)?.map(Self::Arc),
-            FoundImages::Dir(items) => JobCollection::new(items, config)?.map(Self::Dir),
+            FoundImages::Arc(items) => JobCollection::new(items, config)
+                .or_raise(err)?
+                .map(Self::Arc),
+            FoundImages::Dir(items) => JobCollection::new(items, config)
+                .or_raise(err)?
+                .map(Self::Dir),
         };
 
         Ok(out)
     }
 
     /// Run the conversion for real.
-    fn run(self, no_log: bool) -> Result<(), Exn<ErrorMessage>> {
+    fn run(self, no_log: bool) -> Result<(), Exn<Msg<Self>>> {
+        let err = || Msg::new("Running conversion job");
+
         match self {
-            Self::Arc(coll) => coll.run(no_log)?,
-            Self::Dir(coll) => coll.run(no_log)?,
+            Self::Arc(coll) => coll.run(no_log).or_raise(err)?,
+            Self::Dir(coll) => coll.run(no_log).or_raise(err)?,
         }
         Ok(())
     }
@@ -217,8 +234,8 @@ impl RunConversion {
     }
 
     /// Check if we can run this job, and print out statistics.
-    fn test(&self) -> Result<(), Exn<ErrorMessage>> {
-        let err = || ErrorMessage::new("Doing dry run");
+    fn test(&self) -> Result<(), Exn<Msg<Self>>> {
+        let err = || Msg::new("Doing dry run");
 
         self.check_tools().or_raise(err)?;
         self.print_conversion_header();
@@ -238,7 +255,9 @@ impl RunConversion {
     }
 
     /// Check if all tools needed for this job are actually available.
-    fn check_tools(&self) -> Result<(), Exn<ErrorMessage>> {
+    fn check_tools(&self) -> Result<(), Exn<Msg<Self>>> {
+        let err = || Msg::new("Checking tool availability");
+
         let iter: &mut dyn Iterator<Item = _> = match self {
             Self::Arc(jobs) => &mut jobs.iter().flat_map(ImagesJob::iter),
             Self::Dir(jobs) => &mut jobs.iter().flat_map(ImagesJob::iter),
@@ -253,14 +272,15 @@ impl RunConversion {
                 Ok(false) => Some(Ok(tool.name())),
                 Err(e) => Some(Err(e)),
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, _>>()
+            .or_raise(err)?;
 
         if !missing_tools.is_empty() {
             let mut missing_tools = missing_tools;
             missing_tools.sort_unstable();
             let tools = missing_tools.join(", ");
             let msg = format!("Missing tools: {tools}");
-            let exn = ErrorMessage::new(msg).raise();
+            let exn = Msg::new(msg).raise();
             return Err(exn);
         }
         Ok(())

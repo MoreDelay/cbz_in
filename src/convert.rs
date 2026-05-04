@@ -15,7 +15,7 @@ use tracing::warn;
 use crate::ConversionTarget;
 use crate::convert::image::ConversionJob;
 use crate::convert::search::Images;
-use crate::error::{ErrorMessage, NothingToDo};
+use crate::error::{Msg, NothingToDo};
 
 /// General configuration for a run of any conversion job.
 #[derive(Debug, Clone, Copy)]
@@ -26,8 +26,11 @@ pub struct ConversionConfig {
     pub n_workers: NonZeroUsize,
 }
 
-/// Type alias to reduce type clutter specifying the [`Job`]'s path type.
+/// Type alias to reduce type clutter specifying the [`ImagesJob`]'s path type.
 type JobPath<J> = <<J as ImagesJob>::Images as Images>::Path;
+
+/// Type alias to reduce type clutter specifying error-free construction of [`ImagesJob`]
+type ImagesJobOk<J> = Result<J, NothingToDo<JobPath<J>>>;
 
 /// A trait for jobs that converts some [`Images`].
 pub trait ImagesJob: Sized {
@@ -38,7 +41,7 @@ pub trait ImagesJob: Sized {
     fn new(
         images: Self::Images,
         config: ConversionConfig,
-    ) -> Result<Result<Self, NothingToDo<JobPath<Self>>>, Exn<ErrorMessage>>;
+    ) -> Result<ImagesJobOk<Self>, Exn<Msg<Self>>>;
 
     /// Get a path for this job, that best describes its scope of operation.
     fn path(&self) -> &JobPath<Self>;
@@ -50,7 +53,7 @@ pub trait ImagesJob: Sized {
     fn count(&self) -> usize;
 
     /// Run this job.
-    fn run(self, bar: Option<&ProgressBar>) -> Result<(), Exn<ErrorMessage>>;
+    fn run(self, bar: Option<&ProgressBar>) -> Result<(), Exn<Msg<Self>>>;
 }
 
 /// A set of progress bars used to indicate the progress of the conversion.

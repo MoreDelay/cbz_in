@@ -12,7 +12,7 @@ use super::ImagesJob;
 use crate::convert::image::{ConversionJob, ConversionJobs, ImageFormat};
 use crate::convert::search::{DirectoryImages, Images};
 use crate::convert::{ConversionConfig, JobPath};
-use crate::error::{ErrorMessage, NothingToDo, NothingToDoReason};
+use crate::error::{Msg, NothingToDo, NothingToDoReason};
 
 /// Represents the job to convert all images within a directory.
 ///
@@ -34,7 +34,7 @@ impl ImagesJob for DirectoryJob {
     fn new(
         images: Self::Images,
         config: ConversionConfig,
-    ) -> Result<Result<Self, NothingToDo<<Self::Images as Images>::Path>>, Exn<ErrorMessage>> {
+    ) -> Result<Result<Self, NothingToDo<<Self::Images as Images>::Path>>, Exn<Msg<Self>>> {
         Self::new_internal(images, config)
     }
 
@@ -50,7 +50,7 @@ impl ImagesJob for DirectoryJob {
         self.conversion.len()
     }
 
-    fn run(self, bar: Option<&ProgressBar>) -> Result<(), Exn<ErrorMessage>> {
+    fn run(self, bar: Option<&ProgressBar>) -> Result<(), Exn<Msg<Self>>> {
         let Self {
             root,
             hardlink,
@@ -59,7 +59,7 @@ impl ImagesJob for DirectoryJob {
 
         let err = || {
             let root = root.display();
-            ErrorMessage::new(format!(
+            Msg::new(format!(
                 "Converting all images recursively within \"{root}\""
             ))
         };
@@ -79,19 +79,19 @@ impl DirectoryJob {
     fn new_internal(
         dir: DirectoryImages,
         config: ConversionConfig,
-    ) -> Result<Result<Self, NothingToDo<Directory>>, Exn<ErrorMessage>> {
+    ) -> Result<Result<Self, NothingToDo<Directory>>, Exn<Msg<Self>>> {
         let DirectoryImages { root, images } = dir;
         let ctx_str = || {
             let root = root.display();
             format!("Preparing job for recursive image conversion starting at \"{root}\"")
         };
-        let err = || ErrorMessage::new(ctx_str());
+        let err = || Msg::new(ctx_str());
 
         let mut components_iter = root.components();
         if components_iter.next() == Some(std::path::Component::RootDir)
             && components_iter.next().is_none()
         {
-            let exn = ErrorMessage::new("Can not convert root directory").raise();
+            let exn = Msg::no_tag("Can not convert root directory").raise();
             let exn = exn.raise(err());
             return Err(exn);
         }
@@ -126,13 +126,10 @@ impl DirectoryJob {
     }
 
     /// Builds the path to the mirrored directory with hard links.
-    fn get_hardlink_dir(
-        root: &Directory,
-        target: ImageFormat,
-    ) -> Result<PathBuf, Exn<ErrorMessage>> {
+    fn get_hardlink_dir(root: &Directory, target: ImageFormat) -> Result<PathBuf, Exn<Msg<Self>>> {
         let err = || {
             let root = root.display();
-            ErrorMessage::new(format!("Directory has no parent: \"{root}\""))
+            Msg::new(format!("Directory has no parent: \"{root}\""))
         };
 
         let parent = root.parent().ok_or_raise(err)?;
@@ -145,8 +142,8 @@ impl DirectoryJob {
     ///
     /// A converted archive either already holds the correct image format suffix in its name, or
     /// there exists another archive with the same name and that suffix in the same directory.
-    fn already_converted(root: &Directory, target: ImageFormat) -> Result<bool, Exn<ErrorMessage>> {
-        let err = || ErrorMessage::new("Checking if this directory has been converted before");
+    fn already_converted(root: &Directory, target: ImageFormat) -> Result<bool, Exn<Msg<Self>>> {
+        let err = || Msg::new("Checking if this directory has been converted before");
 
         let converted_path = Self::get_hardlink_dir(root, target).or_raise(err)?;
 
@@ -172,14 +169,14 @@ struct RecursiveHardLinkJob {
 
 impl RecursiveHardLinkJob {
     /// Run this job.
-    fn run(self) -> Result<TempDirGuard, Exn<ErrorMessage>> {
+    fn run(self) -> Result<TempDirGuard, Exn<Msg<Self>>> {
         let copy_root = DirectoryJob::get_hardlink_dir(&self.root, self.target)
             .expect("checked by construction that dir is not root");
 
         let err = || {
             let root = self.root.display();
             let copy_root = copy_root.display();
-            ErrorMessage::new(format!(
+            Msg::new(format!(
                 "Creating hard links from \"{root}\" to \"{copy_root}\""
             ))
         };
@@ -213,14 +210,14 @@ impl Directory {
     /// Checked constructor to verify the path points to a directory.
     ///
     /// This only checks that the directory exists at the time of creation.
-    pub fn new(path: PathBuf) -> Result<Result<Self, PathBuf>, Exn<ErrorMessage>> {
+    pub fn new(path: PathBuf) -> Result<Result<Self, PathBuf>, Exn<Msg<Self>>> {
         if !path.is_dir() {
             return Ok(Err(path));
         }
 
         let err = {
             let path = path.display();
-            move || ErrorMessage::new(format!("Verifying path is a directory: \"{path}\""))
+            move || Msg::new(format!("Verifying path is a directory: \"{path}\""))
         };
         let path = path.canonicalize().or_raise(err)?;
 

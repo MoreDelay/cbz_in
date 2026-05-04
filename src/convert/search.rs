@@ -12,7 +12,7 @@ use crate::convert::FilesystemRoot;
 use crate::convert::archive::ArchivePath;
 use crate::convert::dir::Directory;
 use crate::convert::image::ImageFormat;
-use crate::error::ErrorMessage;
+use crate::error::Msg;
 use crate::spawn::{self, ManagedChild};
 
 /// Abstraction for collection of images that may be converted later.
@@ -24,7 +24,7 @@ pub trait Images: Sized {
     fn fs_root() -> FilesystemRoot;
 
     /// Find all images in the specified root.
-    fn search(root: Self::Path) -> Result<Result<Self, Self::Path>, Exn<ErrorMessage>>;
+    fn search(root: Self::Path) -> Result<Result<Self, Self::Path>, Exn<Msg<Self>>>;
 
     /// Filter out all images that do not have the target image format.
     fn filter(self, filter: &HashSet<ImageFormat>) -> Result<Self, Self::Path>;
@@ -53,10 +53,10 @@ impl Images for ArchiveImages {
         FilesystemRoot::Archive
     }
 
-    fn search(root: Self::Path) -> Result<Result<Self, Self::Path>, Exn<ErrorMessage>> {
+    fn search(root: Self::Path) -> Result<Result<Self, Self::Path>, Exn<Msg<Self>>> {
         let err = || {
             let root = root.display();
-            ErrorMessage::new(format!("Listing files within archive \"{root}\""))
+            Msg::new(format!("Listing files within archive \"{root}\""))
         };
 
         let images = spawn::list_archive_files(&root)
@@ -128,10 +128,10 @@ impl Images for DirectoryImages {
         FilesystemRoot::Directory
     }
 
-    fn search(root: Self::Path) -> Result<Result<Self, Self::Path>, Exn<ErrorMessage>> {
+    fn search(root: Self::Path) -> Result<Result<Self, Self::Path>, Exn<Msg<Self>>> {
         let err = || {
             let root = root.display();
-            ErrorMessage::new(format!("Listing files within directory \"{root}\""))
+            Msg::new(format!("Listing files within directory \"{root}\""))
         };
 
         let images: Vec<ImageInfo> = WalkDir::new(&root)

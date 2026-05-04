@@ -11,13 +11,13 @@ use indicatif::ProgressBar;
 use itertools::Itertools as _;
 use signal_hook::consts::{SIGCHLD, SIGINT};
 use signal_hook::iterator::Signals;
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
-use crate::ConversionTarget;
 use crate::convert::ConversionConfig;
 use crate::convert::search::ImageInfo;
-use crate::error::{ErrorMessage, Interrupted};
+use crate::error::{Interrupted, Msg};
 use crate::spawn::{self, ManagedChild, Tool};
+use crate::{CompactReport, ConversionTarget};
 
 /// Represents the task to convert an image from one type to another.
 #[derive(Debug)]
@@ -40,7 +40,7 @@ impl ConversionJob {
     }
 
     /// Convert this job to a running job.
-    fn init(self) -> Result<RunConversionJob, Exn<ErrorMessage>> {
+    fn init(self) -> Result<RunConversionJob, Exn<Msg<RunConversionJob>>> {
         RunConversionJob::new(self)
     }
 }
@@ -54,8 +54,10 @@ pub struct RunConversionJob {
 
 impl RunConversionJob {
     /// Create a running job for [`ConversionJob`].
-    pub fn new(job: ConversionJob) -> Result<Self, Exn<ErrorMessage>> {
-        let sequence = job.plan.resolve(&job.image_path)?;
+    pub fn new(job: ConversionJob) -> Result<Self, Exn<Msg<Self>>> {
+        let err = || Msg::new("Initialize conversion");
+
+        let sequence = job.plan.resolve(&job.image_path).or_raise(err)?;
         let waiting = StateWaiting {
             image_path: job.image_path,
             sequence,
@@ -69,14 +71,16 @@ impl RunConversionJob {
     ///
     /// As we need to wait for child processes to finish before advancing, we will not always
     /// succeed, which is encoded into the [`Proceeded`] return type.
-    fn proceed(self) -> Result<Proceeded, Exn<ErrorMessage>> {
+    fn proceed(self) -> Result<Proceeded, Exn<Msg<Self>>> {
+        let err = || Msg::new("Proceeding with a job");
+
         let proceeded = match self.state {
             State::Waiting(waiting) => {
-                let state = State::Running(waiting.start_conversion()?);
+                let state = State::Running(waiting.start_conversion().or_raise(err)?);
                 Proceeded::Progress(Self { state })
             }
             State::Running(mut running) => {
-                if running.child_done()? {
+                if running.child_done().or_raise(err)? {
                     let state = State::Completed(StateCompleted(running));
                     Proceeded::Progress(Self { state })
                 } else {
@@ -97,7 +101,7 @@ impl RunConversionJob {
                 }
                 // we can not recover
                 Err(Err(exn)) => {
-                    return Err(exn);
+                    return Err(exn.raise(err()));
                 }
             },
         };
@@ -140,8 +144,10 @@ struct StateWaiting {
 
 impl StateWaiting {
     /// State machine transition from [`State::Waiting`] to [`State::Running`].
-    fn start_conversion(self) -> Result<StateRunning, Exn<ErrorMessage>> {
+    fn start_conversion(self) -> Result<StateRunning, Exn<Msg<Self>>> {
         use {ConversionTarget as C, ImageFormat as I};
+
+        // let err = || Msg::new("Starting next conversion job");
 
         let Self {
             image_path,
@@ -150,7 +156,7 @@ impl StateWaiting {
         } = self;
         let err = || {
             let path = image_path.display();
-            ErrorMessage::new(format!("Converting image \"{path}\""))
+            Msg::new(format!("Converting image \"{path}\""))
         };
 
         debug!("start conversion for {image_path:?}: {sequence:?}");
@@ -212,10 +218,10 @@ struct StateRunning {
 
 impl StateRunning {
     /// Check if the process has already completed.
-    fn child_done(&mut self) -> Result<bool, Exn<ErrorMessage>> {
+    fn child_done(&mut self) -> Result<bool, Exn<Msg<Self>>> {
         let err = || {
             let path = self.image_path.display();
-            ErrorMessage::new(format!(
+            Msg::new(format!(
                 "Checking if a process finished working on \"{path}\"",
             ))
         };
@@ -239,7 +245,7 @@ impl StateCompleted {
     /// On success, we either finished or we get the next task in the plan for this image.
     /// On error, we can either recover by converting with a backup plan, or we failed totally with
     /// a full error report on all error causes.
-    fn complete(self) -> Result<Option<StateWaiting>, Result<StateWaiting, Exn<ErrorMessage>>> {
+    fn complete(self) -> Result<Option<StateWaiting>, Result<StateWaiting, Exn<Msg<Self>>>> {
         let Self(StateRunning {
             child,
             image_path,
@@ -258,7 +264,7 @@ impl StateCompleted {
 
         let err = || {
             let path = image_path.display();
-            ErrorMessage::new(format!("Completing conversion for \"{path}\""))
+            Msg::new(format!("Completing conversion for \"{path}\""))
         };
 
         fs::remove_file(&image_path).or_raise(err).map_err(Err)?;
@@ -283,22 +289,25 @@ impl StateCompleted {
     /// When the child process existed abnormally, we can try to recover the conversion process
     /// using `magick`, as it is more forgiving for out-of-spec files than other tools.
     fn try_to_recover(
-        exn: Exn<ErrorMessage>,
+        exn: Exn<Msg<ManagedChild>>,
         image_path: PathBuf,
         sequence: Sequence,
         tool_use: ToolUse,
-    ) -> Result<StateWaiting, Exn<ErrorMessage>> {
+    ) -> Result<StateWaiting, Exn<Msg<Self>>> {
         let exn = match tool_use {
             ToolUse::Best => {
-                let msg = ErrorMessage::new("Failed converting with intended tool");
-                exn.raise(msg)
+                let msg = Msg::new("Failed converting with intended tool");
+                let exn = exn.raise(msg);
+                let report = CompactReport::new(&exn);
+                warn!("{report}");
+                exn
             }
             ToolUse::Backup { last_error } => {
-                let msg = ErrorMessage::new("Failed converting with backup tool");
+                let msg = Msg::new("Failed converting with backup tool");
                 let exn = exn.raise(msg);
 
                 let msg = format!("Give up trying to convert \"{}\"", image_path.display());
-                let msg = ErrorMessage::new(msg);
+                let msg = Msg::new(msg);
                 return Err(Exn::raise_all(msg, [last_error, exn]));
             }
         };
@@ -314,7 +323,7 @@ impl StateCompleted {
             Sequence::Finish { .. } => {
                 let msg = "Image from a previous pass could not be formatted further, \
                                 something is gravely wrong";
-                return Err(exn.raise(ErrorMessage::new(msg)));
+                return Err(exn.raise(Msg::new(msg)));
             }
         };
 
@@ -424,7 +433,7 @@ impl Plan {
     }
 
     /// Resolve the conversion plan into a concrete sequence of conversion steps.
-    fn resolve(self, image_path: &Path) -> Result<Sequence, Exn<ErrorMessage>> {
+    fn resolve(self, image_path: &Path) -> Result<Sequence, Exn<Msg<Sequence>>> {
         Sequence::resolve(self, image_path)
     }
 }
@@ -450,7 +459,7 @@ enum Sequence {
     },
     /// The second step in a two-step conversion
     Finish {
-        /// Initial image format.
+        /// Current image format after intermediate step.
         from: ImageFormat,
         /// Target image format.
         to: ConversionTarget,
@@ -459,10 +468,10 @@ enum Sequence {
 
 impl Sequence {
     /// Resolve the conversion plan into a concrete sequence of conversion steps.
-    fn resolve(details: Plan, image_path: &Path) -> Result<Self, Exn<ErrorMessage>> {
+    fn resolve(details: Plan, image_path: &Path) -> Result<Self, Exn<Msg<Self>>> {
         let err = || {
             let path = image_path.display();
-            ErrorMessage::new(format!("Resolving how to convert \"{path}\""))
+            Msg::new(format!("Resolving how to convert \"{path}\""))
         };
 
         match details {
@@ -495,10 +504,10 @@ impl Sequence {
 ///
 /// If that is the case, then we would prefer to simple decode it again, instead of routing
 /// over Png.
-pub fn jxl_is_compressed_jpeg(image_path: &Path) -> Result<bool, Exn<ErrorMessage>> {
+pub fn jxl_is_compressed_jpeg(image_path: &Path) -> Result<bool, Exn<Msg<()>>> {
     let err = || {
         let image_path = image_path.display();
-        ErrorMessage::new(format!("Querying metadata of jxl file \"{image_path}\""))
+        Msg::new(format!("Querying metadata of jxl file \"{image_path}\""))
     };
 
     let has_box: Result<_, std::io::Error> = spawn::run_jxlinfo(image_path)
@@ -525,13 +534,13 @@ enum ToolUse {
     /// We failed before, so try to use `magick` now.
     Backup {
         /// The error context from the last failure
-        last_error: Exn<ErrorMessage>,
+        last_error: Exn<Msg<ManagedChild>>,
     },
 }
 
 impl ToolUse {
     /// Extract the error context from the previous failure.
-    fn into_last_error(self) -> Option<Exn<ErrorMessage>> {
+    fn into_last_error(self) -> Option<Exn<Msg<ManagedChild>>> {
         match self {
             Self::Best => None,
             Self::Backup { last_error } => Some(last_error),
@@ -557,7 +566,7 @@ impl ConversionJobs {
         images: Vec<ImageInfo>,
         root_dir: &Path,
         config: ConversionConfig,
-    ) -> Result<Option<Self>, Exn<ErrorMessage>> {
+    ) -> Result<Option<Self>, Exn<Msg<Self>>> {
         let job_queue = images
             .into_iter()
             .filter_map(|ImageInfo { path, format }| {
@@ -589,7 +598,7 @@ impl ConversionJobs {
                 .filter_map(|(path, count)| (*count > 1).then_some(path.to_str()?))
                 .join(", ");
             let msg = format!("Conversion would create name collisions at: {collisions}");
-            let exn = Exn::new(ErrorMessage::new(msg));
+            let exn = Exn::new(Msg::new(msg));
             return Err(exn);
         }
 
@@ -610,7 +619,7 @@ impl ConversionJobs {
     }
 
     /// Run this job.
-    pub fn run(self, bar: Option<&ProgressBar>) -> Result<(), Exn<ErrorMessage>> {
+    pub fn run(self, bar: Option<&ProgressBar>) -> Result<(), Exn<Msg<Self>>> {
         if let Some(bar) = bar {
             bar.reset();
             bar.set_length(self.len() as u64);
@@ -644,8 +653,8 @@ impl RunConversionJobs {
     }
 
     /// Run this job.
-    fn run(mut self, bar: Option<&ProgressBar>) -> Result<(), Exn<ErrorMessage>> {
-        let err = || ErrorMessage::new("Running conversion jobs");
+    fn run(mut self, bar: Option<&ProgressBar>) -> Result<(), Exn<Msg<ConversionJobs>>> {
+        let err = || Msg::new("Running conversion jobs");
 
         assert!(!self.job_queue.is_empty(), "queue filled by construction");
 
@@ -677,11 +686,13 @@ impl RunConversionJobs {
     }
 
     /// Try to proceed as many jobs as possible, until none are doing any more progress.
-    fn proceed_jobs(&mut self, bar: Option<&ProgressBar>) -> Result<(), Exn<ErrorMessage>> {
+    fn proceed_jobs(&mut self, bar: Option<&ProgressBar>) -> Result<(), Exn<Msg<Self>>> {
+        let err = || Msg::new("Proceeding with as many jobs as currently possible");
+
         for slot in &mut self.jobs_in_progress {
             loop {
                 match slot.take() {
-                    Some(job) => match job.proceed()? {
+                    Some(job) => match job.proceed().or_raise(err)? {
                         Proceeded::SameAsBefore(job) => {
                             *slot = Some(job);
                             break;
@@ -694,7 +705,7 @@ impl RunConversionJobs {
                         }
                     },
                     None => match self.job_queue.pop_front() {
-                        Some(job) => *slot = Some(job.init()?),
+                        Some(job) => *slot = Some(job.init().or_raise(err)?),
                         None => break,
                     },
                 }
