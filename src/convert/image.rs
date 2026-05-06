@@ -145,7 +145,8 @@ struct StateWaiting {
 impl StateWaiting {
     /// State machine transition from [`State::Waiting`] to [`State::Running`].
     fn start_conversion(self) -> Result<StateRunning, Exn<Msg<Self>>> {
-        use {ConversionTarget as C, ImageFormat as I};
+        use ConversionTarget as C;
+        use ImageFormat as I;
 
         // let err = || Msg::new("Starting next conversion job");
 
@@ -370,7 +371,8 @@ pub enum Plan {
 impl Plan {
     /// Determine the details for a specific image to reach the goal set out by the configuration.
     pub fn new(current: ImageFormat, config: ConversionConfig) -> Option<Self> {
-        use {ConversionTarget as C, ImageFormat as I};
+        use ConversionTarget as C;
+        use ImageFormat as I;
 
         let ConversionConfig { target, .. } = config;
 
@@ -400,8 +402,9 @@ impl Plan {
 
     /// Determine the tools that need to be installed for this conversion to work.
     pub fn required_tools(self) -> Vec<Tool> {
+        use ConversionTarget as C;
+        use ImageFormat as I;
         use Tool::*;
-        use {ConversionTarget as C, ImageFormat as I};
 
         const fn decode(from: ImageFormat) -> Tool {
             match from {

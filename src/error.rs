@@ -1,12 +1,16 @@
 //! Error structs used in this app.
 
-use std::{error::Error, marker::PhantomData};
+use std::error::Error;
+use std::marker::PhantomData;
 
 use derive_more::Display;
 use exn::{Exn, Frame};
 use tracing::error;
 
 /// General error object with a message for its context.
+///
+/// The generic type is used to delimit different responsibility levels and forces to provide
+/// error context to propagate errors further. Usually this would be the type `Self`.
 pub struct Msg<T>(String, PhantomData<T>);
 
 // Safety: `T` is only used as in a phantom field, and `String` is Send + Sync
