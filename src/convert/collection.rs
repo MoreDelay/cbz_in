@@ -144,13 +144,7 @@ impl<J: ImagesJob> JobCollection<J> {
         let Self(jobs) = self;
 
         let root = <J::Images as Images>::fs_root();
-        let bars = if no_log {
-            None
-        } else {
-            let bars = Bars::new(root);
-            bars.jobs.set_length(jobs.len() as u64);
-            Some(bars)
-        };
+        let bars = no_log.not().then(|| Bars::new(root, jobs.len()));
 
         for job in jobs {
             if let Some(bars) = &bars {

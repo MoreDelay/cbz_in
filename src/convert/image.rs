@@ -624,7 +624,8 @@ impl ConversionJobs {
     /// Run this job.
     pub fn run(self, bar: Option<&ProgressBar>) -> Result<(), Exn<Msg<Self>>> {
         if let Some(bar) = bar {
-            bar.reset();
+            // no full reset to preserve ellapsed time (e.g. time spent extracting archive)
+            bar.set_position(0);
             bar.set_length(self.len() as u64);
         }
         RunConversionJobs::new(self).run(bar)

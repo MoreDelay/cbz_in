@@ -73,6 +73,10 @@ impl ImagesJob for ArchiveJob {
             Msg::new(format!("Converting images in archive \"{archive}\""))
         };
 
+        if let Some(bar) = bar {
+            bar.reset(); // start time tracking for this job here
+            bar.set_length(conversion.len() as u64);
+        }
         let _guard = extraction.run().or_raise(err)?;
         conversion.run(bar).or_raise(err)?;
         compression.run().or_raise(err)?;

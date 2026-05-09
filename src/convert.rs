@@ -68,7 +68,7 @@ pub struct Bars {
 
 impl Bars {
     /// Create a new set of progress bars that will immediately be displayed on the terminal.
-    pub fn new(name: FilesystemRoot) -> Self {
+    pub fn new(name: FilesystemRoot, job_count: usize) -> Self {
         let multi = indicatif::MultiProgress::new();
 
         let jobs = name.plural();
@@ -81,6 +81,8 @@ impl Bars {
 
         jobs.enable_responsive_tick(std::time::Duration::from_millis(250));
         images.enable_responsive_tick(std::time::Duration::from_millis(250));
+
+        jobs.set_length(job_count as u64);
 
         Self {
             multi,
