@@ -125,7 +125,7 @@ pub struct Args {
     #[arg(long, global = true)]
     pub dry_run: bool,
 
-    /// Check if all tools are available to perform conversions.
+    /// Print more details out on what is happening.
     #[arg(short, long, global = true)]
     pub verbose: bool,
 
