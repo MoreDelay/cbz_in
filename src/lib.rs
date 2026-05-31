@@ -51,7 +51,11 @@ pub fn entry_point(args: Args) -> Result<(), Exn<Msg<AppError>>> {
         return Ok(());
     };
 
-    let source = ConversionSource::to_filter_set(&args.from);
+    let from = args.from.as_deref().unwrap_or_else(|| match args.command {
+        Command::Stat => [ConversionSource::All].as_slice(),
+        Command::Convert(_) => [ConversionSource::Jpeg, ConversionSource::Png].as_slice(),
+    });
+    let source = ConversionSource::to_filter_set(from);
     debug!("sources: {source:?}");
     let Some(filtered) = found.filter(&source) else {
         stdout("Nothing to do");
@@ -59,7 +63,7 @@ pub fn entry_point(args: Args) -> Result<(), Exn<Msg<AppError>>> {
     };
 
     match args.command {
-        Command::Stats => {
+        Command::Stat => {
             filtered.print_stats(args.verbose);
         }
         Command::Convert(target) => {
@@ -100,10 +104,9 @@ pub struct Args {
         long,
         num_args = 1..,
         value_delimiter = ',',
-        default_value = "jpeg,png",
         global = true
     )]
-    pub from: Vec<ConversionSource>,
+    pub from: Option<Vec<ConversionSource>>,
 
     /// Path to cbz files or directories containing cbz files
     ///
@@ -160,7 +163,7 @@ pub struct Args {
 #[derive(clap::Subcommand, Clone, Copy)]
 pub enum Command {
     /// Collect statistics on the images found.
-    Stats,
+    Stat,
     /// Convert found images to another image format.
     #[command(flatten)]
     Convert(ConversionTarget),
