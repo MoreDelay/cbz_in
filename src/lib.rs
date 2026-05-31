@@ -46,10 +46,6 @@ pub fn entry_point(args: Args) -> Result<(), Exn<Msg<AppError>>> {
         true => FilesystemRoot::Directory,
         false => FilesystemRoot::Archive,
     };
-    let Some(found) = FoundImages::search(paths, root, args.verbose).or_raise(err)? else {
-        stdout("Nothing to do");
-        return Ok(());
-    };
 
     let from = args.from.as_deref().unwrap_or_else(|| match args.command {
         Command::Stat => [ConversionSource::All].as_slice(),
@@ -57,16 +53,17 @@ pub fn entry_point(args: Args) -> Result<(), Exn<Msg<AppError>>> {
     });
     let source = ConversionSource::to_filter_set(from);
     debug!("sources: {source:?}");
-    let Some(filtered) = found.filter(&source) else {
-        stdout("Nothing to do");
-        return Ok(());
-    };
 
-    match args.command {
-        Command::Stat => {
-            filtered.print_stats(args.verbose);
-        }
-        Command::Convert(target) => {
+    let filtered = FoundImages::search(paths, root, args.verbose)
+        .or_raise(err)?
+        .and_then(|found| found.filter(&source));
+
+    match (args.command, filtered) {
+        (Command::Stat, None) => stdout("No images found"),
+        (Command::Stat, Some(filtered)) => filtered.print_stats(args.verbose),
+
+        (Command::Convert(_), None) => stdout("Nothing to do"),
+        (Command::Convert(target), Some(filtered)) => {
             const ONE: NonZeroUsize = NonZeroUsize::new(1).unwrap();
             let workers = match args.workers {
                 Some(Some(value)) => value,
