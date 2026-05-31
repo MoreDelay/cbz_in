@@ -333,6 +333,11 @@ impl ArchivePath {
     ///
     /// This only checks that the directory exists at the time of creation.
     pub fn new(archive: PathBuf) -> Result<Self, (PathBuf, Exn<Msg<Self>>)> {
+        if !archive.is_file() {
+            let msg = Msg::new("This is not a file");
+            return Err((archive, msg.raise()));
+        }
+
         let Some(extension) = archive.extension() else {
             let msg = Msg::new("File is missing a file extension for archives.");
             return Err((archive, msg.raise()));
@@ -345,20 +350,13 @@ impl ArchivePath {
             Ok(ext) => ext,
             Err(err) => {
                 let exn = err.raise();
-                let msg = Msg::new("Archive has an unsupported extension");
+                let msg = Msg::new("File has an unsupported extension");
                 return Err((archive, exn.raise(msg)));
             }
         };
 
-        if !archive.is_file() {
-            let path = archive.display();
-            let msg = Msg::new(format!("Archive does not exist: \"{path}\""));
-            return Err((archive, msg.raise()));
-        }
-
         if archive.file_name().is_none_or(OsStr::is_empty) {
-            let path = archive.display();
-            let msg = Msg::new(format!("Archive has empty file name: \"{path}\""));
+            let msg = Msg::new("Archive has empty file name");
             return Err((archive, msg.raise()));
         }
 

@@ -31,6 +31,7 @@ impl FoundImages {
     pub fn search(
         paths: impl Iterator<Item = PathBuf>,
         root: FilesystemRoot,
+        verbose: bool,
     ) -> Result<Option<Self>, Exn<Msg<Self>>> {
         let err = || Msg::new("failed to find images");
 
@@ -38,7 +39,7 @@ impl FoundImages {
             FilesystemRoot::Archive => {
                 let arcs = paths
                     .into_iter()
-                    .map(|path| DirOrArchive::check(path)?.archive_iter())
+                    .map(|path| DirOrArchive::check(path)?.archive_iter(verbose))
                     .collect::<Result<Vec<_>, Exn<_>>>()
                     .or_raise(err)?
                     .into_iter()
@@ -139,10 +140,13 @@ impl DirOrArchive {
     ///
     /// When this is an archive directly, gives back just that one archive. When it is a directory,
     /// looks for any direct child files that are archives, and iterates over those.
-    pub fn archive_iter(self) -> Result<impl Iterator<Item = ArchivePath>, Exn<Msg<Self>>> {
+    pub fn archive_iter(
+        self,
+        verbose: bool,
+    ) -> Result<impl Iterator<Item = ArchivePath>, Exn<Msg<Self>>> {
         match self {
             Self::Dir(dir) => {
-                let flattened = Self::flatten_dir(&dir, true)?;
+                let flattened = Self::flatten_dir(&dir, verbose)?;
                 Ok(either::Left(flattened.into_iter()))
             }
             Self::Arc(file) => Ok(either::Right(std::iter::once(file))),

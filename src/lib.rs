@@ -46,7 +46,7 @@ pub fn entry_point(args: Args) -> Result<(), Exn<Msg<AppError>>> {
         true => FilesystemRoot::Directory,
         false => FilesystemRoot::Archive,
     };
-    let Some(found) = FoundImages::search(paths, root).or_raise(err)? else {
+    let Some(found) = FoundImages::search(paths, root, args.verbose).or_raise(err)? else {
         stdout("Nothing to do");
         return Ok(());
     };
