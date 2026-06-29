@@ -308,7 +308,7 @@ impl CompressionJob {
             .expect("root is a temporary directory, so it has a parent");
         let name = self
             .root
-            .file_stem()
+            .file_name()
             .expect("root is a temporary directory with a name")
             .to_str()
             .expect("our file paths are utf8 compliant");
