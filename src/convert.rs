@@ -32,7 +32,7 @@ type JobPath<J> = <<J as ImagesJob>::Images as Images>::Path;
 /// Type alias to reduce type clutter specifying error-free construction of [`ImagesJob`]
 type ImagesJobOk<J> = Result<J, NothingToDo<JobPath<J>>>;
 
-/// A trait for jobs that converts some [`Images`].
+/// A trait for jobs that convert some [`Images`].
 pub trait ImagesJob: Sized {
     /// The image collection this job works on
     type Images: Images;
@@ -131,7 +131,7 @@ pub enum FilesystemRoot {
 }
 
 impl FilesystemRoot {
-    /// Get the plural name for this root type.
+    /// Get the singular name for this root type.
     pub const fn singular(self) -> &'static str {
         match self {
             Self::Archive => "Archive",

@@ -82,20 +82,20 @@ pub fn entry_point(args: Args) -> Result<(), Exn<Msg<AppError>>> {
 /// Convert images within comic archives to newer image formats.
 ///
 /// Convert images within Comic Book Zip (CBZ) archives, although it also works with normal zip
-/// files. By default only converts Jpeg and Png to the target format or decode any formats to
+/// files. By default only converts Jpeg and Png to the target format or decodes any formats to
 /// Png and Jpeg. The new archive with converted images is placed adjacent to the original, so this
 /// operation is non-destructive.
 #[expect(clippy::struct_excessive_bools)]
 #[derive(clap::Parser)]
 #[command(version)]
 pub struct Args {
-    /// All images within the archive(s) are converted to this format
+    /// The subcommand to run
     #[command(subcommand)]
     pub command: Command,
 
     /// Only convert images of this format.
     ///
-    /// Delimit multiple formats with a comma (,), or specify "all". By default uses "jpeg,png".
+    /// Delimit multiple formats with a comma (,), or specify "all". By default uses "jpeg,png" for conversion or "all" for stats.
     #[arg(
         short = 's',
         long,
@@ -130,7 +130,7 @@ pub struct Args {
     ///
     /// This will create a copy of your directory structure using hard links. This means your data
     /// is not copied as both structures point to the same underlying files. The only difference
-    /// between both directory structures are the converted images found by a recursive search.
+    /// between both directory structures is the converted images found by a recursive search.
     ///
     /// Note that this does not traverse mount points.
     #[arg(long, global = true)]
@@ -166,9 +166,9 @@ pub enum Command {
     Convert(ConversionTarget),
 }
 
-/// The target image format to convert all images to.
+/// The source image format(s) to convert from.
 ///
-/// This is basically a copy of of [`ImageFormat`], just with the helper variant
+/// This is basically a copy of [`ImageFormat`], just with the helper variant
 /// [`ConversionSource::All`].
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ConversionSource {
@@ -187,7 +187,7 @@ pub enum ConversionSource {
 }
 
 impl ConversionSource {
-    /// Create the vector
+    /// Create the filter set.
     fn to_filter_set(sources: &[Self]) -> HashSet<ImageFormat> {
         assert!(!sources.is_empty(), "never expect empty sources");
 

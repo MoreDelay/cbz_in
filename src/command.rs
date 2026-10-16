@@ -136,7 +136,7 @@ impl DirOrArchive {
         Err(exn)
     }
 
-    /// Convert this to a iterator over all applicable archives.
+    /// Convert this to an iterator over all applicable archives.
     ///
     /// When this is an archive directly, gives back just that one archive. When it is a directory,
     /// looks for any direct child files that are archives, and iterates over those.

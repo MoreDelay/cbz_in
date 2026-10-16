@@ -9,13 +9,13 @@ use tracing::error;
 
 /// General error object with a message for its context.
 ///
-/// The generic type is used to delimit different responsibility levels and forces to provide
+/// The generic type is used to delimit different responsibility levels and forces one to provide
 /// error context to propagate errors further. Usually this would be the type `Self`.
 pub struct Msg<T>(String, PhantomData<T>);
 
-// Safety: `T` is only used as in a phantom field, and `String` is Send + Sync
+// Safety: `T` is only used in a phantom field, and `String` is Send + Sync
 unsafe impl<T> Send for Msg<T> {}
-// Safety: `T` is only used as in a phantom field, and `String` is Send + Sync
+// Safety: `T` is only used in a phantom field, and `String` is Send + Sync
 unsafe impl<T> Sync for Msg<T> {}
 
 impl<T> std::fmt::Display for Msg<T> {
@@ -74,7 +74,7 @@ impl std::fmt::Display for NothingToDoReason {
     }
 }
 
-/// Context to why there is nothing to do for us.
+/// Context indicating the operation was interrupted by the user.
 #[derive(Debug, Display)]
 #[display("Got interrupted")]
 pub struct Interrupted;
@@ -127,7 +127,7 @@ where
         Self(exn)
     }
 
-    /// Write out an error report in a compacter format than default.
+    /// Write out an error report in a more compact format than default.
     fn format(
         f: &mut std::fmt::Formatter<'_>,
         frame: &Frame,

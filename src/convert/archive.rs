@@ -331,7 +331,7 @@ pub struct ArchivePath {
 impl ArchivePath {
     /// Checked constructor to verify the path points to an archive.
     ///
-    /// This only checks that the directory exists at the time of creation.
+    /// This only checks that the file exists at the time of creation.
     pub fn new(archive: PathBuf) -> Result<Self, (PathBuf, Exn<Msg<Self>>)> {
         if !archive.is_file() {
             let msg = Msg::new("This is not a file");

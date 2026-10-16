@@ -138,10 +138,10 @@ impl DirectoryJob {
         Ok(parent.join(new_name))
     }
 
-    /// Checks if the given archive has already been converted.
+    /// Checks if the given directory has already been converted.
     ///
-    /// A converted archive either already holds the correct image format suffix in its name, or
-    /// there exists another archive with the same name and that suffix in the same directory.
+    /// A converted directory either already holds the correct image format suffix in its name, or
+    /// there exists another directory with the same name and that suffix in the same directory.
     fn already_converted(root: &Directory, target: ImageFormat) -> Result<bool, Exn<Msg<Self>>> {
         let err = || Msg::new("Checking if this directory has been converted before");
 
@@ -163,7 +163,7 @@ impl DirectoryJob {
 struct RecursiveHardLinkJob {
     /// The original directory for which we create a copy.
     root: Directory,
-    /// The target image format which becomes part of the archive's file name.
+    /// The target image format which becomes part of the directory's name.
     target: ImageFormat,
 }
 

@@ -1,4 +1,4 @@
-//! Contains everythng related to spawning process.
+//! Contains everything related to spawning processes.
 
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -319,23 +319,23 @@ pub fn extract_zip(
 /// All external tools used that may be used during conversion.
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub enum Tool {
-    /// The programm `magick`.
+    /// The program `magick`.
     Magick,
-    /// The programm `cavif`.
+    /// The program `cavif`.
     Cavif,
-    /// The programm `cjxl`.
+    /// The program `cjxl`.
     Cjxl,
-    /// The programm `cwebp`.
+    /// The program `cwebp`.
     Cwebp,
-    /// The programm `dwebp`.
+    /// The program `dwebp`.
     Dwebp,
-    /// The programm `djxl`.
+    /// The program `djxl`.
     Djxl,
-    /// The programm `avifdec`.
+    /// The program `avifdec`.
     Avifdec,
-    /// The programm `jxlinfo`.
+    /// The program `jxlinfo`.
     Jxlinfo,
-    /// The programm `7z`.
+    /// The program `7z`.
     _7z,
 }
 

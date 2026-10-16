@@ -120,7 +120,7 @@ enum Proceeded {
     Finished,
 }
 
-/// A representation of the inner state machine of [`ConversionJob`].
+/// A representation of the inner state machine of [`RunConversionJob`].
 #[derive(Debug)]
 enum State {
     /// We wait until a subprocess can be started.
@@ -287,7 +287,7 @@ impl StateCompleted {
 
     /// Fall back to an alternative conversion plan when the dedicated tool failed.
     ///
-    /// When the child process existed abnormally, we can try to recover the conversion process
+    /// When the child process exited abnormally, we can try to recover the conversion process
     /// using `magick`, as it is more forgiving for out-of-spec files than other tools.
     fn try_to_recover(
         exn: Exn<Msg<ManagedChild>>,
@@ -505,7 +505,7 @@ impl Sequence {
 
 /// Check if a Jxl file is actually a re-encoded Jpeg.
 ///
-/// If that is the case, then we would prefer to simple decode it again, instead of routing
+/// If that is the case, then we would prefer to simply decode it again, instead of routing
 /// over Png.
 pub fn jxl_is_compressed_jpeg(image_path: &Path) -> Result<bool, Exn<Msg<()>>> {
     let err = || {
@@ -731,7 +731,7 @@ pub enum ImageFormat {
     Jpeg,
     /// A PNG file.
     Png,
-    /// A AVIF file.
+    /// An AVIF file.
     Avif,
     /// A JXL file.
     Jxl,

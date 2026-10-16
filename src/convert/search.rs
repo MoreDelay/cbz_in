@@ -32,7 +32,7 @@ pub trait Images: Sized {
     /// Provide metadata about all images stored in this collection.
     fn infos(&self) -> impl Iterator<Item = &ImageInfo>;
 
-    /// Filter out all images that do not have the target image format.
+    /// Get the filesystem path of the root of this collection.
     fn path(&self) -> &Self::Path;
 }
 
@@ -111,7 +111,7 @@ impl IntoIterator for ArchiveImages {
     }
 }
 
-/// Collection of all images found in an archive.
+/// Collection of all images found in a directory.
 ///
 /// The image paths stored here are relative to the root.
 pub struct DirectoryImages {

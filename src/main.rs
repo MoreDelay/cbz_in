@@ -1,11 +1,11 @@
-//! This programm is used to convert image files within Zip archives from one format to another.
+//! This program is used to convert image files within Zip archives from one format to another.
 
 use clap::Parser as _;
 use tracing::error;
 
 /// The program entry point.
 ///
-/// It's only purpose is to log all errors bubbling up until here.
+/// Its only purpose is to log all errors bubbling up until here.
 fn main() {
     let args = cbz_in::Args::parse();
 

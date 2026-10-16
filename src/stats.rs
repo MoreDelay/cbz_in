@@ -8,7 +8,7 @@ use crate::stdout;
 
 /// Aggregated statistics.
 pub struct Stats {
-    /// Maps an image format to the number of occurences
+    /// Maps an image format to the number of occurrences
     pub inner: HashMap<ImageFormat, usize>,
 }
 
@@ -19,7 +19,7 @@ impl Stats {
         Self { inner }
     }
 
-    /// Count the occurences of each image type in the iterator.
+    /// Count the occurrences of each image type in the iterator.
     pub fn compute<'a>(images: impl Iterator<Item = &'a ImageInfo>) -> Self {
         let inner = images.fold(HashMap::new(), |mut counts, info| {
             counts
