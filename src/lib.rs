@@ -26,7 +26,7 @@ pub use crate::spawn::{ManagedChild, list_archive_files};
 pub struct AppError;
 
 /// The application's entry point.
-pub fn entry_point(args: Args) -> Result<(), Exn<Msg<AppError>>> {
+pub fn entry_point(args: Args) -> Result<AppExit, Exn<Msg<AppError>>> {
     let err = || Msg::new("Error when executing program");
 
     if !args.no_log {
@@ -58,11 +58,20 @@ pub fn entry_point(args: Args) -> Result<(), Exn<Msg<AppError>>> {
         .or_raise(err)?
         .and_then(|found| found.filter(&source));
 
-    match (args.command, filtered) {
-        (Command::Stat, None) => stdout("No images found"),
-        (Command::Stat, Some(filtered)) => filtered.print_stats(args.verbose),
+    let exit = match (args.command, filtered) {
+        (Command::Stat, None) => {
+            stdout("No images found");
+            AppExit::NothingFound
+        }
+        (Command::Stat, Some(filtered)) => {
+            filtered.print_stats(args.verbose);
+            AppExit::Success
+        }
 
-        (Command::Convert(_), None) => stdout("Nothing to do"),
+        (Command::Convert(_), None) => {
+            stdout("Nothing to do");
+            AppExit::NothingFound
+        }
         (Command::Convert(target), Some(filtered)) => {
             const ONE: NonZeroUsize = NonZeroUsize::new(1).unwrap();
             let workers = match args.workers {
@@ -76,10 +85,19 @@ pub fn entry_point(args: Args) -> Result<(), Exn<Msg<AppError>>> {
                 (false, false) => ConversionBehavior::Normal,
             };
             filtered.convert(target, workers, behavior).or_raise(err)?;
+            AppExit::Success
         }
-    }
+    };
+    Ok(exit)
+}
 
-    Ok(())
+/// Exit status when no error was encountered.
+#[derive(Debug, Clone, Copy)]
+pub enum AppExit {
+    /// Did conversion or printed status
+    Success,
+    /// Found no relevant files
+    NothingFound,
 }
 
 /// Convert images within comic archives to newer image formats.
