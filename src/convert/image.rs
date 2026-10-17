@@ -431,7 +431,7 @@ impl Plan {
                 (_, _) => unreachable!(),
             },
             Self::TwoStep { from, to, .. } => vec![decode(from), encode(to.format())],
-            Self::IndeterminateJxl { to, .. } => vec![decode(I::Jxl), encode(to.format())],
+            Self::IndeterminateJxl { to, .. } => vec![decode(I::Jxl), encode(to.format()), Jxlinfo],
         }
     }
 
