@@ -5,7 +5,7 @@ use std::marker::PhantomData;
 
 use derive_more::Display;
 use exn::{Exn, Frame};
-use tracing::error;
+use tracing::debug;
 
 /// General error object with a message for its context.
 ///
@@ -43,7 +43,7 @@ impl<T> Msg<T> {
     /// Create a type checked error message by providing some context.
     pub fn new(msg: impl Into<String>) -> Self {
         let msg = msg.into();
-        error!("{msg}");
+        debug!("{msg}");
         Self(msg, PhantomData)
     }
 }
