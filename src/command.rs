@@ -91,7 +91,7 @@ impl FoundImages {
         self,
         target: ConversionTarget,
         n_workers: NonZeroUsize,
-        no_log: bool,
+        behavior: ConversionBehavior,
     ) -> Result<(), Exn<Msg<Self>>> {
         let err = || Msg::new("Converting images");
 
@@ -103,8 +103,26 @@ impl FoundImages {
         };
 
         run.test().or_raise(err)?;
+
+        let no_log = match behavior {
+            ConversionBehavior::Normal => false,
+            ConversionBehavior::DryRun => return Ok(()),
+            ConversionBehavior::NoLog => true,
+        };
+
         run.run(no_log).or_raise(err)
     }
+}
+
+/// Defines whether to run the conversion and whether to log its progress.
+#[derive(Debug, Clone, Copy)]
+pub enum ConversionBehavior {
+    /// Log conversion progress to stdout.
+    Normal,
+    /// Only do a dry-run without conversions.
+    DryRun,
+    /// Runs the conversion but suppresses logging,
+    NoLog,
 }
 
 /// A path that points either to a directory or to an archive.

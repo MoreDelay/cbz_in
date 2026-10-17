@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use exn::{ErrorExt as _, Exn, OptionExt as _, ResultExt as _};
 use tracing::{debug, info};
 
-use crate::command::FoundImages;
+use crate::command::{ConversionBehavior, FoundImages};
 use crate::convert::FilesystemRoot;
 pub use crate::convert::archive::ArchivePath;
 pub use crate::convert::dir::Directory;
@@ -70,9 +70,12 @@ pub fn entry_point(args: Args) -> Result<(), Exn<Msg<AppError>>> {
                 Some(None) => ONE,
                 None => std::thread::available_parallelism().unwrap_or(ONE),
             };
-            filtered
-                .convert(target, workers, args.no_log)
-                .or_raise(err)?;
+            let behavior = match (args.no_log, args.dry_run) {
+                (_, true) => ConversionBehavior::DryRun,
+                (true, false) => ConversionBehavior::NoLog,
+                (false, false) => ConversionBehavior::Normal,
+            };
+            filtered.convert(target, workers, behavior).or_raise(err)?;
         }
     }
 
@@ -95,7 +98,8 @@ pub struct Args {
 
     /// Only convert images of this format.
     ///
-    /// Delimit multiple formats with a comma (,), or specify "all". By default uses "jpeg,png" for conversion or "all" for stats.
+    /// Delimit multiple formats with a comma (,), or specify "all". By default uses "jpeg,png" for
+    /// conversion or "all" for stats.
     #[arg(
         short = 's',
         long,
