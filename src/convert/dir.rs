@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use exn::{ErrorExt as _, Exn, OptionExt as _, ResultExt as _};
 use indicatif::ProgressBar;
-use tracing::{debug, error};
+use tempfile::TempDir;
 use walkdir::WalkDir;
 
 use super::ImagesJob;
@@ -26,6 +26,8 @@ pub struct DirectoryJob {
     hardlink: RecursiveHardLinkJob,
     /// The conversion jobs to convert all images.
     conversion: ConversionJobs,
+    /// After converison, make the temporary directory persistent
+    persist: PersistDirJob,
 }
 
 impl ImagesJob for DirectoryJob {
@@ -55,6 +57,7 @@ impl ImagesJob for DirectoryJob {
             root,
             hardlink,
             conversion,
+            persist,
         } = self;
 
         let err = || {
@@ -64,10 +67,10 @@ impl ImagesJob for DirectoryJob {
             ))
         };
 
-        let guard = hardlink.run().or_raise(err)?;
-        conversion.run(bar).or_raise(err)?;
+        let root = hardlink.run().or_raise(err)?;
+        conversion.run(root.path(), bar).or_raise(err)?;
+        persist.run(root).or_raise(err)?;
 
-        guard.keep();
         Ok(())
     }
 }
@@ -77,10 +80,10 @@ impl DirectoryJob {
     ///
     /// No files get touched until this job is run.
     fn new_internal(
-        dir: DirectoryImages,
+        images: DirectoryImages,
         config: ConversionConfig,
     ) -> Result<Result<Self, NothingToDo<Directory>>, Exn<Msg<Self>>> {
-        let DirectoryImages { root, images } = dir;
+        let DirectoryImages { root, images } = images;
         let ctx_str = || {
             let root = root.display();
             format!("Preparing job for recursive image conversion starting at \"{root}\"")
@@ -104,28 +107,26 @@ impl DirectoryJob {
             return Ok(Err(NothingToDo { path, reason }));
         }
 
-        let copy_root = Self::get_hardlink_dir(&root, config.target.format()).or_raise(err)?;
+        let hardlink = RecursiveHardLinkJob { root: root.clone() };
 
-        let Some(conversion) = ConversionJobs::new(images, &copy_root, config).or_raise(err)?
-        else {
+        let Some(conversion) = ConversionJobs::new(images, config).or_raise(err)? else {
             let reason = NothingToDoReason::NothingToConvert;
             let path = root;
             return Ok(Err(NothingToDo { path, reason }));
         };
 
-        let hardlink = RecursiveHardLinkJob {
-            root: root.clone(),
-            target: target.format(),
-        };
+        let end_path = Self::get_hardlink_dir(&root, target.format()).or_raise(err)?;
+        let persist = PersistDirJob { end_path };
 
         Ok(Ok(Self {
             root,
             hardlink,
             conversion,
+            persist,
         }))
     }
 
-    /// Builds the path to the mirrored directory with hard links.
+    /// Builds the path to the mirrored directory with hard links and converted images.
     fn get_hardlink_dir(root: &Directory, target: ImageFormat) -> Result<PathBuf, Exn<Msg<Self>>> {
         let err = || {
             let root = root.display();
@@ -163,25 +164,32 @@ impl DirectoryJob {
 struct RecursiveHardLinkJob {
     /// The original directory for which we create a copy.
     root: Directory,
-    /// The target image format which becomes part of the directory's name.
-    target: ImageFormat,
 }
 
 impl RecursiveHardLinkJob {
     /// Run this job.
-    fn run(self) -> Result<TempDirGuard, Exn<Msg<Self>>> {
-        let copy_root = DirectoryJob::get_hardlink_dir(&self.root, self.target)
-            .expect("checked by construction that dir is not root");
+    fn run(self) -> Result<TempDir, Exn<Msg<Self>>> {
+        let err = || {
+            let root = self.root.display();
+            Msg::new(format!(
+                "Creating temporary directory in parent of \"{root}\""
+            ))
+        };
+
+        let Some(parent) = self.root.parent() else {
+            let msg = Msg::new("has no parent, can not place conversion directory next to it");
+            return Err(err().raise().raise(msg));
+        };
+
+        let copy_root = TempDir::new_in(parent).or_raise(err)?;
 
         let err = || {
             let root = self.root.display();
-            let copy_root = copy_root.display();
+            let copy_root = copy_root.path().display();
             Msg::new(format!(
                 "Creating hard links from \"{root}\" to \"{copy_root}\""
             ))
         };
-
-        let guard = TempDirGuard::new(copy_root.clone());
 
         for entry in WalkDir::new(&self.root).same_file_system(true) {
             let entry = entry.or_raise(err)?;
@@ -189,7 +197,18 @@ impl RecursiveHardLinkJob {
             let rel_path = path
                 .strip_prefix(&self.root)
                 .expect("all files have the root as prefix");
-            let copy_path = copy_root.join(rel_path);
+            if rel_path.is_empty() {
+                continue; // the root directory, already created by `TempDir::new_in`.
+            }
+            let copy_path = copy_root.path().join(rel_path);
+
+            let err = || {
+                let path = path.display();
+                let copy_path = copy_path.display();
+                Msg::new(format!(
+                    "Create hard link from \"{path}\" to \"{copy_path}\""
+                ))
+            };
 
             if path.is_file() {
                 fs::hard_link(path, &copy_path).or_raise(err)?;
@@ -198,7 +217,40 @@ impl RecursiveHardLinkJob {
             }
         }
 
-        Ok(guard)
+        Ok(copy_root)
+    }
+}
+
+/// Represents the job to persist the directory with converted images
+struct PersistDirJob {
+    /// The final destination where the conversion diretory should be placed
+    end_path: PathBuf,
+}
+
+impl PersistDirJob {
+    /// Run this job to persist the `TempDir`
+    fn run(self, dir: TempDir) -> Result<(), Exn<Msg<Self>>> {
+        let err = || {
+            let temp = dir.path().display();
+            let path = self.end_path.display();
+            Msg::new(format!("Persist dir \"{temp}\" as \"{path}\""))
+        };
+
+        if self.end_path.exists() {
+            return Err(err().raise());
+        }
+
+        let dir = dir.keep();
+
+        let err = || {
+            let temp = dir.display();
+            let path = self.end_path.display();
+            Msg::new(format!(
+                "Persist dir \"{temp}\" as \"{path}\", failure means directory was left behind"
+            ))
+        };
+
+        std::fs::rename(&dir, &self.end_path).or_raise(err)
     }
 }
 
@@ -262,42 +314,5 @@ impl std::ops::Deref for Directory {
 impl std::convert::AsRef<Path> for Directory {
     fn as_ref(&self) -> &Path {
         &self.0
-    }
-}
-
-/// Deletes the temporary directory when dropped.
-///
-/// To keep the directory, use [`TempDirGuard::keep`].
-pub struct TempDirGuard {
-    /// The guarded directory.
-    temp_root: Option<PathBuf>,
-}
-
-impl TempDirGuard {
-    /// Create a guard for a temporary directory. Deletes the directory on drop.
-    ///
-    /// The directory must not yet exist when the guard is created.
-    pub const fn new(temp_root: PathBuf) -> Self {
-        let temp_root = Some(temp_root);
-        Self { temp_root }
-    }
-
-    /// Drop the guard without removing the temporary directory.
-    pub fn keep(mut self) {
-        self.temp_root.take();
-    }
-}
-
-impl Drop for TempDirGuard {
-    fn drop(&mut self) {
-        let Some(root) = self.temp_root.take() else {
-            return;
-        };
-        debug!("delete temporary directory {root:?}");
-        if root.exists()
-            && let Err(e) = fs::remove_dir_all(&root)
-        {
-            error!("While deleting directory {root:?}: {e}");
-        }
     }
 }

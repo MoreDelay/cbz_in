@@ -2,18 +2,18 @@
 
 use std::ffi::OsStr;
 use std::fs::{self, File};
-use std::io::{BufRead as _, Write as _};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use exn::{ErrorExt as _, Exn, ResultExt as _, bail};
 use indicatif::ProgressBar;
+use tempfile::TempDir;
 use walkdir::WalkDir;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
 use super::ImagesJob;
 use crate::ConversionTarget;
-use crate::convert::dir::TempDirGuard;
 use crate::convert::image::{ConversionJob, ConversionJobs};
 use crate::convert::search::{ArchiveImages, Images};
 use crate::convert::{ConversionConfig, JobPath};
@@ -77,9 +77,9 @@ impl ImagesJob for ArchiveJob {
             bar.reset(); // start time tracking for this job here
             bar.set_length(conversion.len() as u64);
         }
-        let _guard = extraction.run().or_raise(err)?;
-        conversion.run(bar).or_raise(err)?;
-        compression.run().or_raise(err)?;
+        let root = extraction.run().or_raise(err)?;
+        conversion.run(root.path(), bar).or_raise(err)?;
+        compression.run(&root, &archive).or_raise(err)?;
 
         Ok(())
     }
@@ -110,20 +110,17 @@ impl ArchiveJob {
             return Ok(Err(NothingToDo { path, reason }));
         }
 
-        let root_dir = Self::get_extraction_root_dir(&archive).or_raise(err)?;
-
         let extraction = ExtractionJob {
             archive: archive.clone(),
         };
-        let Some(conversion) = ConversionJobs::new(images, &root_dir, config).or_raise(err)? else {
+        let Some(conversion) = ConversionJobs::new(images, config).or_raise(err)? else {
             let reason = NothingToDoReason::NothingToConvert;
             let path = archive;
             return Ok(Err(NothingToDo { path, reason }));
         };
 
         let compression = CompressionJob {
-            root: Self::get_conversion_root_dir(&archive),
-            target,
+            format: target,
             extension: archive.extension,
         };
         Ok(Ok(Self {
@@ -132,13 +129,6 @@ impl ArchiveJob {
             conversion,
             compression,
         }))
-    }
-
-    /// Builds the path to the temporary directory where the archive gets extracted to.
-    fn get_conversion_root_dir(archive: &ArchivePath) -> PathBuf {
-        let dir = archive.parent();
-        let name = archive.file_stem();
-        dir.join(name)
     }
 
     /// Checks if the given archive has already been converted.
@@ -167,38 +157,6 @@ impl ArchiveJob {
 
         Ok(is_converted_archive || has_converted_archive)
     }
-
-    /// Builds the path that should be provided for 7z such that it aligns with our expectations.
-    ///
-    /// When the archive gets compressed later, it should include a single top-level directory with
-    /// the same file name as the archive itself, without extensions. If the archive already has
-    /// this directory, then it can be extracted directly. Otherwise the root directory must be
-    /// created first, and the contents are extracted inside of that.
-    fn get_extraction_root_dir(archive: &ArchivePath) -> Result<PathBuf, Exn<Msg<Self>>> {
-        let err = || {
-            let archive = archive.display();
-            let msg = format!("Determining extraction dir for \"{archive}\"");
-            Msg::new(msg)
-        };
-
-        let name = archive.file_stem();
-        let root_dirs = spawn::list_archive_files(archive)
-            .and_then(ManagedChild::wait_with_output)
-            .or_raise(err)?
-            .stdout
-            .lines()
-            .filter_map(|line| line.ok()?.strip_prefix("Path = ").map(String::from))
-            .filter(|file| !file.contains('/'))
-            .collect::<Vec<_>>();
-
-        let has_root_within = root_dirs.len() == 1 && *root_dirs[0] == *name;
-        let extract_dir = if has_root_within {
-            archive.parent().to_path_buf()
-        } else {
-            Self::get_conversion_root_dir(archive)
-        };
-        Ok(extract_dir)
-    }
 }
 
 /// The job to extract an archive into a temporary directory.
@@ -212,7 +170,7 @@ struct ExtractionJob {
 
 impl ExtractionJob {
     /// Run this job.
-    fn run(self) -> Result<TempDirGuard, Exn<Msg<Self>>> {
+    fn run(self) -> Result<TempDir, Exn<Msg<Self>>> {
         let err = || {
             let path = self.archive.display();
             Msg::new(format!("Extracting the archive \"{path}\""))
@@ -223,26 +181,11 @@ impl ExtractionJob {
             bail!(exn.raise(err()))
         }
 
-        let extract_dir = ArchiveJob::get_conversion_root_dir(&self.archive);
-
-        if extract_dir.exists() {
-            let dir = extract_dir.display();
-            let msg = Msg::no_tag(format!("Extract directory already exists at \"{dir}\""));
-            bail!(Exn::new(msg).raise(err()))
-        }
-
-        let guard = TempDirGuard::new(extract_dir.clone());
-        fs::create_dir_all(&extract_dir)
-            .or_raise(|| {
-                let extract_dir = extract_dir.display();
-                let msg = format!("Could not create the target directory at \"{extract_dir}\"");
-                Msg::no_tag(msg)
-            })
-            .or_raise(err)?;
-        spawn::extract_zip(&self.archive, &extract_dir)
+        let extract_dir = TempDir::new_in(self.archive.parent()).or_raise(err)?;
+        spawn::extract_zip(&self.archive, extract_dir.path())
             .and_then(ManagedChild::wait)
             .or_raise(err)?;
-        Ok(guard)
+        Ok(extract_dir)
     }
 }
 
@@ -250,23 +193,21 @@ impl ExtractionJob {
 ///
 /// The archive name will have the same name as the directory, extended with `.<image-format>.cbz`.
 struct CompressionJob {
-    /// The root directory to compress into a Zip file.
-    root: PathBuf,
     /// The target image format which becomes part of the archive's file name.
-    target: ConversionTarget,
+    format: ConversionTarget,
     /// The extension to use for the Zip file.
     extension: ZipExtension,
 }
 
 impl CompressionJob {
     /// Run this job.
-    fn run(self) -> Result<(), Exn<Msg<Self>>> {
+    fn run(self, root: &TempDir, original: &ArchivePath) -> Result<(), Exn<Msg<Self>>> {
         let err = || {
-            let root = self.root.display();
+            let root = root.path().display();
             Msg::new(format!("Compressing directory \"{root}\""))
         };
 
-        let zip_path = self.get_zip_path();
+        let zip_path = self.get_zip_path(original);
         let file = File::create(zip_path).or_raise(err)?;
 
         let mut zipper = ZipWriter::new(file);
@@ -274,11 +215,11 @@ impl CompressionJob {
             .compression_method(CompressionMethod::Stored)
             .unix_permissions(0o755);
 
-        for entry in WalkDir::new(&self.root) {
+        for entry in WalkDir::new(root) {
             let entry = entry.or_raise(err)?;
             let entry = entry.path();
-            let root_parent = self
-                .root
+            let root_parent = root
+                .path()
                 .parent()
                 .expect("root dir is a temporary directory, not root");
             let inner_path = entry
@@ -301,20 +242,11 @@ impl CompressionJob {
     }
 
     /// Create the file name path for the newly compressed Zip archive.
-    fn get_zip_path(&self) -> PathBuf {
-        let dir = self
-            .root
-            .parent()
-            .expect("root is a temporary directory, so it has a parent");
-        let name = self
-            .root
-            .file_name()
-            .expect("root is a temporary directory with a name")
-            .to_str()
-            .expect("our file paths are utf8 compliant");
+    fn get_zip_path(&self, original: &ArchivePath) -> PathBuf {
+        let dir = original.parent();
+        let name = original.file_stem();
         let zip_ext = self.extension.ext();
-
-        let image_ext = self.target.format().ext();
+        let image_ext = self.format.format().ext();
         dir.join(format!("{name}.{image_ext}.{zip_ext}"))
     }
 }

@@ -212,7 +212,8 @@ fn run_test(test_file: TestFile, target: ConversionTarget, source: ConversionSou
     let out_file = test_dir.root.path().join(out_file);
     assert!(
         out_file.exists(),
-        "This file should be produced by the program"
+        "This file should be produced by the program: \"{}\"",
+        out_file.display()
     );
 
     let images = match test_file {

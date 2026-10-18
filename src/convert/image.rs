@@ -1,10 +1,12 @@
 //! Contains everything related to dealing with individual images.
 
 use std::collections::{HashMap, VecDeque};
+use std::ffi::OsStr;
 use std::fs;
 use std::io::BufRead as _;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
+use std::str::FromStr as _;
 
 use exn::{ErrorExt as _, Exn, ResultExt as _};
 use indicatif::ProgressBar;
@@ -30,7 +32,16 @@ pub struct ConversionJob {
 
 impl ConversionJob {
     /// Create a new conversion job that will follow the plan.
-    pub const fn new(image_path: PathBuf, plan: Plan) -> Self {
+    pub fn new(image_path: PathBuf, plan: Plan) -> Self {
+        let cur = image_path
+            .extension()
+            .and_then(OsStr::to_str)
+            .map(ImageFormat::from_str);
+        assert_eq!(
+            cur,
+            Some(Ok(plan.format_from())),
+            "conversion plan is inconsistent with provided image path"
+        );
         Self { image_path, plan }
     }
 
@@ -40,8 +51,8 @@ impl ConversionJob {
     }
 
     /// Convert this job to a running job.
-    fn init(self) -> Result<RunConversionJob, Exn<Msg<RunConversionJob>>> {
-        RunConversionJob::new(self)
+    fn init(self, root: &Path) -> Result<RunConversionJob, Exn<Msg<RunConversionJob>>> {
+        RunConversionJob::new(self, root)
     }
 }
 
@@ -54,12 +65,14 @@ pub struct RunConversionJob {
 
 impl RunConversionJob {
     /// Create a running job for [`ConversionJob`].
-    pub fn new(job: ConversionJob) -> Result<Self, Exn<Msg<Self>>> {
+    pub fn new(job: ConversionJob, root: &Path) -> Result<Self, Exn<Msg<Self>>> {
         let err = || Msg::new("Initialize conversion");
 
-        let sequence = job.plan.resolve(&job.image_path).or_raise(err)?;
+        let image_path = root.join(job.image_path);
+
+        let sequence = job.plan.resolve(&image_path).or_raise(err)?;
         let waiting = StateWaiting {
-            image_path: job.image_path,
+            image_path,
             sequence,
             tool_use: ToolUse::Best,
         };
@@ -400,6 +413,17 @@ impl Plan {
         Some(out)
     }
 
+    /// Get the format from which to convert
+    ///
+    /// This is the format expected to be currently on disk.
+    pub const fn format_from(self) -> ImageFormat {
+        match self {
+            Self::OneStep { from, .. } => from,
+            Self::TwoStep { from, .. } => from,
+            Self::IndeterminateJxl { from, .. } => from,
+        }
+    }
+
     /// Determine the tools that need to be installed for this conversion to work.
     pub fn required_tools(self) -> Vec<Tool> {
         use ConversionTarget as C;
@@ -567,18 +591,16 @@ impl ConversionJobs {
     /// Initialize a new collection with the given jobs.
     pub fn new(
         images: Vec<ImageInfo>,
-        root_dir: &Path,
         config: ConversionConfig,
     ) -> Result<Option<Self>, Exn<Msg<Self>>> {
         let job_queue = images
             .into_iter()
             .filter_map(|ImageInfo { path, format }| {
-                let image_path = root_dir.join(path);
                 if let Some(task) = Plan::new(format, config) {
-                    trace!("create job for {image_path:?}: {task:?}");
-                    Some(ConversionJob::new(image_path, task))
+                    trace!("create job for {path:?}: {task:?}");
+                    Some(ConversionJob::new(path, task))
                 } else {
-                    trace!("skip conversion for {image_path:?}");
+                    trace!("skip conversion for {path:?}");
                     None
                 }
             })
@@ -622,13 +644,13 @@ impl ConversionJobs {
     }
 
     /// Run this job.
-    pub fn run(self, bar: Option<&ProgressBar>) -> Result<(), Exn<Msg<Self>>> {
+    pub fn run(self, root_dir: &Path, bar: Option<&ProgressBar>) -> Result<(), Exn<Msg<Self>>> {
         if let Some(bar) = bar {
             // no full reset to preserve ellapsed time (e.g. time spent extracting archive)
             bar.set_position(0);
             bar.set_length(self.len() as u64);
         }
-        RunConversionJobs::new(self).run(bar)
+        RunConversionJobs::new(self).run(root_dir, bar)
     }
 }
 
@@ -657,7 +679,11 @@ impl RunConversionJobs {
     }
 
     /// Run this job.
-    fn run(mut self, bar: Option<&ProgressBar>) -> Result<(), Exn<Msg<ConversionJobs>>> {
+    fn run(
+        mut self,
+        root_dir: &Path,
+        bar: Option<&ProgressBar>,
+    ) -> Result<(), Exn<Msg<ConversionJobs>>> {
         let err = || Msg::new("Running conversion jobs");
 
         assert!(!self.job_queue.is_empty(), "queue filled by construction");
@@ -670,9 +696,9 @@ impl RunConversionJobs {
             let Some(job) = self.job_queue.pop_front() else {
                 break;
             };
-            *slot = Some(job.init().or_raise(err)?);
+            *slot = Some(job.init(root_dir).or_raise(err)?);
         }
-        self.proceed_jobs(bar).or_raise(err)?;
+        self.proceed_jobs(root_dir, bar).or_raise(err)?;
 
         while self.jobs_pending() {
             for signal in signals.wait() {
@@ -681,7 +707,7 @@ impl RunConversionJobs {
                         let interrupted = Interrupted.raise();
                         return Err(interrupted.raise(err()));
                     }
-                    SIGCHLD => self.proceed_jobs(bar).or_raise(err)?,
+                    SIGCHLD => self.proceed_jobs(root_dir, bar).or_raise(err)?,
                     _ => unreachable!(),
                 }
             }
@@ -690,7 +716,11 @@ impl RunConversionJobs {
     }
 
     /// Try to proceed as many jobs as possible, until none are doing any more progress.
-    fn proceed_jobs(&mut self, bar: Option<&ProgressBar>) -> Result<(), Exn<Msg<Self>>> {
+    fn proceed_jobs(
+        &mut self,
+        root_dir: &Path,
+        bar: Option<&ProgressBar>,
+    ) -> Result<(), Exn<Msg<Self>>> {
         let err = || Msg::new("Proceeding with as many jobs as currently possible");
 
         for slot in &mut self.jobs_in_progress {
@@ -709,7 +739,7 @@ impl RunConversionJobs {
                         }
                     },
                     None => match self.job_queue.pop_front() {
-                        Some(job) => *slot = Some(job.init().or_raise(err)?),
+                        Some(job) => *slot = Some(job.init(root_dir).or_raise(err)?),
                         None => break,
                     },
                 }
