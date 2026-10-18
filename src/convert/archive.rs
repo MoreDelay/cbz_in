@@ -1,8 +1,8 @@
 //! Contains everything related to handling zip archives.
 
 use std::ffi::OsStr;
-use std::fs::{self, File};
-use std::io::Write as _;
+use std::fs::File;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use exn::{ErrorExt as _, Exn, ResultExt as _, bail};
@@ -230,8 +230,8 @@ impl CompressionJob {
 
             if entry.is_file() {
                 zipper.start_file(inner_path, options).or_raise(err)?;
-                let bytes = fs::read(entry).or_raise(err)?;
-                zipper.write_all(&bytes).or_raise(err)?;
+                let mut file = File::open(entry).or_raise(err)?;
+                io::copy(&mut file, &mut zipper).or_raise(err)?;
             } else if !inner_path.is_empty() {
                 zipper.add_directory(inner_path, options).or_raise(err)?;
             }
