@@ -211,9 +211,8 @@ impl CompressionJob {
         let file = File::create(zip_path).or_raise(err)?;
 
         let mut zipper = ZipWriter::new(file);
-        let options = SimpleFileOptions::default()
-            .compression_method(CompressionMethod::Stored)
-            .unix_permissions(0o755);
+
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
 
         for entry in WalkDir::new(root) {
             let entry = entry.or_raise(err)?;
