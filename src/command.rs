@@ -285,6 +285,7 @@ impl RunConversion {
         };
         let required_tools = iter
             .flat_map(|job| job.plan().required_tools())
+            .chain(std::iter::once(crate::spawn::Tool::Magick))
             .collect::<HashSet<_>>();
         let missing_tools = required_tools
             .into_iter()
