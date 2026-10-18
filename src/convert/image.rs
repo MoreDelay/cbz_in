@@ -593,23 +593,32 @@ impl ConversionJobs {
         images: Vec<ImageInfo>,
         config: ConversionConfig,
     ) -> Result<Option<Self>, Exn<Msg<Self>>> {
-        let job_queue = images
-            .into_iter()
-            .filter_map(|ImageInfo { path, format }| {
-                if let Some(task) = Plan::new(format, config) {
+        // We need to make sure not to accidentally override an existing file. We also need to
+        // prevent collisions when converting images of different types.
+        let (job_queue, unchanged): (VecDeque<_>, VecDeque<_>) =
+            images.into_iter().partition_map(|info| {
+                let path = &info.path;
+                if let Some(task) = Plan::new(info.format, config) {
                     trace!("create job for {path:?}: {task:?}");
-                    Some(ConversionJob::new(path, task))
+                    either::Left(ConversionJob::new(info.path, task))
                 } else {
                     trace!("skip conversion for {path:?}");
-                    None
+                    either::Right(info)
                 }
-            })
-            .collect::<VecDeque<_>>();
+            });
 
         if job_queue.is_empty() {
             return Ok(None);
         }
-        let name_occurrences = job_queue
+        let unchanged = unchanged
+            .iter()
+            .filter(|info| info.format == config.target.format())
+            .fold(HashMap::new(), |mut map, info| {
+                let name = info.path.with_extension("");
+                map.entry(name).and_modify(|v| *v += 1).or_insert(1_usize);
+                map
+            });
+        let mut name_occurrences = job_queue
             .iter()
             .map(|j| j.image_path.with_extension(""))
             .fold(HashMap::new(), |mut map, name| {
@@ -617,11 +626,16 @@ impl ConversionJobs {
                 map
             });
 
-        if name_occurrences.len() != job_queue.len() {
-            let collisions = name_occurrences
-                .iter()
-                .filter_map(|(path, count)| (*count > 1).then_some(path.to_str()?))
-                .join(", ");
+        for (name, count) in unchanged {
+            let entry = name_occurrences.entry(name).or_insert(0);
+            *entry += count;
+        }
+
+        let collisions = name_occurrences
+            .iter()
+            .filter_map(|(path, count)| (*count > 1).then_some(path.to_str()?))
+            .join(", ");
+        if !collisions.is_empty() {
             let msg = format!("Conversion would create name collisions at: {collisions}");
             let exn = Exn::new(Msg::new(msg));
             return Err(exn);

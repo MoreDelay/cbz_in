@@ -190,6 +190,7 @@ impl IntoIterator for DirectoryImages {
 /// The file path stored here is relative. How to interpret the relative path depends on the
 /// context on how we found the image in the first place, i.e. as part of an archive or a
 /// directory.
+#[derive(Debug)]
 pub struct ImageInfo {
     /// The relative path to the image.
     pub path: PathBuf,

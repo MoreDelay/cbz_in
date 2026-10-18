@@ -168,6 +168,7 @@ fn run_test(test_file: TestFile, target: ConversionTarget, source: ConversionSou
         TestFile::Dir => "dir",
     };
     let file = test_dir.root.path().join(file);
+    assert!(file.exists(), "test archive/dir should exist");
 
     let source_arg = format!("--from={source}");
     // let log_path = test_dir.root.path().join("log.log");
@@ -314,4 +315,48 @@ fn jxl_lossless() {
 
     let compressed = cbz_in::jxl_is_compressed_jpeg(&out_file).expect("can read metadata");
     assert!(compressed);
+}
+
+#[test]
+fn collision_on_conversion() {
+    let test_dir = TestDir::new("test-cbz_in-").expect("can create temp dirs");
+    let collision_dir = test_dir.root.path().join("collision_on_conversion");
+    assert!(collision_dir.exists());
+
+    let cmd = vec![
+        OsStr::new("cbz_in"),
+        OsStr::new("--no-log"),
+        OsStr::new("--from=all"),
+        OsStr::new("png"),
+        OsStr::new("--no-archive"),
+        OsStr::new(&collision_dir),
+    ];
+    println!("{cmd:#?}");
+
+    let args = cbz_in::Args::try_parse_from(cmd)
+        .map_err(|s| s.to_string())
+        .expect("correct command");
+    cbz_in::entry_point(args).expect_err("should prevent collision");
+}
+
+#[test]
+fn collision_with_existing() {
+    let test_dir = TestDir::new("test-cbz_in-").expect("can create temp dirs");
+    let collision_dir = test_dir.root.path().join("collision_with_existing");
+    assert!(collision_dir.exists());
+
+    let cmd = vec![
+        OsStr::new("cbz_in"),
+        OsStr::new("--no-log"),
+        OsStr::new("--from=all"),
+        OsStr::new("png"),
+        OsStr::new("--no-archive"),
+        OsStr::new(&collision_dir),
+    ];
+    println!("{cmd:#?}");
+
+    let args = cbz_in::Args::try_parse_from(cmd)
+        .map_err(|s| s.to_string())
+        .expect("correct command");
+    cbz_in::entry_point(args).expect_err("should prevent collision");
 }
