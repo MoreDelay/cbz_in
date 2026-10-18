@@ -252,7 +252,8 @@ impl RunConversion {
         };
 
         for path in paths {
-            info!("Got files to convert for {root} \"{}\"", path.display());
+            let path = path.display();
+            info!("Found file to convert in \"{root}\": \"{path}\"",);
         }
 
         Ok(())

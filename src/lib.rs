@@ -29,17 +29,7 @@ pub struct AppError;
 pub fn entry_point(args: Args) -> Result<AppExit, Exn<Msg<AppError>>> {
     let err = || Msg::new("Error when executing program");
 
-    if !args.no_log {
-        init_logger(&args.log_path, args.level).or_raise(err)?;
-    }
-
-    let cmd = std::env::args_os()
-        .map(|s| s.to_string_lossy().to_string())
-        .collect::<Vec<_>>()
-        .join(" ");
-    info!("starting new execution as {cmd:?}");
-    let cwd = std::env::current_dir().unwrap_or_default();
-    info!("working directory: {:?}", cwd);
+    debug!("parsed arguments:\n{args:#?}");
 
     let paths = args.paths.into_iter();
     let root = match args.no_archive {
@@ -107,7 +97,7 @@ pub enum AppExit {
 /// Png and Jpeg. The new archive with converted images is placed adjacent to the original, so this
 /// operation is non-destructive.
 #[expect(clippy::struct_excessive_bools)]
-#[derive(clap::Parser)]
+#[derive(clap::Parser, Debug)]
 #[command(version)]
 pub struct Args {
     /// The subcommand to run
@@ -179,7 +169,7 @@ pub struct Args {
 }
 
 /// The sub command to run on found archives or directories.
-#[derive(clap::Subcommand, Clone, Copy)]
+#[derive(clap::Subcommand, Debug, Clone, Copy)]
 pub enum Command {
     /// Collect statistics on the images found.
     Stat,
@@ -292,7 +282,7 @@ impl ConversionTarget {
 }
 
 /// Initialize the logger as requested.
-fn init_logger(path: &Path, level: tracing::Level) -> Result<(), Exn<Msg<()>>> {
+pub fn init_logger(path: &Path, level: tracing::Level) -> Result<(), Exn<Msg<()>>> {
     let err = || {
         let path = path.display();
         Msg::new(format!("Initializing logging to file \"{path}\""))
