@@ -6,7 +6,6 @@ use std::ops::Not as _;
 use exn::{Exn, ResultExt as _};
 use tracing::debug;
 
-use crate::command::{print_stats_per_format, print_stats_total};
 use crate::convert::archive::ArchivePath;
 use crate::convert::dir::Directory;
 use crate::convert::image::ImageFormat;
@@ -103,10 +102,9 @@ impl<I: Images> ImageCollection<I> {
             }
         }
 
-        stdout("");
-        print_stats_per_format(&all_stats);
+        all_stats.print_per_format();
         stdout("---");
-        print_stats_total(&all_stats);
+        all_stats.print_total();
     }
 }
 

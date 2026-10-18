@@ -15,7 +15,6 @@ use crate::convert::image::ImageFormat;
 use crate::convert::search::{ArchiveImages, DirectoryImages};
 use crate::convert::{ConversionConfig, FilesystemRoot, ImagesJob};
 use crate::error::{CompactReport, Msg};
-use crate::stats::Stats;
 use crate::{ConversionTarget, stdout};
 
 /// All collections found in the locations specified by the user.
@@ -192,22 +191,6 @@ impl DirOrArchive {
             .filter_map(Result::transpose)
             .collect()
     }
-}
-
-/// Print out statistics per image format.
-pub fn print_stats_per_format(stats: &Stats) {
-    let mut counts = Vec::from_iter(stats.inner.clone());
-    counts.sort_unstable_by_key(|(f, _)| f.ext());
-    for (format, count) in &counts {
-        let format = format.ext();
-        stdout(format!("{format}: {count}"));
-    }
-}
-
-/// Print out the total number of images found.
-pub fn print_stats_total(stats: &Stats) {
-    let total: usize = stats.inner.values().sum();
-    stdout(format!("total: {total}"));
 }
 
 /// Helper object to run conversion
