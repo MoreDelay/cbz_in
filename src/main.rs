@@ -35,7 +35,7 @@ fn main() -> ExitCode {
 
     match ret {
         Ok(cbz_in::AppExit::Success) => ExitCode::SUCCESS,
-        Ok(cbz_in::AppExit::NothingFound) => ExitCode::FAILURE,
+        Ok(cbz_in::AppExit::NothingFound) => ExitCode::SUCCESS,
         Err(exn) if cbz_in::got_interrupted(&exn) => {
             let msg = "Got interrupted";
             eprintln!("{msg}");
