@@ -312,7 +312,13 @@ pub fn extract_zip(
     let mut cmd = Command::new(TOOL.name());
     let archive = archive.to_str().expect("paths are valid utf8");
     let destination = format!("-o{}", destination.to_str().expect("paths are valid utf8"));
-    cmd.args(["x", "-tzip", archive, "-spe", &destination]);
+    cmd.args([
+        "x",
+        "-tzip",
+        archive,
+        "-spe", // deduplicate root if contained in the archive
+        &destination,
+    ]);
     ManagedChild::spawn(cmd)
 }
 
