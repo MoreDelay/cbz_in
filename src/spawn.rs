@@ -14,7 +14,7 @@ use crate::error::Msg;
 pub struct ManagedChild {
     /// The command used to spawn the process.
     cmd: String,
-    /// The handle to the child process.
+    /// The handle to the child process. Never [`None`] outside [`Drop::drop`].
     child: Option<Child>,
 }
 
@@ -108,7 +108,7 @@ impl Drop for ManagedChild {
                 error!("When killing child process: {e}");
             }
 
-            // is this necessary?
+            // Make sure the killed process does not linger around
             if let Err(e) = child.wait() {
                 error!("When waiting for killed child process: {e}");
             }
