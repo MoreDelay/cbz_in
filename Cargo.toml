@@ -20,7 +20,7 @@ tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = "0.3"
 walkdir = "2.5"
-zip = "8.6"
+zip = "9"
 
 [lints.clippy]
 nursery = { level = "warn", priority = -1 }
