@@ -334,6 +334,7 @@ impl StateCompleted {
                     to,
                 }
             }
+            // We trust that the dedicated tools produces spec-following image files
             Sequence::Finish { .. } => {
                 let msg = "Image from a previous pass could not be formatted further, \
                                 something is gravely wrong";
