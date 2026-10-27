@@ -1,6 +1,6 @@
 //! Contains everything related to handling zip archives.
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -147,12 +147,17 @@ impl ArchiveJob {
         };
 
         let conversion_ending = format!(".{}.{}", target.format().ext(), path.extension.ext());
+        let conversion_ending = OsStr::new(&conversion_ending);
 
         let dir = path.parent();
-        let name = path.file_stem();
-        let zip_path = dir.join(format!("{name}{conversion_ending}"));
+        let mut name = OsString::from(path.file_stem());
+        name.push(conversion_ending);
+        let zip_path = dir.join(name);
 
-        let is_converted_archive = path.file_name().ends_with(&conversion_ending);
+        let file_name = path.file_name().as_encoded_bytes();
+        let conversion_ending = conversion_ending.as_encoded_bytes();
+
+        let is_converted_archive = file_name.ends_with(conversion_ending);
         let has_converted_archive = zip_path.try_exists().or_raise(err)?;
 
         Ok(is_converted_archive || has_converted_archive)
@@ -225,7 +230,8 @@ impl CompressionJob {
                 .strip_prefix(root_parent)
                 .expect("all files have the root as prefix")
                 .to_str()
-                .expect("path should be utf8 compliant");
+                .ok_or_else(|| Msg::<()>::new("Path in zip archive not UTF-8").raise())
+                .or_raise(err)?;
 
             if entry.is_file() {
                 zipper.start_file(inner_path, options).or_raise(err)?;
@@ -244,9 +250,11 @@ impl CompressionJob {
     fn get_zip_path(&self, original: &ArchivePath) -> PathBuf {
         let dir = original.parent();
         let name = original.file_stem();
-        let zip_ext = self.extension.ext();
-        let image_ext = self.format.format().ext();
-        dir.join(format!("{name}.{image_ext}.{zip_ext}"))
+        let zip_ext = OsStr::new(self.extension.ext());
+        let image_ext = OsStr::new(self.format.format().ext());
+        let dot = OsStr::new(".");
+        let file_name = OsString::from_iter([name, dot, image_ext, dot, zip_ext]);
+        dir.join(file_name)
     }
 }
 
@@ -273,11 +281,11 @@ impl ArchivePath {
             let msg = Msg::new("File is missing a file extension for archives.");
             return Err((archive, msg.raise()));
         };
-        let extension = match extension
-            .to_str()
-            .expect("file names are utf8 compliant")
-            .parse::<ZipExtension>()
-        {
+        let Some(extension) = extension.to_str() else {
+            let msg = Msg::new("File extension not UTF-8 / ASCII");
+            return Err((archive, msg.raise()));
+        };
+        let extension = match extension.parse::<ZipExtension>() {
             Ok(ext) => ext,
             Err(err) => {
                 let exn = err.raise();
@@ -302,22 +310,18 @@ impl ArchivePath {
 
     /// Get the file name for this archive.
     #[must_use]
-    pub fn file_stem(&self) -> &str {
+    pub fn file_stem(&self) -> &OsStr {
         self.archive
             .file_stem()
             .expect("archive has name by construction")
-            .to_str()
-            .expect("files should be unicode")
     }
 
     /// Get the full file name including extension for this archive.
     #[must_use]
-    pub fn file_name(&self) -> &str {
+    pub fn file_name(&self) -> &OsStr {
         self.archive
             .file_name()
             .expect("archive has name by construction")
-            .to_str()
-            .expect("files should be unicode")
     }
 }
 

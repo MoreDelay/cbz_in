@@ -172,7 +172,7 @@ impl DirOrArchive {
 
     /// Find all child entries of this directory and collect those that are archives.
     fn flatten_dir(dir: &Directory, verbose: bool) -> Result<Vec<ArchivePath>, Exn<Msg<Self>>> {
-        let err = || Msg::new("finding archives in directory");
+        let err = || Msg::new("Finding archives in directory");
 
         dir.read_dir()
             .or_raise(err)?

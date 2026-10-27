@@ -1,5 +1,6 @@
 //! Contains everything related to handling directories.
 
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -135,7 +136,7 @@ impl DirectoryJob {
 
         let parent = root.parent().ok_or_raise(err)?;
         let name = root.name();
-        let new_name = format!("{}-{}", name, target.ext());
+        let new_name = OsString::from_iter([name, OsStr::new("-"), OsStr::new(target.ext())]);
         Ok(parent.join(new_name))
     }
 
@@ -148,8 +149,10 @@ impl DirectoryJob {
 
         let converted_path = Self::get_hardlink_dir(root, target).or_raise(err)?;
 
-        let conversion_ending = format!("-{}", target.ext());
-        let is_converted_dir = root.name().ends_with(&conversion_ending);
+        let conversion_ending = OsString::from_iter([OsStr::new("-"), OsStr::new(target.ext())]);
+        let conversion_ending = conversion_ending.as_encoded_bytes();
+
+        let is_converted_dir = root.name().as_encoded_bytes().ends_with(conversion_ending);
         let has_converted_dir = converted_path.try_exists().or_raise(err)?;
 
         Ok(is_converted_dir || has_converted_dir)
@@ -177,7 +180,7 @@ impl RecursiveHardLinkJob {
         };
 
         let Some(parent) = self.root.parent() else {
-            let msg = Msg::new("has no parent, can not place conversion directory next to it");
+            let msg = Msg::new("Has no parent, can not place conversion directory next to it");
             return Err(err().raise().raise(msg));
         };
 
@@ -294,12 +297,10 @@ impl Directory {
 
     /// Get the name for this directory.
     #[must_use]
-    pub fn name(&self) -> &str {
+    pub fn name(&self) -> &OsStr {
         self.0
             .file_name()
             .expect("archive has name by construction")
-            .to_str()
-            .expect("directories use unicode names")
     }
 }
 
