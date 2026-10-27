@@ -4,8 +4,23 @@ version = "0.1.0"
 edition = "2024"
 description = "Convert images within comic archives to newer image formats"
 
-[lints.rust]
-missing_docs = "warn"
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive", "wrap_help"] }
+derive_more = { version = "2.1", features = ["display"] }
+either = "1.15"
+exn = "0.3"
+# exn = { git = "https://github.com/MoreDelay/exn", branch = "recovery" }
+# indicatif = "0.18"
+indicatif = { git = "https://github.com/MoreDelay/indicatif", branch = "responsive-steady-tick" }
+itertools = "0.14"
+signal-hook = "0.4"
+tempfile = "3"
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = "0.3"
+walkdir = "2.5"
+zip = "8.6"
 
 [lints.clippy]
 nursery = { level = "warn", priority = -1 }
@@ -27,7 +42,7 @@ missing_assert_message = "warn"
 missing_asserts_for_indexing = "warn"
 missing_docs_in_private_items = "warn"
 mixed_read_write_in_expression = "warn"
-mod_module_files = "warn" # alternative: self_names_module_files
+mod_module_files = "warn"  # alternative: self_names_module_files
 needless_raw_strings = "warn"
 pathbuf_init_then_push = "warn"
 redundant_test_prefix = "warn"
@@ -52,20 +67,5 @@ unwrap_used = "warn"
 verbose_file_reads = "warn"
 wildcard_enum_match_arm = "warn"
 
-[dependencies]
-anyhow = "1.0"
-clap = { version = "4.5", features = ["derive", "wrap_help"] }
-derive_more = { version = "2.1", features = ["display"] }
-either = "1.15"
-exn = "0.3"
-# exn = { git = "https://github.com/MoreDelay/exn", branch = "recovery" }
-# indicatif = "0.18"
-indicatif = { git = "https://github.com/MoreDelay/indicatif", branch = "responsive-steady-tick" }
-itertools = "0.14"
-signal-hook = "0.4"
-tempfile = "3"
-tracing = "0.1"
-tracing-appender = "0.2"
-tracing-subscriber = "0.3"
-walkdir = "2.5"
-zip = "8.6"
+[lints.rust]
+missing_docs = "warn"
