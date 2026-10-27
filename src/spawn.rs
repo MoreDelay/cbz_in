@@ -1,5 +1,6 @@
 //! Contains everything related to spawning processes.
 
+use std::ffi::OsString;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 
@@ -123,8 +124,6 @@ pub fn convert_with_magick(
     const TOOL: Tool = Tool::Magick;
 
     let mut cmd = Command::new(TOOL.name());
-    let input_path = input_path.to_str().expect("paths are valid utf8");
-    let output_path = output_path.to_str().expect("paths are valid utf8");
     cmd.args([input_path, output_path]);
     ManagedChild::spawn(cmd)
 }
@@ -145,9 +144,10 @@ pub fn convert_png_to_jpeg(
     const TOOL: Tool = Tool::Magick;
 
     let mut cmd = Command::new(TOOL.name());
-    let input_path = input_path.to_str().expect("paths are valid utf8");
-    let output_path = output_path.to_str().expect("paths are valid utf8");
-    cmd.args([input_path, "-quality", "92", output_path]);
+    cmd.arg(input_path);
+    cmd.arg("-quality");
+    cmd.arg("92");
+    cmd.arg(output_path);
     ManagedChild::spawn(cmd)
 }
 
@@ -159,16 +159,10 @@ pub fn encode_avif(
     const TOOL: Tool = Tool::Cavif;
 
     let mut cmd = Command::new(TOOL.name());
-    let input_path = input_path.to_str().expect("paths are valid utf8");
-    let output_path = output_path.to_str().expect("paths are valid utf8");
-    cmd.args([
-        "--speed=3",
-        "--threads=1",
-        "--quality=88",
-        input_path,
-        "-o",
-        output_path,
-    ]);
+    cmd.args(["--speed=3", "--threads=1", "--quality=88"]);
+    cmd.arg(input_path);
+    cmd.arg("-o");
+    cmd.arg(output_path);
     ManagedChild::spawn(cmd)
 }
 
@@ -181,8 +175,6 @@ pub fn encode_jxl(
     const TOOL: Tool = Tool::Cjxl;
 
     let mut cmd = Command::new(TOOL.name());
-    let input_path = input_path.to_str().expect("paths are valid utf8");
-    let output_path = output_path.to_str().expect("paths are valid utf8");
     cmd.arg("--effort=9");
     cmd.arg("--num_threads=1");
     if lossy {
@@ -202,9 +194,10 @@ pub fn encode_webp(
     const TOOL: Tool = Tool::Cwebp;
 
     let mut cmd = Command::new(TOOL.name());
-    let input_path = input_path.to_str().expect("paths are valid utf8");
-    let output_path = output_path.to_str().expect("paths are valid utf8");
-    cmd.args(["-q", "90", input_path, "-o", output_path]);
+    cmd.args(["-q", "90"]);
+    cmd.arg(input_path);
+    cmd.arg("-o");
+    cmd.arg(output_path);
     ManagedChild::spawn(cmd)
 }
 
@@ -216,9 +209,9 @@ pub fn decode_webp(
     const TOOL: Tool = Tool::Dwebp;
 
     let mut cmd = Command::new(TOOL.name());
-    let input_path = input_path.to_str().expect("paths are valid utf8");
-    let output_path = output_path.to_str().expect("paths are valid utf8");
-    cmd.args([input_path, "-o", output_path]);
+    cmd.arg(input_path);
+    cmd.arg("-o");
+    cmd.arg(output_path);
     ManagedChild::spawn(cmd)
 }
 
@@ -230,9 +223,9 @@ pub fn decode_jxl_to_png(
     const TOOL: Tool = Tool::Djxl;
 
     let mut cmd = Command::new(TOOL.name());
-    let input_path = input_path.to_str().expect("paths are valid utf8");
-    let output_path = output_path.to_str().expect("paths are valid utf8");
-    cmd.args([input_path, output_path, "--num_threads=1"]);
+    cmd.arg(input_path);
+    cmd.arg(output_path);
+    cmd.arg("--num_threads=1");
     ManagedChild::spawn(cmd)
 }
 
@@ -244,9 +237,9 @@ pub fn decode_jxl_to_jpeg(
     const TOOL: Tool = Tool::Djxl;
 
     let mut cmd = Command::new(TOOL.name());
-    let input_path = input_path.to_str().expect("paths are valid utf8");
-    let output_path = output_path.to_str().expect("paths are valid utf8");
-    cmd.args([input_path, output_path, "--num_threads=1"]);
+    cmd.arg(input_path);
+    cmd.arg(output_path);
+    cmd.arg("--num_threads=1");
     ManagedChild::spawn(cmd)
 }
 
@@ -258,9 +251,9 @@ pub fn decode_avif_to_png(
     const TOOL: Tool = Tool::Avifdec;
 
     let mut cmd = Command::new(TOOL.name());
-    let input_path = input_path.to_str().expect("paths are valid utf8");
-    let output_path = output_path.to_str().expect("paths are valid utf8");
-    cmd.args(["--jobs", "1", input_path, output_path]);
+    cmd.args(["--jobs", "1"]);
+    cmd.arg(input_path);
+    cmd.arg(output_path);
     ManagedChild::spawn(cmd)
 }
 
@@ -272,9 +265,9 @@ pub fn decode_avif_to_jpeg(
     const TOOL: Tool = Tool::Avifdec;
 
     let mut cmd = Command::new(TOOL.name());
-    let input_path = input_path.to_str().expect("paths are valid utf8");
-    let output_path = output_path.to_str().expect("paths are valid utf8");
-    cmd.args(["--jobs", "1", "--quality", "80", input_path, output_path]);
+    cmd.args(["--jobs", "1", "--quality", "80"]);
+    cmd.arg(input_path);
+    cmd.arg(output_path);
     ManagedChild::spawn(cmd)
 }
 
@@ -283,8 +276,8 @@ pub fn run_jxlinfo(image_path: &Path) -> Result<ManagedChild, Exn<Msg<ManagedChi
     const TOOL: Tool = Tool::Jxlinfo;
 
     let mut cmd = Command::new(TOOL.name());
-    let image_path = image_path.to_str().expect("paths are valid utf8");
-    cmd.args(["-v", image_path]);
+    cmd.arg("-v");
+    cmd.arg(image_path);
     ManagedChild::spawn(cmd)
 }
 
@@ -294,11 +287,10 @@ pub fn list_archive_files(archive: &Path) -> Result<ManagedChild, Exn<Msg<Manage
 
     let mut cmd = Command::new(TOOL.name());
     cmd.args([
-        "l",
-        "-ba",  // undocumented switch to remove header lines
+        "l", "-ba",  // undocumented switch to remove header lines
         "-slt", // use format that is easier to parse
-        archive.to_str().expect("paths are valid utf8"),
     ]);
+    cmd.arg(archive);
     ManagedChild::spawn(cmd)
 }
 
@@ -310,15 +302,12 @@ pub fn extract_zip(
     const TOOL: Tool = Tool::_7z;
 
     let mut cmd = Command::new(TOOL.name());
-    let archive = archive.to_str().expect("paths are valid utf8");
-    let destination = format!("-o{}", destination.to_str().expect("paths are valid utf8"));
-    cmd.args([
-        "x",
-        "-tzip",
-        archive,
-        "-spe", // deduplicate root if contained in the archive
-        &destination,
-    ]);
+    cmd.args(["x", "-tzip"]);
+    cmd.arg(archive);
+    cmd.arg("-spe"); // deduplicate root if contained in the archive
+    let mut destination_arg = OsString::from("-o");
+    destination_arg.push(destination.as_os_str());
+    cmd.arg(&destination_arg);
     ManagedChild::spawn(cmd)
 }
 
@@ -366,7 +355,7 @@ impl Tool {
         let err = || Msg::new(format!("Checking if tool exists: {self}"));
 
         let mut cmd = Command::new("which");
-        cmd.args([self.name()]);
+        cmd.arg(self.name());
         Ok(ManagedChild::spawn(cmd).or_raise(err)?.wait().is_ok())
     }
 }
