@@ -222,10 +222,7 @@ impl CompressionJob {
         for entry in WalkDir::new(root) {
             let entry = entry.or_raise(err)?;
             let entry = entry.path();
-            let root_parent = root
-                .path()
-                .parent()
-                .expect("root dir is a temporary directory, not root");
+            let root_parent = root.path();
             let inner_path = entry
                 .strip_prefix(root_parent)
                 .expect("all files have the root as prefix")

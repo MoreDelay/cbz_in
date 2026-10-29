@@ -139,7 +139,7 @@ impl ConversionExpectation {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TestFile {
     Zip,
     Cbz,
@@ -241,6 +241,33 @@ fn run_test(test_file: TestFile, target: ConversionTarget, source: ConversionSou
         None,
         "If not none, then this image format is not converted as expected"
     );
+
+    match images {
+        OutImages::Arc(images) => {
+            let expected = if test_file == TestFile::Cbz {
+                Path::new("cbz")
+            } else {
+                Path::new("zip")
+            };
+            for image in images {
+                let path = image.path.parent().expect("file lies in a directory");
+                assert_eq!(
+                    path, expected,
+                    "inner path in archive should be just its archive name"
+                );
+            }
+        }
+        OutImages::Dir(images) => {
+            let expected = Path::new("");
+            for image in images {
+                let path = image.path.parent().expect("file lies in a directory");
+                assert_eq!(
+                    path, expected,
+                    "no extra inner directory inside converted directory"
+                );
+            }
+        }
+    }
 
     test_dir
 }
