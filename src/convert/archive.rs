@@ -186,7 +186,12 @@ impl ExtractionJob {
             bail!(exn.raise(err()))
         }
 
-        let extract_dir = TempDir::new_in(self.archive.parent()).or_raise(err)?;
+        let mut prefix = OsString::from(".cbz_in-");
+        prefix.push(self.archive.file_stem());
+        prefix.push("-");
+
+        let extract_dir =
+            TempDir::with_prefix_in(".cbz_in-", self.archive.parent()).or_raise(err)?;
         spawn::extract_zip(&self.archive, extract_dir.path())
             .and_then(ManagedChild::wait)
             .or_raise(err)?;

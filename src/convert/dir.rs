@@ -184,7 +184,10 @@ impl RecursiveHardLinkJob {
             return Err(err().raise().raise(msg));
         };
 
-        let copy_root = TempDir::new_in(parent).or_raise(err)?;
+        let mut prefix = OsString::from(".cbz_in-");
+        prefix.push(self.root.name());
+        prefix.push("-");
+        let copy_root = TempDir::with_prefix_in(prefix, parent).or_raise(err)?;
 
         let err = || {
             let root = self.root.display();
